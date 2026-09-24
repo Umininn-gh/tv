@@ -642,7 +642,8 @@
             padding: 10px 6px;
             min-height: 64px;
             border-radius: 12px;
-            background: var(--bg-1) !important;
+            background: var(--bg-2) !important;
+            border: 1.5px solid rgba(255, 255, 255, .12) !important;
             color: var(--label);
             font-size: .72rem;
             font-weight: 500;
@@ -661,8 +662,16 @@
         }
 
         #channel-options .channel-option-label.live,
-        #channel-options .channel-option-label.unknown2 { color: var(--green) !important; }
-        #channel-options .channel-option-label.not-live { color: var(--red) !important; }
+        #channel-options .channel-option-label.unknown2 {
+            color: var(--green) !important;
+            border-color: rgba(48, 209, 88, .65) !important;
+            background: rgba(48, 209, 88, .10) !important;
+        }
+        #channel-options .channel-option-label.not-live {
+            color: var(--red) !important;
+            border-color: rgba(255, 69, 58, .40) !important;
+            background: rgba(255, 69, 58, .07) !important;
+        }
         #channel-options .channel-option-label.unknown  { color: var(--label-2) !important; }
 
         #channel-options input:checked + .channel-option-label {
