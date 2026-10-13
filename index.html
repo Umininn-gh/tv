@@ -275,6 +275,7 @@
 
         /* ---------------- 播放區 ---------------- */
         #multi-stream-container-wrapper {
+            position: relative;
             display: flex;
             gap: .9375em;
             padding: .9375em;
@@ -350,6 +351,90 @@
             object-fit: contain;
             background: #000;
             border-radius: 10px;
+        }
+
+        /* 搬位操作層獨立於播放器，交換位置不會重載直播。 */
+        #player-position-editor {
+            position: absolute;
+            z-index: 20;
+            border-radius: 14px;
+            overflow: visible;
+        }
+        #player-position-editor[hidden] { display: none; }
+        .player-position-cells {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            border-radius: inherit;
+            overflow: hidden;
+        }
+        .player-position-cell {
+            width: 100%;
+            height: 100%;
+            min-width: 0;
+            min-height: 0;
+            margin: 0;
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            border: 2px solid rgba(255, 255, 255, .55);
+            border-radius: 10px;
+            background: rgba(0, 0, 0, .48);
+            color: #fff;
+            cursor: grab;
+            touch-action: none;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        .player-position-cell:focus-visible,
+        .player-position-cell.position-picked {
+            outline: 3px solid var(--green);
+            outline-offset: -5px;
+            background: rgba(48, 209, 88, .20);
+        }
+        .player-position-cell.position-target {
+            border: 3px dashed var(--green);
+            background: rgba(48, 209, 88, .28);
+        }
+        .player-position-cell.position-dragging { cursor: grabbing; opacity: .65; }
+        .player-position-cell:active { transform: none; }
+        .player-position-cell span {
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .player-position-name { font-size: clamp(.75rem, 1.2vw, 1rem); font-weight: 700; }
+        .player-position-number { font-size: .72rem; }
+        .player-position-toolbar {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            left: 8px;
+            z-index: 2;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: 10px;
+            background: rgba(28, 28, 30, .95);
+            color: #fff;
+            font-size: .72rem;
+            pointer-events: none;
+        }
+        .player-position-toolbar button { flex-shrink: 0; pointer-events: auto; }
+        #adjust-player-positions:disabled { opacity: .45; cursor: default; }
+        .player-position-hint { margin: 8px 0 0; color: var(--label-2); font-size: .72rem; }
+        .player-position-announcement {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            overflow: hidden;
+            clip-path: inset(50%);
         }
 
         /* ---------------- 手機頻道全屏選單 ---------------- */
@@ -1129,6 +1214,8 @@
         <button onclick="watchSelectedChannels()" style="background: #9147ff; color: #000; font-weight: 600;">▶️ 開始觀看</button>
         <button onclick="checkAllLiveChannels()" style="background: var(--green); color: #000; font-weight: 600;">所有在線頻道</button>
         <button onclick="clearAllChannelSelection()" style="background: var(--bg-2); color: var(--label);">全選</button>
+        <button id="adjust-player-positions" type="button" disabled>↔️ 調整播放器位置</button>
+        <p class="player-position-hint">開始觀看至少兩台後，可以拖曳或點選兩格交換位置。</p>
     </div>
 
     <div id="multi-stream-container-wrapper">

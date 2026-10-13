@@ -407,6 +407,9 @@ let currentFLVInstances = [];
 let currentDisplayChannel = null;
 const activePlayers = new Map();
 const playerResources = new WeakMap();
+const PLAYER_POSITION_STORAGE_KEY = 'playerPositionOrder';
+let preferredPlayerOrder = [];
+let playerPositionEditor = null;
 const statusScheduler = StreamPerformance.createStatusScheduler({ maxConcurrent: 4, cacheMs: 30000 });
 const goshMetadataRequests = StreamPerformance.createInFlightCoalescer();
 const parent = location.hostname || "localhost";
@@ -493,6 +496,7 @@ function disposePlayer(entry) {
 }
 
 function destroyAllHLSInstances() {
+    playerPositionEditor?.close(false);
     activePlayers.forEach(disposePlayer);
     activePlayers.clear();
     currentHLSInstances.forEach(instance => { try { instance.destroy(); } catch (error) {} });
@@ -509,10 +513,37 @@ function renderChannelElement(channel, muted, wrapperClass) {
 }
 
 /* ------------------------ 單台觀看 ------------------------ */
+function getPlayerElement(entry) {
+    return entry.resource ? entry.resource.element : entry.element;
+}
+
+function getPlayerPositionKeys() {
+    return Array.from(activePlayers.keys()).sort((a, b) =>
+        Number(getPlayerElement(activePlayers.get(a)).style.order) -
+        Number(getPlayerElement(activePlayers.get(b)).style.order));
+}
+
+function swapPlayerPositions(sourceKey, targetKey) {
+    const keys = getPlayerPositionKeys();
+    const sourceIndex = keys.indexOf(sourceKey);
+    const targetIndex = keys.indexOf(targetKey);
+    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return false;
+    [keys[sourceIndex], keys[targetIndex]] = [keys[targetIndex], keys[sourceIndex]];
+    // Change only CSS order: moving connected iframe nodes would restart playback.
+    keys.forEach((key, index) => { getPlayerElement(activePlayers.get(key)).style.order = String(index); });
+    preferredPlayerOrder = keys.concat(preferredPlayerOrder.filter(key => !keys.includes(key))).slice(0, 256);
+    try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(preferredPlayerOrder)); } catch (_) {}
+    playerPositionEditor?.refresh();
+    return true;
+}
+
 function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     const container = document.getElementById("multi-stream-container");
     if (!container) return;
     const selected = ChannelList.mergeChannels(requested);
+    const preferredRanks = new Map(preferredPlayerOrder.map((key, index) => [key, index]));
+    selected.sort((a, b) => (preferredRanks.get(ChannelList.channelKey(a)) ?? Infinity) -
+        (preferredRanks.get(ChannelList.channelKey(b)) ?? Infinity));
     const desired = new Set(selected.map(ChannelList.channelKey));
     for (const [key, entry] of activePlayers) {
         if (!desired.has(key)) { disposePlayer(entry); activePlayers.delete(key); }
@@ -531,6 +562,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     currentDisplayChannel = count === 1 ? selected[0] : null;
     if (!count) {
         container.innerHTML = `<div style="color:var(--label-2); text-align:center; padding:2rem;">${emptyMessage}</div>`;
+        playerPositionEditor?.refresh();
         return;
     }
     selected.forEach((channel, index) => {
@@ -559,6 +591,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
         // Moving an iframe in the DOM can restart it; CSS order keeps it connected.
         visible.style.order = String(index);
     });
+    playerPositionEditor?.refresh();
 }
 
 function pruneActivePlayers() {
@@ -823,6 +856,225 @@ function toggleChannelSelection() {
         div.style.display = "block";
     } else div.style.display = "none";
 }
+
+/* ------------------------ 看更台：播放器搬位模式 ------------------------ */
+(function initPlayerPositionEditor() {
+    const pane = document.getElementById('multi-stream-container');
+    const wrapper = document.getElementById('multi-stream-container-wrapper');
+    const startButton = document.getElementById('adjust-player-positions');
+    if (!pane || !wrapper || !startButton) return;
+    try {
+        const saved = JSON.parse(localStorage.getItem(PLAYER_POSITION_STORAGE_KEY));
+        if (Array.isArray(saved)) preferredPlayerOrder = [...new Set(saved.filter(key => typeof key === 'string'))].slice(0, 256);
+    } catch (_) {}
+
+    const layer = document.createElement('div');
+    layer.id = 'player-position-editor';
+    layer.hidden = true;
+    layer.innerHTML = `<div class="player-position-cells"></div>
+        <div class="player-position-toolbar"><span>拖曳或點選兩格交換；方向鍵搬位，Esc 完成</span>
+        <button type="button">✅ 完成搬位</button></div>
+        <p class="player-position-announcement" role="status" aria-live="polite"></p>`;
+    // A sibling overlay leaves every iframe/video connected in its original parent.
+    wrapper.appendChild(layer);
+    const cells = layer.querySelector('.player-position-cells');
+    const doneButton = layer.querySelector('.player-position-toolbar button');
+    const announcement = layer.querySelector('[role="status"]');
+    let opened = false;
+    let pickedKey = null;
+    let drag = null;
+    let dropKey = null;
+    let suppressClick = false;
+    let layoutFrame = null;
+    const buttons = new Map();
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleLayout) : null;
+
+    function updateHighlights() {
+        buttons.forEach((button, key) => {
+            button.classList.toggle('position-picked', key === pickedKey);
+            button.classList.toggle('position-target', key === dropKey);
+            button.classList.toggle('position-dragging', Boolean(drag?.moved && key === drag.key));
+            button.setAttribute('aria-pressed', String(key === pickedKey));
+        });
+    }
+
+    function cancelPointer() {
+        const previous = drag;
+        drag = null;
+        dropKey = null;
+        if (previous) {
+            try { previous.button.releasePointerCapture(previous.id); } catch (_) {}
+        }
+        updateHighlights();
+    }
+
+    function layout() {
+        if (!opened) return;
+        const bounds = pane.getBoundingClientRect();
+        const parentBounds = wrapper.getBoundingClientRect();
+        const style = getComputedStyle(pane);
+        layer.style.left = `${bounds.left - parentBounds.left + pane.clientLeft}px`;
+        layer.style.top = `${bounds.top - parentBounds.top + pane.clientTop}px`;
+        layer.style.width = `${pane.clientWidth}px`;
+        layer.style.height = `${pane.clientHeight}px`;
+        cells.style.gridTemplateColumns = style.gridTemplateColumns;
+        cells.style.gridTemplateRows = style.gridTemplateRows;
+        cells.style.gap = style.gap;
+    }
+
+    function scheduleLayout() {
+        if (!opened || layoutFrame !== null) return;
+        layoutFrame = requestAnimationFrame(() => {
+            layoutFrame = null;
+            cancelPointer();
+            layout();
+        });
+    }
+
+    function close(restoreFocus = true) {
+        if (!opened) return;
+        opened = false;
+        pickedKey = null;
+        cancelPointer();
+        observer?.disconnect();
+        window.removeEventListener('resize', scheduleLayout);
+        if (layoutFrame !== null) cancelAnimationFrame(layoutFrame);
+        layoutFrame = null;
+        layer.hidden = true;
+        startButton.setAttribute('aria-expanded', 'false');
+        if (restoreFocus) document.getElementById('more-channels-btn')?.focus();
+    }
+
+    function refresh() {
+        startButton.disabled = activePlayers.size < 2;
+        if (startButton.disabled) { close(); return; }
+        if (!opened) return;
+        const focusKey = document.activeElement?.dataset.playerKey;
+        cancelPointer();
+        pickedKey = null;
+        buttons.clear();
+        cells.replaceChildren();
+        getPlayerPositionKeys().forEach((key, index) => {
+            const entry = activePlayers.get(key);
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'player-position-cell';
+            button.dataset.playerKey = key;
+            button.setAttribute('aria-label', `第 ${index + 1} 格：${entry.channel.name}，拖曳或點選交換位置`);
+            const number = document.createElement('span');
+            number.className = 'player-position-number';
+            number.textContent = `↔ 第 ${index + 1} 格`;
+            const name = document.createElement('span');
+            name.className = 'player-position-name';
+            name.textContent = `${platformIcon(entry.channel.platform)} ${entry.channel.name}`;
+            button.append(number, name);
+            cells.appendChild(button);
+            buttons.set(key, button);
+        });
+        updateHighlights();
+        layout();
+        if (focusKey) buttons.get(focusKey)?.focus({ preventScroll: true });
+    }
+
+    function exchange(source, target) {
+        const sourceName = activePlayers.get(source)?.channel.name;
+        const targetName = activePlayers.get(target)?.channel.name;
+        if (swapPlayerPositions(source, target)) announcement.textContent = `${sourceName} 與 ${targetName} 已交換位置`;
+    }
+
+    startButton.setAttribute('aria-controls', layer.id);
+    startButton.setAttribute('aria-expanded', 'false');
+    startButton.addEventListener('click', () => {
+        if (activePlayers.size < 2) return;
+        document.getElementById('channel-selection').style.display = 'none';
+        opened = true;
+        layer.hidden = false;
+        startButton.setAttribute('aria-expanded', 'true');
+        refresh();
+        observer?.observe(pane);
+        observer?.observe(wrapper);
+        window.addEventListener('resize', scheduleLayout);
+        buttons.values().next().value?.focus({ preventScroll: true });
+    });
+    doneButton.addEventListener('click', () => close());
+    document.addEventListener('keydown', event => {
+        if (opened && event.key === 'Escape') { event.preventDefault(); close(); }
+    });
+    cells.addEventListener('click', event => {
+        const button = event.target.closest('.player-position-cell');
+        if (!button || suppressClick) return;
+        const key = button.dataset.playerKey;
+        if (pickedKey && pickedKey !== key) exchange(pickedKey, key);
+        else {
+            pickedKey = pickedKey === key ? null : key;
+            updateHighlights();
+            announcement.textContent = pickedKey ? '已選取，請點選另一格交換位置' : '已取消選取';
+        }
+    });
+    cells.addEventListener('keydown', event => {
+        const button = event.target.closest('.player-position-cell');
+        if (!button || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+        event.preventDefault();
+        const keys = getPlayerPositionKeys();
+        const index = keys.indexOf(button.dataset.playerKey);
+        const columns = Math.ceil(Math.sqrt(keys.length));
+        const column = index % columns;
+        let target = index;
+        if (event.key === 'ArrowLeft' && column > 0) target--;
+        if (event.key === 'ArrowRight' && column < columns - 1) target++;
+        if (event.key === 'ArrowUp') target -= columns;
+        if (event.key === 'ArrowDown') target += columns;
+        if (target >= 0 && target < keys.length) exchange(keys[index], keys[target]);
+    });
+
+    cells.addEventListener('pointerdown', event => {
+        const button = event.target.closest('.player-position-cell');
+        if (!button || drag || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+        button.focus({ preventScroll: true });
+        drag = { key: button.dataset.playerKey, button, id: event.pointerId,
+            x: event.clientX, y: event.clientY, moved: false,
+            bounds: Array.from(buttons, ([key, cell]) => ({ key, rect: cell.getBoundingClientRect() })) };
+        try { button.setPointerCapture(event.pointerId); } catch (_) {}
+    });
+    function targetAt(event) {
+        return drag?.bounds.find(({ rect }) => event.clientX >= rect.left && event.clientX <= rect.right &&
+            event.clientY >= rect.top && event.clientY <= rect.bottom)?.key || null;
+    }
+    document.addEventListener('pointermove', event => {
+        if (!drag || event.pointerId !== drag.id) return;
+        if (!drag.moved && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 6) return;
+        drag.moved = true;
+        pickedKey = null;
+        const target = targetAt(event);
+        if (dropKey !== target || !drag.highlighted) {
+            dropKey = target;
+            drag.highlighted = true;
+            updateHighlights();
+        }
+        event.preventDefault();
+    }, { passive: false });
+    document.addEventListener('pointerup', event => {
+        if (!drag || event.pointerId !== drag.id) return;
+        const source = drag.key;
+        const target = targetAt(event);
+        const moved = drag.moved;
+        cancelPointer();
+        if (moved) {
+            suppressClick = true;
+            setTimeout(() => { suppressClick = false; }, 0);
+            if (target && target !== source) exchange(source, target);
+        }
+    });
+    document.addEventListener('pointercancel', event => {
+        if (drag && event.pointerId === drag.id) cancelPointer();
+    });
+    cells.addEventListener('lostpointercapture', event => {
+        if (drag && event.pointerId === drag.id) cancelPointer();
+    });
+    window.addEventListener('pagehide', () => close(false));
+    playerPositionEditor = { refresh, close };
+    refresh();
+})();
 
 function toggleChannelMenu() {
     const menu = document.getElementById("channel-menu");
