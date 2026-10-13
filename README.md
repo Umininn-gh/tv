@@ -60,6 +60,14 @@ node set-login-password.cjs --generate
 
 徽章與貼圖資源獨立載入並有逾時限制，不會阻擋歷史或即時留言。失效的 Twitch 登入資料會自動切回匿名觀看；重建連線時，舊連線的延遲事件不會中斷新連線。
 
+## 直播台清單
+
+首頁與管理頁使用本程式庫的 `ch1.txt`，不再向已失效的 chicktv GitHub Pages 讀取清單。2026-10-14 共還原 35 個不同直播台：最新保存的 21 台、`channels.txt` 留下的 8 個不同台，以及核對 [SK 雞友直播台](https://skknower.com/user/ctvhiki49713) 後補入的 6 台，涵蓋該頁當日顯示的全部 16 台。
+
+清單以「平台 + 頻道 ID」去重，保留同名不同 ID 或不同平台的台。Gosh 保存頻道 ID，播放時再取得最新串流網址。`channel-recovery.json` 記錄還原來源，另保留 43 筆只在 Git 歷史出現的項目供日後核對；當中包括測試台、舊帳號及過去活動的影片，沒有自動重新加入。
+
+瀏覽器已有的 `customChannels1` 自訂清單優先於預設清單；舊版 `customChannels` 會合併匯入一次，保留原始儲存備份。刪除的台會維持刪除，手動加回後才重新顯示。網絡暫時失效時使用上次成功載入的清單。只存在已清除的瀏覽器儲存、沒有進入 GitHub 的項目，無法由 Git 歷史找回。
+
 ## 之後搬到 Cloudflare Pages
 
 登入與播放器程式仍可沿用，不需要重寫整個網站。Cloudflare Pages 支援直接部署靜態 HTML：
@@ -70,6 +78,6 @@ node set-login-password.cjs --generate
 4. 先確認直播與聊天室正常，再替正式網址及預覽網址配置 Cloudflare Access。
 5. 若要真正私人使用，停用公開的 GitHub Pages，並另外處理公開程式庫與歷史頁面的可見性。
 
-新增的登入資源使用相對路徑，同時支援 GitHub 的 `/tv/` 子路徑與 Cloudflare 的根網址。原有直播台仍依賴原作者提供的頻道清單、代理、聊天室與 Firebase；搬移時需要逐一確認這些外部來源仍可用，或改成自己的來源。Twitch 的 `parent` 已依目前網域產生。
+新增的登入資源與頻道清單使用相對路徑，同時支援 GitHub 的 `/tv/` 子路徑與 Cloudflare 的根網址。播放器仍依賴外部直播平台、代理與 Firebase；搬移時需要逐一確認這些外部來源仍可用，或改成自己的來源。Twitch 的 `parent` 已依目前網域產生。
 
 官方文件：[Static HTML](https://developers.cloudflare.com/pages/framework-guides/deploy-anything/)、[Preview deployments / Access](https://developers.cloudflare.com/pages/configuration/preview-deployments/)。

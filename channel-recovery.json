@@ -1,0 +1,783 @@
+{
+  "checkedOn": "2026-10-14",
+  "github": "https://github.com/Umininn-gh/tv",
+  "sklive": "https://skknower.com/user/ctvhiki49713",
+  "counts": {
+    "restored": 35,
+    "latestSaved": 21,
+    "retainedOlderAdditions": 8,
+    "skliveVisible": 16,
+    "skliveAdditions": 6,
+    "historicalOnly": 43
+  },
+  "notes": [
+    "使用現存 ch1.txt / ch.txt 的最新 21 台，合併 channels.txt 留下的 8 個不同台，再補入 SKLive 顯示的 6 個新台。",
+    "以平台和頻道 ID 去重；SKLive 的 Kick 與 Gosh 台轉換成網站支援的平台，Gosh 保存頻道 ID 而非臨時串流網址。",
+    "只有 Git 歷史曾出現、但現存清單已移除的項目保留於 historicalOnly，可供日後核對，沒有自動重新加入。",
+    "只保存台名、頻道 ID、平台和來源；沒有複製舊 master 清單內的驗證或 IP 欄位。",
+    "只存在瀏覽器 localStorage 的項目無法從 GitHub 找回；網站會合併此瀏覽器仍保存的新舊自訂清單。"
+  ],
+  "restored": [
+    {
+      "name": "絕",
+      "id": "ppkkkp",
+      "platform": "at",
+      "sources": [
+        "github-current-public",
+        "github-retained-old-default"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "隨便",
+      "id": "justin_yu_1",
+      "platform": "twitch",
+      "sources": [
+        "github-current-public"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "朗子",
+      "id": "anonymouscxz",
+      "platform": "twitch",
+      "sources": [
+        "github-current-public"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "wc",
+      "id": "no25no2501",
+      "platform": "kick",
+      "sources": [
+        "github-current-public"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "然",
+      "id": "yinlove",
+      "platform": "kick",
+      "sources": [
+        "github-current-public",
+        "sklive-visible"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "NU",
+      "id": "number8atctv",
+      "platform": "kick",
+      "sources": [
+        "github-current-public"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "火",
+      "id": "falconjurer",
+      "platform": "kick",
+      "sources": [
+        "github-current-public",
+        "github-retained-old-default",
+        "sklive-visible"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "洗衫",
+      "id": "laundrytoday",
+      "platform": "kick",
+      "sources": [
+        "github-current-public"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "友2",
+      "id": "yaubotaibackup",
+      "platform": "kick",
+      "sources": [
+        "github-current-public"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "羅拔",
+      "id": "baggio1967",
+      "platform": "kick",
+      "sources": [
+        "github-current-public",
+        "sklive-visible"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "絕2",
+      "id": "underwear",
+      "platform": "at",
+      "sources": [
+        "github-current-public"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "頭交",
+      "id": "headjobdont",
+      "platform": "twitch",
+      "sources": [
+        "github-current-public"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "Wc",
+      "id": "no25no2501",
+      "platform": "twitch",
+      "sources": [
+        "github-current-public"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "雀",
+      "id": "jeukpo",
+      "platform": "kick",
+      "sources": [
+        "github-current-public",
+        "github-retained-old-default",
+        "sklive-visible"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "汁仔",
+      "id": "whw9457",
+      "platform": "kick",
+      "sources": [
+        "github-current-public",
+        "sklive-visible"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "ATV",
+      "id": "collartv",
+      "platform": "kick",
+      "sources": [
+        "github-current-public",
+        "github-retained-old-default",
+        "sklive-visible"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "槍戰",
+      "id": "step1h",
+      "platform": "twitch",
+      "sources": [
+        "github-current-public"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "美1",
+      "id": "meidingdang",
+      "platform": "gosh",
+      "sources": [
+        "github-current-public",
+        "sklive-visible"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "美2",
+      "id": "meidingdang0",
+      "platform": "gosh",
+      "sources": [
+        "github-current-public",
+        "sklive-visible"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "金剛",
+      "id": "kingkong_tv",
+      "platform": "gosh",
+      "sources": [
+        "github-current-public",
+        "sklive-visible"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "美3",
+      "id": "meidingdang1",
+      "platform": "gosh",
+      "sources": [
+        "github-current-public"
+      ],
+      "githubLastSeen": "2026-09-24T23:57:05+08:00"
+    },
+    {
+      "name": "w",
+      "id": "wing36747",
+      "platform": "kick",
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "githubLastSeen": "2026-03-26T20:29:03+08:00"
+    },
+    {
+      "name": "N",
+      "id": "Eastsnake25",
+      "platform": "kick",
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "githubLastSeen": "2026-03-26T20:29:03+08:00"
+    },
+    {
+      "name": "西野",
+      "id": "nanase-maru525",
+      "platform": "kick",
+      "sources": [
+        "github-retained-old-default",
+        "sklive-visible"
+      ],
+      "githubLastSeen": "2026-03-26T20:29:03+08:00"
+    },
+    {
+      "name": "wc",
+      "id": "no25no25",
+      "platform": "kick",
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "githubLastSeen": "2026-04-15T11:28:11+08:00"
+    },
+    {
+      "name": "哥",
+      "id": "cobra-and-godzilla",
+      "platform": "kick",
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "githubLastSeen": "2026-03-26T20:29:03+08:00"
+    },
+    {
+      "name": "木",
+      "id": "muse_tw2",
+      "platform": "twitch",
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "githubLastSeen": "2026-05-30T17:55:07+08:00"
+    },
+    {
+      "name": "友",
+      "id": "yaubotai",
+      "platform": "kick",
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "githubLastSeen": "2026-03-26T20:29:03+08:00"
+    },
+    {
+      "name": "w",
+      "id": "10268974521971",
+      "platform": "ok",
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "githubLastSeen": "2026-03-26T20:29:03+08:00"
+    },
+    {
+      "name": "友寶G",
+      "id": "yaubotai01",
+      "platform": "gosh",
+      "sources": [
+        "sklive-visible"
+      ],
+      "githubLastSeen": null
+    },
+    {
+      "name": "哥普",
+      "id": "zero_cobra",
+      "platform": "twitch",
+      "sources": [
+        "sklive-visible"
+      ],
+      "githubLastSeen": null
+    },
+    {
+      "name": "哥2",
+      "id": "Godzilla_2027",
+      "platform": "gosh",
+      "sources": [
+        "sklive-visible"
+      ],
+      "githubLastSeen": null
+    },
+    {
+      "name": "WC",
+      "id": "no25no2501",
+      "platform": "gosh",
+      "sources": [
+        "sklive-visible"
+      ],
+      "githubLastSeen": null
+    },
+    {
+      "name": "有片",
+      "id": "fish3345678",
+      "platform": "gosh",
+      "sources": [
+        "sklive-visible"
+      ],
+      "githubLastSeen": null
+    },
+    {
+      "name": "KA",
+      "id": "kinganime",
+      "platform": "gosh",
+      "sources": [
+        "sklive-visible"
+      ],
+      "githubLastSeen": null
+    }
+  ],
+  "historicalOnly": [
+    {
+      "name": "k",
+      "id": "krichure",
+      "platform": "at",
+      "lastSeen": "2026-04-30T22:33:41+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "530c3dcd1e3d1fd0549b2e74e88d5115f57dff6e"
+      }
+    },
+    {
+      "name": "動",
+      "id": "mrrock",
+      "platform": "at",
+      "lastSeen": "2026-08-25T16:35:21+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "d6a4e778b23e830e4108f64fca79481c40a8a7f3"
+      }
+    },
+    {
+      "name": "絕",
+      "id": "ppkkkpp",
+      "platform": "at",
+      "lastSeen": "2025-12-14T23:59:22+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "78148d34de508bd0f6af187bd7316be9621cde03"
+      }
+    },
+    {
+      "name": "試",
+      "id": "219534",
+      "platform": "goodgame",
+      "lastSeen": "2026-09-19T23:03:38+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "777f001f76740d1e18793778596290806c8b71ba"
+      }
+    },
+    {
+      "name": "哥",
+      "id": "cobra2024",
+      "platform": "kick",
+      "lastSeen": "2025-08-07T21:29:17+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "4470bbd51f9cd0caed41a0b6e5d0f05b5e273313"
+      }
+    },
+    {
+      "name": "哥二",
+      "id": "godzilla-cobra-2027",
+      "platform": "kick",
+      "lastSeen": "2026-08-10T23:22:26+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "baee449bfbad641b6a7f193d86713a1f56f33524"
+      }
+    },
+    {
+      "name": "神",
+      "id": "godzilla-god-2077",
+      "platform": "kick",
+      "lastSeen": "2026-08-11T21:44:40+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "e9f656b3a910b65a552fce853bbc89a299a4a248"
+      }
+    },
+    {
+      "name": "翼",
+      "id": "kww291603",
+      "platform": "kick",
+      "lastSeen": "2025-02-23T13:11:27+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "07463c8b5153e3802c6105ee0263938151202a16"
+      }
+    },
+    {
+      "name": "wc",
+      "id": "no25no2502",
+      "platform": "kick",
+      "lastSeen": "2026-06-04T12:32:08+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "905954df4f8fc1fe90d491fce5472a76ed6dba15"
+      }
+    },
+    {
+      "name": "wc",
+      "id": "no52no52",
+      "platform": "kick",
+      "lastSeen": "2026-05-01T19:09:26+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "4c4fc6e010f4a107444f7f6e9a22414df8e850c6"
+      }
+    },
+    {
+      "name": "翼",
+      "id": "peterpig8964",
+      "platform": "kick",
+      "lastSeen": "2025-06-28T16:21:30+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "92031fecdd4845c22f074f93e2e4c50b5a33b958"
+      }
+    },
+    {
+      "name": "QT",
+      "id": "qt369",
+      "platform": "kick",
+      "lastSeen": "2025-12-15T20:40:27+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "e212eee2d854cee242496bfe0917b777f7b7c9c8"
+      }
+    },
+    {
+      "name": "w",
+      "id": "wing3674",
+      "platform": "kick",
+      "lastSeen": "2025-12-14T18:52:21+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "ffc0875fbf6092b0207abddafc846bb9e0f38658"
+      }
+    },
+    {
+      "name": "wc",
+      "id": "wingchihappy1",
+      "platform": "kick",
+      "lastSeen": "2026-03-08T22:05:04+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "80d2c493899d30764791f01e82a2af0e186d1131"
+      }
+    },
+    {
+      "name": "翼",
+      "id": "wingwhite383",
+      "platform": "kick",
+      "lastSeen": "2025-08-06T14:07:36+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "897100fbf7f43868093ea292ebba7ce9771762a0"
+      }
+    },
+    {
+      "name": "w",
+      "id": "wwhite1852",
+      "platform": "kick",
+      "lastSeen": "2025-10-23T20:26:15+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "2f95eebfeea5915fae396351d015d18bad201cc9"
+      }
+    },
+    {
+      "name": "g",
+      "id": "https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+      "platform": "m3u8",
+      "lastSeen": "2026-04-15T10:56:59+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "f25ff00a4b68b2ed6bcf4b8aaa7041f91323bd5d"
+      }
+    },
+    {
+      "name": "QT",
+      "id": "3849262800563",
+      "platform": "ok",
+      "lastSeen": "2025-09-27T11:30:47+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "0ab3190deece9648f9f98b0149c6172bead4f10c"
+      }
+    },
+    {
+      "name": "翼",
+      "id": "9013975129715",
+      "platform": "ok",
+      "lastSeen": "2025-04-07T09:40:49+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "c5d43a3cf2b97f74afc32dd4085582efe5407833"
+      }
+    },
+    {
+      "name": "翼",
+      "id": "9770604043891",
+      "platform": "ok",
+      "lastSeen": "2025-04-15T10:44:35+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "0bb36b4f8e3097f6cc8e5c6b4798fda223d4d20d"
+      }
+    },
+    {
+      "name": "翼",
+      "id": "9784642182771",
+      "platform": "ok",
+      "lastSeen": "2025-09-23T22:05:01+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "1a95dabd291ee9b18a5d37d55fa3eb5cbeaf8911"
+      }
+    },
+    {
+      "name": "1",
+      "id": "1",
+      "platform": "twitch",
+      "lastSeen": "2026-04-28T17:07:12+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "7fd2cbc9b721b9ef49a2f377e80e2580cbc7befd"
+      }
+    },
+    {
+      "name": "測試台",
+      "id": "12345",
+      "platform": "twitch",
+      "lastSeen": "2026-04-29T10:26:05+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "af5dceeef89b145d4082ad179569130d339c01a2"
+      }
+    },
+    {
+      "name": "A",
+      "id": "alancml",
+      "platform": "twitch",
+      "lastSeen": "2025-12-14T16:23:06+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "dae9d7d3ccb78a43b4c856287f943165aff43a9d"
+      }
+    },
+    {
+      "name": "A",
+      "id": "alancml01",
+      "platform": "twitch",
+      "lastSeen": "2025-12-14T19:16:18+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "e046b8e040bb57f384b13fe40733226c3c3cc472"
+      }
+    },
+    {
+      "name": "朗子",
+      "id": "arlongjaijai2025",
+      "platform": "twitch",
+      "lastSeen": "2026-06-14T14:47:38+08:00",
+      "source": {
+        "file": "ch.txt",
+        "commit": "fa8f74a4acb12f6d1e25df227ff8ca326771abdc"
+      }
+    },
+    {
+      "name": "大波",
+      "id": "dindinxd19",
+      "platform": "twitch",
+      "lastSeen": "2026-09-12T22:33:28+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "1323f17185ab23cae98404e2248b025917bcc140"
+      }
+    },
+    {
+      "name": "哥",
+      "id": "godzilla_2025",
+      "platform": "twitch",
+      "lastSeen": "2025-12-14T23:31:26+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "23ac9462671abc9766f5acd72b01c297190b5a89"
+      }
+    },
+    {
+      "name": "朗子",
+      "id": "https://www.twitch.tv/arlongjaijai2025",
+      "platform": "twitch",
+      "lastSeen": "2026-05-01T17:32:18+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "7d4d2b806d3b8e9e054d959db8202beb055f7fdc"
+      }
+    },
+    {
+      "name": "洗衫",
+      "id": "laundrytoday",
+      "platform": "twitch",
+      "lastSeen": "2026-06-09T19:32:13+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "4104087bc3e12ad53c0b2f466fa682ec3fe2d30e"
+      }
+    },
+    {
+      "name": "大波",
+      "id": "loui5ng",
+      "platform": "twitch",
+      "lastSeen": "2026-09-12T22:32:15+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "ac29f5be37b71ab710142f5730d59aaa3b67f835"
+      }
+    },
+    {
+      "name": "朗",
+      "id": "mingpig930_2",
+      "platform": "twitch",
+      "lastSeen": "2025-12-14T16:23:06+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "dae9d7d3ccb78a43b4c856287f943165aff43a9d"
+      }
+    },
+    {
+      "name": "987",
+      "id": "ppkkkp",
+      "platform": "twitch",
+      "lastSeen": "2026-04-29T10:22:51+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "ef96bda7fe386a996eff1e2769a1e29a090ecf67"
+      }
+    },
+    {
+      "name": "w",
+      "id": "wing36747",
+      "platform": "twitch",
+      "lastSeen": "2025-09-27T12:58:42+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "08b99d89749dba03baf03186c77e6ff18c2277d1"
+      }
+    },
+    {
+      "name": "WJ",
+      "id": "woojungx4",
+      "platform": "twitch",
+      "lastSeen": "2026-09-13T10:22:26+08:00",
+      "source": {
+        "file": "ch.txt",
+        "commit": "8793ef1f4b6249d46f99d3ec9d1c1c1c1b429e8d"
+      }
+    },
+    {
+      "name": "翼",
+      "id": "ww291603",
+      "platform": "twitch",
+      "lastSeen": "2025-03-31T14:30:19+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "00020921474a3fd41c362b9b7b91054a1837e747"
+      }
+    },
+    {
+      "name": "友",
+      "id": "yaubotai2",
+      "platform": "twitch",
+      "lastSeen": "2025-04-20T21:46:09+08:00",
+      "source": {
+        "file": "channels.txt",
+        "commit": "c2a5e168a1091763f1eb528a13ceadce2d21dc77"
+      }
+    },
+    {
+      "name": "金剛",
+      "id": "kingkong_tv",
+      "platform": "vaughn",
+      "lastSeen": "2026-09-22T18:42:04+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "d91ac4eb9728f8b6ca0870874a04c43fe10d9a47"
+      }
+    },
+    {
+      "name": "美2",
+      "id": "meidingdang",
+      "platform": "vaughn",
+      "lastSeen": "2026-09-22T13:46:05+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "37280d24ae28e98bf7651d3b5610460af22cdffd"
+      }
+    },
+    {
+      "name": "美1",
+      "id": "triplestarhunters",
+      "platform": "vaughn",
+      "lastSeen": "2026-09-22T14:25:26+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "a47d83c137275a08823fe3dfff1b1de846066f99"
+      }
+    },
+    {
+      "name": "t",
+      "id": "zard46",
+      "platform": "vaughn",
+      "lastSeen": "2026-09-18T23:30:29+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "989f45a09026fbf8020b17140f34b603e78cf27d"
+      }
+    },
+    {
+      "name": "施政",
+      "id": "https://www.youtube.com/watch?v=UL8iGQiTrlA",
+      "platform": "youtube",
+      "lastSeen": "2026-09-16T11:15:25+08:00",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "278a87a75d5416d0e03618730191f546cb105d83"
+      }
+    },
+    {
+      "name": "施政",
+      "id": "UL8iGQiTrlA",
+      "platform": "youtube",
+      "lastSeen": "2026-09-16T14:06:18+08:00",
+      "source": {
+        "file": "ch.txt",
+        "commit": "a0c7e3c90768c556b36073876b2326bf3fbd99f6"
+      }
+    }
+  ]
+}

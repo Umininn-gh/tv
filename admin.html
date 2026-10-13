@@ -7,6 +7,7 @@
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
     <!-- HLS.js 播放 M3U8 串流 -->
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="./channel-list.js"></script>
 		<script type="module" src="jquery-3.6.0.min.js"></script>
     <style>
         * {
@@ -692,6 +693,7 @@ textarea:focus {
                     <option value="ok">OK.ru</option>
                     <option value="at">AngelThump</option>
                     <option value="m3u8">📺 M3U8 (HLS)</option>
+                    <option value="gosh">Gosh</option>
                     <option value="youtube">▶️ YouTube Live</option>
                 </select>
             </div>
@@ -732,6 +734,52 @@ textarea:focus {
         let channelStatuses = {};       // 記錄每個頻道的直播狀態
         let currentHLSInstances = [];   // 存放 HLS.js 實例便於銷毀
 
+        function channelStatusKey(channel) {
+            return ChannelList.channelKey(channel);
+        }
+
+        function channelDomId(channel) {
+            return channelStatusKey(channel).replace(/[^a-zA-Z0-9]/g, '_');
+        }
+
+        async function fetchGoshChannel(channel) {
+            const proxies = ['https://gosh.chicktv02.workers.dev', 'https://dry-wildflower-371d.forgosh.workers.dev'];
+            for (const proxy of proxies) {
+                try {
+                    const response = await fetch(`${proxy}/?channelId=${encodeURIComponent(channel.id)}`);
+                    if (!response.ok) continue;
+                    const data = await response.json();
+                    if (data && typeof data.isLive === 'boolean') return data;
+                } catch (error) {}
+            }
+            throw new Error('Unable to load Gosh channel');
+        }
+
+        async function attachHlsVideo(videoElem, channel) {
+            try {
+                const source = channel.platform === 'gosh' ? (await fetchGoshChannel(channel)).m3u8Url : channel.id;
+                if (!videoElem.isConnected) return;
+                if (typeof source !== 'string' || !/^https?:\/\//i.test(source)) throw new Error('No active HLS stream');
+                if (Hls.isSupported()) {
+                    const hls = new Hls({ enableWorker: true, autoStartLoad: true });
+                    hls.loadSource(source);
+                    hls.attachMedia(videoElem);
+                    hls.on(Hls.Events.MANIFEST_PARSED, () => videoElem.play().catch(() => {}));
+                    currentHLSInstances.push(hls);
+                } else if (videoElem.canPlayType('application/vnd.apple.mpegurl')) {
+                    videoElem.src = source;
+                } else {
+                    throw new Error('HLS unavailable');
+                }
+            } catch (error) {
+                if (!videoElem.isConnected) return;
+                const message = document.createElement('div');
+                message.style.cssText = 'color:#aaa;text-align:center;padding:2rem';
+                message.textContent = '目前未有可播放的直播訊號';
+                videoElem.replaceWith(message);
+            }
+        }
+
         // ======================== HLS 清理函式 ========================
         function destroyAllHLSInstances() {
             if (currentHLSInstances.length) {
@@ -756,7 +804,7 @@ textarea:focus {
             const idOrUrl = channel.id;
 
             // M3U8 使用 HLS.js
-            if (platform === "m3u8") {
+            if (platform === "m3u8" || platform === "gosh") {
                 const videoElem = document.createElement("video");
                 videoElem.className = "hls-video-element";
                 videoElem.controls = true;
@@ -766,19 +814,7 @@ textarea:focus {
                 videoElem.style.width = "100%";
                 videoElem.style.height = "100%";
                 container.appendChild(videoElem);
-                if (Hls.isSupported()) {
-                    const hls = new Hls({ enableWorker: true, autoStartLoad: true });
-                    hls.loadSource(idOrUrl);
-                    hls.attachMedia(videoElem);
-                    hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                        videoElem.play().catch(e => console.warn("自動播放失敗", e));
-                    });
-                    currentHLSInstances.push(hls);
-                } else if (videoElem.canPlayType('application/vnd.apple.mpegurl')) {
-                    videoElem.src = idOrUrl;
-                } else {
-                    container.innerHTML = `<div style="color:red; text-align:center;">⚠️ 瀏覽器不支援 HLS 播放</div>`;
-                }
+                void attachHlsVideo(videoElem, channel);
             }
             // YouTube 直播嵌入
             else if (platform === "youtube") {
@@ -814,7 +850,7 @@ textarea:focus {
         function getStreamUrl(channel) {
             if (!channel) return "";
             if (channel.platform === "kick") return `https://player.kick.com/${channel.id}?muted=false&autoplay=true`;
-            if (channel.platform === "twitch") return `https://player.twitch.tv/?channel=${channel.id}&parent=chicktv.github.io`;
+            if (channel.platform === "twitch") return `https://player.twitch.tv/?channel=${channel.id}&parent=${encodeURIComponent(location.hostname || 'localhost')}`;
             if (channel.platform === "ok") return `https://ok.ru/videoembed/${channel.id}?nochat=1&autoplay=1`;
             if (channel.platform === "at") return `https://player.angelthump.com/?channel=${channel.id}`;
             return "";
@@ -844,7 +880,7 @@ textarea:focus {
                 const platform = ch.platform;
                 const idOrUrl = ch.id;
                 const wrapperClass = isOnlyOne ? "full-screen-video" : "video";
-                if (platform === "m3u8") {
+                if (platform === "m3u8" || platform === "gosh") {
                     const videoElem = document.createElement("video");
                     videoElem.className = `hls-video-element ${wrapperClass}`;
                     videoElem.controls = true;
@@ -860,17 +896,7 @@ textarea:focus {
                         videoElem.style.height = "100%";
                     }
                     container.appendChild(videoElem);
-                    if (Hls.isSupported()) {
-                        const hls = new Hls({ enableWorker: true, autoStartLoad: true });
-                        hls.loadSource(idOrUrl);
-                        hls.attachMedia(videoElem);
-                        hls.on(Hls.Events.MANIFEST_PARSED, () => videoElem.play().catch(e=>console.warn));
-                        currentHLSInstances.push(hls);
-                    } else if (videoElem.canPlayType('application/vnd.apple.mpegurl')) {
-                        videoElem.src = idOrUrl;
-                    } else {
-                        videoElem.outerHTML = `<div style="color:red;">不支援HLS</div>`;
-                    }
+                    void attachHlsVideo(videoElem, ch);
                 } else if (platform === "youtube") {
                     const iframe = document.createElement("iframe");
                     iframe.className = wrapperClass;
@@ -926,20 +952,9 @@ textarea:focus {
             if (platform === "m3u8" && !id.match(/\.m3u8($|\?)/i) && !id.startsWith("http")) {
                 if (!confirm("⚠️ 網址可能不是標準 .m3u8 格式，仍要新增嗎？")) return;
             }
-            const existingIndex = channels.findIndex(ch => 
-                ch.name.toLowerCase() === name.toLowerCase() && 
-                ch.platform.toLowerCase() === platform
-            );
             const newChannel = { name, id, platform };
-            delete newChannel._fromAPI;
-            delete newChannel._fromTxt;
-            if (existingIndex > -1) {
-                channels[existingIndex] = newChannel;
-                console.log(`✅ 更新頻道: ${name} (${platform})`);
-            } else {
-                channels.push(newChannel);
-                console.log(`✅ 新增頻道: ${name} (${platform})`);
-            }
+            ChannelList.restoreChannel(localStorage, newChannel);
+            channels = ChannelList.mergeChannels([newChannel], channels);
             saveChannelsToStorage();
             generateButtons();
             closeAddChannelModal();
@@ -948,19 +963,14 @@ textarea:focus {
 
         // 儲存自訂頻道到 localStorage
         function saveChannelsToStorage() {
-            let customChannels = channels.filter(ch => !ch._fromAPI && !ch._fromTxt);
-            customChannels = customChannels.map(ch => {
-                const { _fromAPI, _fromTxt, ...cleanCh } = ch;
-                return cleanCh;
-            });
-            localStorage.setItem("customChannels1", JSON.stringify(customChannels));
-            console.log(`💾 已儲存 ${customChannels.length} 個自訂頻道 (含M3U8/YouTube)`);
+            ChannelList.saveCustomChannels(localStorage, channels);
         }
 
         // ======================== 載入 Twitch 憑證 ========================
         async function loadTwitchCredentials() {
             try {
-                const response = await fetch('https://chicktv.github.io/tv/token.txt');
+                const response = await fetch('./token.txt', { cache: 'no-store' });
+                if (!response.ok) return;
                 const data = await response.text();
                 const lines = data.split('\n').map(line => line.trim());
                 if (lines.length >= 2) {
@@ -977,69 +987,8 @@ textarea:focus {
 
         // ======================== 從外部來源載入頻道清單 =================
         async function loadChannelsFromUrl() {
-            let txtChannels = [];
-            let apiChannelsTemp = [];
-            // 1. 舊 txt 來源
-            try {
-                const response = await fetch('https://chicktv.github.io/tv/ch1.txt');
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const data = await response.text();
-                const channelLines = data.split('\n').filter(line => line.trim());
-                txtChannels = channelLines.map(line => {
-                    const parts = line.split(',').map(part => part.trim());
-                    if (parts.length === 3) {
-                        const [name, id, platform] = parts;
-                        return {
-                            name: name.trim(),
-                            id: id.trim(),
-                            platform: platform.trim().toLowerCase(),
-                            _fromTxt: true
-                        };
-                    }
-                    return null;
-                }).filter(ch => ch && ch.id);
-                console.log(`📁 舊txt來源載入 ${txtChannels.length} 個頻道`);
-            } catch (error) { console.warn('舊txt失敗', error); }
-            // 2. API 來源
-            try {
-                const response = await fetch('https://api.codetabs.com/v1/proxy/?quest=https://live.sk-knower.com/skgamerversion_api.php?page=whitewing918');
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                const data = await response.json();
-                if (data.channels && Array.isArray(data.channels)) {
-                    apiChannelsTemp = data.channels.map(item => {
-                        let platform = "";
-                        let id = (item.details || "").trim();
-                        if (item.platform === "vl") platform = "kick";
-                        else if (item.platform === "twitch") platform = "twitch";
-                        else if (item.platform === "okru") platform = "ok";
-                        else return null;
-                        return {
-                            name: (item.displayname || id || "Unknown").trim(),
-                            id: id,
-                            platform: platform,
-                            _fromAPI: true
-                        };
-                    }).filter(ch => ch && ch.id);
-                    console.log(`🌐 API來源載入 ${apiChannelsTemp.length} 個頻道`);
-                }
-            } catch (error) { console.warn('API失敗', error); }
-            // 3. localStorage 自訂頻道
-            const storedChannels = JSON.parse(localStorage.getItem("customChannels1") || "[]");
-            // 合併去重，API 優先保留
-            let allRaw = [...apiChannelsTemp, ...txtChannels, ...storedChannels];
-            const seen = new Map();
-            for (const ch of allRaw) {
-                const key = `${(ch.name || "").trim().toLowerCase()}|${(ch.platform || "").trim().toLowerCase()}`;
-                if (!seen.has(key)) seen.set(key, ch);
-                else {
-                    const existing = seen.get(key);
-                    if (!existing._fromAPI && ch._fromAPI) seen.set(key, ch);
-                }
-            }
-            channels = Array.from(seen.values());
-            console.log(`🎯 最終頻道總數: ${channels.length} (支援YouTube/M3U8)`);
-            if (channels.length === 0 && storedChannels.length) channels = [...storedChannels];
-            saveChannelsToStorage();
+            const loaded = await ChannelList.loadChannels(localStorage, fetch);
+            channels = loaded.channels;
             generateButtons();
         }
 
@@ -1058,7 +1007,7 @@ textarea:focus {
             const container = document.getElementById("lists");
             if (!container) return;
             const btn = document.createElement("button");
-            const safeId = (channel.id || "unknown").replace(/[^a-zA-Z0-9]/g, '_');
+            const safeId = channelDomId(channel);
             btn.className = "status-button";
             btn.id = `btn-${safeId}`;
             let platformIcon = "ⓞ";
@@ -1066,6 +1015,7 @@ textarea:focus {
             else if (channel.platform === "twitch") platformIcon = "Ⓣ";
             else if (channel.platform === "at") platformIcon = "Ⓐ";
             else if (channel.platform === "m3u8") platformIcon = "📺";
+            else if (channel.platform === "gosh") platformIcon = "Ⓖ";
             else if (channel.platform === "youtube") platformIcon = "▶️";
             else if (channel.platform === "ok") platformIcon = "ⓞ";
             btn.innerText = `${platformIcon}${channel.name}`;
@@ -1075,6 +1025,7 @@ textarea:focus {
             deleteBtn.style.display = "none";
             deleteBtn.onclick = (e) => {
                 e.stopPropagation();
+                ChannelList.forgetChannel(localStorage, channel);
                 channels = channels.filter(ch => !(ch.id === channel.id && ch.platform === channel.platform));
                 saveChannelsToStorage();
                 generateButtons();
@@ -1086,7 +1037,7 @@ textarea:focus {
             wrapper.appendChild(btn);
             wrapper.appendChild(deleteBtn);
             container.appendChild(wrapper);
-            updateButtonStatus(channel.id);
+            updateButtonStatus(channel);
         }
 
         function editClick() {
@@ -1101,11 +1052,11 @@ textarea:focus {
         }
 
         // ======================== 狀態更新（UI 樣式）====================
-        function updateButtonStatus(channelId) {
-            const safeId = (channelId || "unknown").replace(/[^a-zA-Z0-9]/g, '_');
+        function updateButtonStatus(channel) {
+            const safeId = channelDomId(channel);
             const btn = document.getElementById(`btn-${safeId}`);
             if (!btn) return;
-            const status = channelStatuses[channelId] || 'unknown';
+            const status = channelStatuses[channelStatusKey(channel)] || 'unknown';
             btn.classList.remove('live', 'not-live', 'unknown', 'unknown2');
             if (status === 'live') btn.classList.add('live');
             else if (status === 'not-live') btn.classList.add('not-live');
@@ -1113,12 +1064,12 @@ textarea:focus {
             else btn.classList.add('unknown');
         }
 
-        function updateMenuButtonStatus(channelId) {
-            const safeId = (channelId || "unknown").replace(/[^a-zA-Z0-9]/g, '_');
+        function updateMenuButtonStatus(channel) {
+            const safeId = channelDomId(channel);
             const menuBtn = document.getElementById(`menu-btn-${safeId}`);
             const statusInd = document.getElementById(`menu-status-${safeId}`);
             if (!menuBtn) return;
-            const status = channelStatuses[channelId] || 'unknown';
+            const status = channelStatuses[channelStatusKey(channel)] || 'unknown';
             menuBtn.classList.remove('live', 'not-live', 'unknown', 'unknown2');
             if (statusInd) {
                 statusInd.classList.remove('status-live', 'status-not-live', 'status-unknown');
@@ -1132,10 +1083,10 @@ textarea:focus {
             else menuBtn.classList.add('unknown');
         }
 
-        function updateChannelOptionLabel(channelId) {
-            const label = document.getElementById(`status-label-${channelId.replace(/[^a-zA-Z0-9]/g, '_')}`);
+        function updateChannelOptionLabel(channel) {
+            const label = document.getElementById(`status-label-${channelDomId(channel)}`);
             if (!label) return;
-            const status = channelStatuses[channelId] || 'unknown';
+            const status = channelStatuses[channelStatusKey(channel)] || 'unknown';
             label.classList.remove('live', 'not-live', 'unknown', 'unknown2');
             if (status === 'live') label.classList.add('live');
             else if (status === 'not-live') label.classList.add('not-live');
@@ -1153,7 +1104,7 @@ textarea:focus {
                 document.getElementById('channel-count').textContent = channels.length;
                 listContainer.innerHTML = '';
                 channels.forEach(channel => {
-                    const safeId = (channel.id || "unknown").replace(/[^a-zA-Z0-9]/g, '_');
+                    const safeId = channelDomId(channel);
                     const btn = document.createElement('button');
                     btn.className = 'menu-status-button status-button';
                     btn.id = `menu-btn-${safeId}`;
@@ -1166,13 +1117,14 @@ textarea:focus {
                     else if (channel.platform === "twitch") icon = "Ⓣ";
                     else if (channel.platform === "at") icon = "Ⓐ";
                     else if (channel.platform === "m3u8") icon = "📺";
+                    else if (channel.platform === "gosh") icon = "Ⓖ";
                     else if (channel.platform === "youtube") icon = "▶️";
                     textSpan.textContent = `${icon}${channel.name}`;
                     btn.appendChild(statusSpan);
                     btn.appendChild(textSpan);
                     btn.onclick = () => { displaySingleChannel(channel); toggleChannelMenu(); };
                     listContainer.appendChild(btn);
-                    updateMenuButtonStatus(channel.id);
+                    updateMenuButtonStatus(channel);
                 });
                 menu.style.display = 'block';
                 document.body.style.overflow = 'hidden';
@@ -1204,22 +1156,23 @@ textarea:focus {
                 cb.value = channel.id;
                 cb.dataset.platform = channel.platform;
                 cb.dataset.name = channel.name;
-                cb.id = `chk_${channel.id.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                cb.id = `chk_${channelDomId(channel)}`;
                 const label = document.createElement("label");
                 label.htmlFor = cb.id;
                 label.className = "channel-option-label";
-                label.id = `status-label-${channel.id.replace(/[^a-zA-Z0-9]/g, '_')}`;
+                label.id = `status-label-${channelDomId(channel)}`;
                 let icon = "ⓞ";
                 if (channel.platform === "kick") icon = "Ⓚ";
                 else if (channel.platform === "twitch") icon = "Ⓣ";
                 else if (channel.platform === "at") icon = "Ⓐ";
                 else if (channel.platform === "m3u8") icon = "📺";
+                else if (channel.platform === "gosh") icon = "Ⓖ";
                 else if (channel.platform === "youtube") icon = "▶️";
                 label.textContent = `${icon}${channel.name}`;
                 wrapper.appendChild(cb);
                 wrapper.appendChild(label);
                 container.appendChild(wrapper);
-                updateChannelOptionLabel(channel.id);
+                updateChannelOptionLabel(channel);
             });
 			fetchAllStatuses();
         }
@@ -1227,49 +1180,46 @@ textarea:focus {
         // ======================== 直播狀態查詢 ========================
         async function fetchStatus(channel) {
             if (!channel || !channel.id) return;
-            if (channel.platform === "at") {
-                channelStatuses[channel.id] = 'unknown2';
-                updateUIForChannel(channel.id);
-                return;
-            }
-            if (channel.platform === "youtube") {
-                // YouTube 暫不做精確檢測，顯示特殊動畫
-                channelStatuses[channel.id] = 'unknown2';
-                updateUIForChannel(channel.id);
-                return;
-            }
-            if (channel.platform === "m3u8") {
-                channelStatuses[channel.id] = 'live';
-                updateUIForChannel(channel.id);
-                return;
-            }
-            let url = getPlatformUrl(channel);
-            if (!url) return;
+            const key = channelStatusKey(channel);
+            let status = 'unknown';
             try {
-                if (channel.platform === "ok") {
-                    const resp = await fetch(url);
-                    const html = await resp.text();
-                    let isLive = html.includes('status:"online"') || html.includes('"status":"online"');
-                    channelStatuses[channel.id] = isLive ? 'live' : 'not-live';
+                if (channel.platform === 'at' || channel.platform === 'youtube') {
+                    status = 'unknown2';
+                } else if (channel.platform === 'm3u8') {
+                    status = 'live';
+                } else if (channel.platform === 'gosh') {
+                    const data = await fetchGoshChannel(channel);
+                    status = data.isLive ? 'live' : 'not-live';
                 } else {
-                    const headers = channel.platform === "twitch" ? { "Authorization": `Bearer ${TWITCH_TOKEN}`, "Client-Id": TWITCH_CLIENT_ID } : {};
-                    const resp = await fetch(url, { headers });
-                    const data = await resp.json();
-                    let isLive = false;
-                    if (channel.platform === "kick") isLive = data.livestream?.is_live === true;
-                    if (channel.platform === "twitch") isLive = data.data?.length > 0;
-                    channelStatuses[channel.id] = isLive ? 'live' : 'not-live';
+                    const url = getPlatformUrl(channel);
+                    if (!url || (channel.platform === 'twitch' && (!TWITCH_TOKEN || !TWITCH_CLIENT_ID))) {
+                        channelStatuses[key] = status;
+                        updateUIForChannel(channel);
+                        return;
+                    }
+                    const headers = channel.platform === 'twitch' ? { 'Authorization': `Bearer ${TWITCH_TOKEN}`, 'Client-Id': TWITCH_CLIENT_ID } : {};
+                    const response = await fetch(url, { headers });
+                    if (!response.ok) throw new Error('Channel status unavailable');
+                    if (channel.platform === 'ok') {
+                        const html = await response.text();
+                        status = html.includes('status:"online"') || html.includes('"status":"online"') ? 'live' : 'not-live';
+                    } else {
+                        const data = await response.json();
+                        const live = channel.platform === 'kick' ? data.livestream?.is_live === true : data.data?.length > 0;
+                        status = live ? 'live' : 'not-live';
+                    }
                 }
             } catch(e) {
-                channelStatuses[channel.id] = 'unknown';
+                status = 'unknown';
             }
-            updateUIForChannel(channel.id);
+            channelStatuses[key] = status;
+            updateUIForChannel(channel);
         }
         
-        function updateUIForChannel(channelId) {
-            updateButtonStatus(channelId);
-            updateMenuButtonStatus(channelId);
-            updateChannelOptionLabel(channelId);
+        function updateUIForChannel(channel) {
+            updateButtonStatus(channel);
+            updateMenuButtonStatus(channel);
+            updateChannelOptionLabel(channel);
         }
         
         function getPlatformUrl(channel) {
@@ -1280,7 +1230,6 @@ textarea:focus {
         }
 
         function fetchAllStatuses() {
-            if (!TWITCH_TOKEN || !TWITCH_CLIENT_ID) return;
             channels.forEach(ch => fetchStatus(ch));
         }
 

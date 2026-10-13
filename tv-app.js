@@ -87,6 +87,7 @@ const PLATFORMS = {
             const resp = await fetch(`https://api.twitch.tv/helix/streams?user_login=${ch.id}`, {
                 headers: { "Authorization": `Bearer ${TWITCH_TOKEN}`, "Client-Id": TWITCH_CLIENT_ID }
             });
+            if (!resp.ok) return 'unknown';
             const data = await resp.json();
             return (data.data && data.data.length > 0) ? 'live' : 'not-live';
         },
@@ -308,8 +309,10 @@ const RENDERERS = {
             if (p.getStreamUrl) {
                 try {
                     streamUrl = await p.getStreamUrl(channel);
+                    if (!video.isConnected) return;
                     if (!streamUrl) throw new Error("無法獲取 m3u8 網址");
                 } catch (e) {
+                    if (!video.isConnected) return;
                     console.warn('[HLS getStreamUrl error]', e);
                     video.replaceWith(buildErrorDiv('⚠️ 直播主已離線'));
                     return; 
@@ -501,17 +504,13 @@ function watchSelectedChannels() {
 
 /* =============== 頻道儲存 / 載入 =============== */
 function saveChannelsToStorage() {
-    let customChannels = channels.filter(ch => !ch._fromAPI && !ch._fromTxt);
-    customChannels = customChannels.map(ch => {
-        const { _fromAPI, _fromTxt, ...cleanCh } = ch;
-        return cleanCh;
-    });
-    localStorage.setItem("customChannels1", JSON.stringify(customChannels));
+    ChannelList.saveCustomChannels(localStorage, channels);
 }
 
 async function loadTwitchCredentials() {
     try {
-        const resp = await fetch('https://chicktv.github.io/tv/token.txt');
+        const resp = await fetch('./token.txt', { cache: 'no-store' });
+        if (!resp.ok) return;
         const data = await resp.text();
         const lines = data.split('\n').map(l => l.trim());
         if (lines.length >= 2) {
@@ -523,75 +522,9 @@ async function loadTwitchCredentials() {
 
 /* ★ 修改版：可接收外部已抓好的 ch1.txt 內容，避免重複 fetch */
 async function loadChannelsFromUrl(providedTxtRaw) {
-    let txtChannels = [], apiChannelsTemp = [];
-
-    try {
-        let data;
-        if (typeof providedTxtRaw === 'string') {
-            // 外部已經抓好傳進來（輪詢用）
-            data = providedTxtRaw;
-        } else {
-            // 首次載入：加時間戳 + no-store 避免拿到舊快取
-            const resp = await fetch(
-                `https://chicktv.github.io/tv/ch1.txt?t=${Date.now()}`,
-                { cache: 'no-store' }
-            );
-            if (resp.ok) data = await resp.text();
-        }
-
-        if (typeof data === 'string') {
-            _lastCh1TxtRaw = data;   // ★ 記錄這次內容
-            txtChannels = data.split('\n').filter(l => l.trim()).map(line => {
-                const parts = line.split(',').map(p => p.trim());
-                if (parts.length === 3) {
-                    return { name: parts[0], id: parts[1], platform: parts[2].toLowerCase(), _fromTxt: true };
-                }
-                if (parts.length >= 4) {
-                    return {
-                        name: parts[0],
-                        id: parts[1],
-                        platform: parts[2].toLowerCase(),
-                        ggUsername: parts[3] || undefined,
-                        _fromTxt: true
-                    };
-                }
-                return null;
-            }).filter(Boolean);
-        }
-    } catch (e) {}
-
-    try {
-        // ★ 透過代理池輪詢
-        const resp = await fetchViaProxy(
-            'https://live.sk-knower.com/skgamerversion_api.php?page=whitewing918',
-            'quest'
-        );
-        const data = await resp.json();
-        if (data.channels) {
-            apiChannelsTemp = data.channels.map(item => {
-                const platform = resolvePlatform(item.platform);
-                if (!platform) return null;
-                return {
-                    name: (item.displayname || item.details || "Unknown").trim(),
-                    id: String(item.details).trim(),
-                    platform,
-                    _fromAPI: true
-                };
-            }).filter(Boolean);
-        }
-    } catch (e) {}
-
-    const stored = JSON.parse(localStorage.getItem("customChannels1") || "[]");
-    let allRaw = [...apiChannelsTemp, ...txtChannels, ...stored];
-
-    const seen = new Map();
-    for (const ch of allRaw) {
-        const key = `${(ch.name || "").trim().toLowerCase()}|${(ch.platform || "").toLowerCase()}`;
-        if (!seen.has(key)) seen.set(key, ch);
-        else if (ch._fromAPI && !seen.get(key)._fromAPI) seen.set(key, ch);
-    }
-    channels = Array.from(seen.values());
-    saveChannelsToStorage();
+    const loaded = await ChannelList.loadChannels(localStorage, fetch, providedTxtRaw);
+    channels = loaded.channels;
+    if (loaded.raw !== null) _lastCh1TxtRaw = loaded.raw;
     generateButtons();
 }
 
@@ -599,21 +532,16 @@ async function loadChannelsFromUrl(providedTxtRaw) {
 async function pollCh1TxtForUpdates() {
     try {
         const resp = await fetch(
-            `https://chicktv.github.io/tv/ch1.txt?t=${Date.now()}`,
+            `./ch1.txt?t=${Date.now()}`,
             { cache: 'no-store' }
         );
         if (!resp.ok) return;
         const raw = await resp.text();
 
-        // 首次輪詢：只記錄，不做事（避免剛載入就被判定成「變化」）
-        if (_lastCh1TxtRaw === null) { _lastCh1TxtRaw = raw; return; }
-
         // 內容沒變 → 直接結束
         if (raw === _lastCh1TxtRaw) return;
 
         console.log('[ch1.txt] 偵測到更新，重新載入頻道');
-        _lastCh1TxtRaw = raw;
-
         // 重新載入（保留目前播放中的影片，不會被中斷）
         await loadChannelsFromUrl(raw);
 
@@ -730,7 +658,9 @@ async function fetchStatus(channel) {
 
     let status = 'unknown';
     try {
-        status = p.status ? await p.status(channel) : 'unknown';
+        if (channel.platform !== 'twitch' || (TWITCH_TOKEN && TWITCH_CLIENT_ID)) {
+            status = p.status ? await p.status(channel) : 'unknown';
+        }
         if (!['live', 'not-live', 'unknown', 'unknown2'].includes(status)) status = 'unknown';
     } catch (e) {
         console.warn(`[status error] ${channel.platform}/${channel.id}`, e);
@@ -741,7 +671,7 @@ async function fetchStatus(channel) {
 }
 
 function fetchAllStatuses() {
-    if (TWITCH_TOKEN && TWITCH_CLIENT_ID) channels.forEach(ch => fetchStatus(ch));
+    channels.forEach(ch => fetchStatus(ch));
 }
 
 function generateChannelOptions() {
@@ -897,6 +827,7 @@ function confirmDeleteChannels() {
     selected.forEach(cb => {
         toDelete.push({ name: cb.dataset.name, id: cb.dataset.id, platform: cb.dataset.platform });
     });
+    toDelete.forEach(channel => ChannelList.forgetChannel(localStorage, channel));
     const newChannels = channels.filter(ch =>
         !toDelete.some(del => del.name === ch.name && del.id === ch.id && del.platform === ch.platform)
     );
@@ -1139,7 +1070,9 @@ document.getElementById('confirmAddChannel').onclick = async () => {
         }
     }
 
-    channels.push({ name, id, platform, ...extra });
+    const newChannel = { name, id, platform, ...extra };
+    ChannelList.restoreChannel(localStorage, newChannel);
+    channels = ChannelList.mergeChannels([newChannel], channels);
     saveChannelsToStorage();
     generateButtons();
     document.getElementById('addChannelModal').classList.remove('active');
