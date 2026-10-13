@@ -33,12 +33,12 @@ function getNextGoshProxy() {
     return proxy;
 }
  
-function fetchViaProxy(targetUrl, mode = 'quest') {
+function fetchViaProxy(targetUrl, mode = 'quest', signal) {
     const proxy = getNextProxy();
     const url = (mode === 'quest')
         ? `${proxy}/?quest=${encodeURIComponent(targetUrl)}`
         : `${proxy}/${targetUrl}`;
-    return fetch(url);
+    return fetch(url, { signal });
 }
 
 /* =====================================================================================
@@ -83,11 +83,11 @@ const PLATFORMS = {
         type: 'iframe',
         buildUrl: (ch, muted) =>
             `https://player.twitch.tv/?channel=${ch.id}&parent=${encodeURIComponent(parent)}&muted=${muted}`,
-        status: async (ch) => {
+        status: async (ch, signal) => {
             const resp = await fetch(`https://api.twitch.tv/helix/streams?user_login=${ch.id}`, {
-                headers: { "Authorization": `Bearer ${TWITCH_TOKEN}`, "Client-Id": TWITCH_CLIENT_ID }
+                headers: { "Authorization": `Bearer ${TWITCH_TOKEN}`, "Client-Id": TWITCH_CLIENT_ID }, signal
             });
-            if (!resp.ok) return 'unknown';
+            if (!resp.ok) throw new Error('Twitch status unavailable');
             const data = await resp.json();
             return (data.data && data.data.length > 0) ? 'live' : 'not-live';
         },
@@ -100,8 +100,8 @@ const PLATFORMS = {
         type: 'scaledIframe',
         buildUrl: (ch, muted) => `https://player.kick.com/${ch.id}?muted=${muted}&autoplay=true`,
         aliases: ['vl'],
-        status: async (ch) => {
-            const resp = await fetch(`https://kick.com/api/v2/channels/${ch.id}`);
+        status: async (ch, signal) => {
+            const resp = await fetch(`https://kick.com/api/v2/channels/${ch.id}`, { signal });
             const data = await resp.json();
             return (data.livestream && data.livestream.is_live === true) ? 'live' : 'not-live';
         },
@@ -115,16 +115,14 @@ const PLATFORMS = {
         buildUrl: (ch, muted) =>
             `https://ok.ru/videoembed/${ch.id}?nochat=1&autoplay=1${muted ? '&muted=1' : ''}`,
         aliases: ['okru'],
-        status: async (ch) => {
+        status: async (ch, signal) => {
             // ★ 透過代理池輪詢
-            const resp = await fetchViaProxy(`https://ok.ru/videoembed/${ch.id}`, 'raw');
+            const resp = await fetchViaProxy(`https://ok.ru/videoembed/${ch.id}`, 'raw', signal);
             const html = await resp.text();
-            console.log(`[OK Check Raw Text]`, JSON.stringify(html));
             const upperText = html.toUpperCase();
             const isOkLive = upperText.includes('STATUS:"ONLINE"') ||
                              upperText.includes('"STATUS":"ONLINE"') ||
                              /\bLIVE\b/.test(upperText);
-            console.log(`[OK Check Final Result] ${ch.id}:`, isOkLive ? 'live' : 'not-live');
             return isOkLive ? 'live' : 'not-live';
         },
         idPlaceholder: 'OK.ru 影片 ID (例: 10268974521971)'
@@ -136,8 +134,8 @@ const PLATFORMS = {
         type: 'iframe',
         buildUrl: (ch, muted) =>
             `https://player.angelthump.com/?channel=${ch.id}${muted ? '&muted=true' : ''}`,
-        status: async (ch) => {
-            const resp = await fetch(`https://api.angelthump.com/v2/streams/${ch.id}`);
+        status: async (ch, signal) => {
+            const resp = await fetch(`https://api.angelthump.com/v2/streams/${ch.id}`, { signal });
             if (!resp.ok) return 'not-live';
             const data = await resp.json();
             return data.type === 'live' ? 'live' : 'not-live';
@@ -175,8 +173,8 @@ const PLATFORMS = {
         icon: 'Ⓑ',
         type: 'iframe',
         buildUrl: (ch) => ch.id,
-        status: async (ch) => {
-            const resp = await fetch(`https://r.jina.ai/${ch.id}`);
+        status: async (ch, signal) => {
+            const resp = await fetch(`https://r.jina.ai/${ch.id}`, { signal });
             const text = await resp.text();
             if (text.includes("Channel is offline")) return 'not-live';
             if (text.includes("Live")) return 'live';
@@ -193,9 +191,9 @@ const PLATFORMS = {
             const originalUrl = `https://stream-cdn-iad3.vaughnsoft.net/play/live_${ch.id}.flv`;
             return `https://cold-frost-3328.chicktv02.workers.dev/?url=${encodeURIComponent(originalUrl)}`;
         },
-        status: async (ch) => {
+        status: async (ch, signal) => {
             // ★ 透過代理池輪詢
-            const resp = await fetchViaProxy(`https://api.vaughnsoft.net/v1/stream/vl/${ch.id}`, 'quest');
+            const resp = await fetchViaProxy(`https://api.vaughnsoft.net/v1/stream/vl/${ch.id}`, 'quest', signal);
             if (!resp.ok) return 'not-live';
             const data = await resp.json();
             return data.live === true ? 'live' : 'not-live';
@@ -209,19 +207,15 @@ const PLATFORMS = {
     type: 'hls',
     status: async (ch) => {
         try {
-            const proxy = getNextGoshProxy();   // ★ 輪詢
-            const resp = await fetch(`${proxy}/?channelId=${ch.id}`);
-            const data = await resp.json();
+            const data = await getGoshMetadata(ch);
             return data.isLive === true ? 'live' : 'not-live';
         } catch (e) {
             console.warn('[Gosh status error]', e);
-            return 'unknown';
+            throw e;
         }
     },
     getStreamUrl: async (ch) => {
-        const proxy = getNextGoshProxy();       // ★ 輪詢
-        const resp = await fetch(`${proxy}/?channelId=${ch.id}`);
-        const data = await resp.json();
+        const data = await getGoshMetadata(ch);
         return data.m3u8Url;
     },
     idPlaceholder: 'Gosh 頻道 ID (例: meidingdang0)'
@@ -233,20 +227,20 @@ const PLATFORMS = {
         type: 'iframe',
         buildUrl: (ch, muted) =>
             `https://goodgame.ru/player?${ch.id}${muted ? '&muted=1' : ''}`,
-        status: async (ch) => {
+        status: async (ch, signal) => {
             try {
                 const username = ch.ggUsername || ch.id;
                 const api = `https://goodgame.ru/api/4/users/${encodeURIComponent(username)}/stream`;
                 // ★ 透過代理池輪詢
-                const resp = await fetchViaProxy(api, 'quest');
-                if (!resp.ok) return 'not-live';
+                const resp = await fetchViaProxy(api, 'quest', signal);
+                if (!resp.ok) throw new Error('GoodGame status unavailable');
                 const data = await resp.json();
                 if (!data || !data.id) return 'not-live';
                 if (data.status === true || data.online === true) return 'live';
                 return 'not-live';
             } catch (e) {
                 console.warn('[GoodGame status error]', e);
-                return 'unknown';
+                throw e;
             }
         },
         idPlaceholder: 'GoodGame 頻道名 (例: Pomi)',
@@ -300,21 +294,27 @@ const RENDERERS = {
         video.autoplay = true;
         video.muted = muted;
         video.playsInline = true;
+        const resource = { video, element: video, disposed: false, failed: false, hls: null, flv: null };
+        playerResources.set(video, resource);
+        video.addEventListener('error', () => {
+            if (!resource.disposed) { resource.failed = true; video.pause(); }
+        });
 
         // 建立一個非同步函式來處理具有時效性的動態網址
         const initPlayer = async () => {
+            if (resource.disposed || !video.isConnected) return;
             let streamUrl = channel.id; // 預設使用頻道 ID 作為網址（相容舊有 m3u8 平台）
             
             // 如果該平台有定義 getStreamUrl (例如 gosh)，就動態獲取最新的網址
             if (p.getStreamUrl) {
                 try {
                     streamUrl = await p.getStreamUrl(channel);
-                    if (!video.isConnected) return;
+                    if (resource.disposed || !video.isConnected) return;
                     if (!streamUrl) throw new Error("無法獲取 m3u8 網址");
                 } catch (e) {
-                    if (!video.isConnected) return;
+                    if (resource.disposed || !video.isConnected) return;
                     console.warn('[HLS getStreamUrl error]', e);
-                    video.replaceWith(buildErrorDiv('⚠️ 直播主已離線'));
+                    replacePlayerWithError(resource, '⚠️ 直播主已離線');
                     return; 
                 }
             }
@@ -322,19 +322,30 @@ const RENDERERS = {
             // 網址取得後，才開始初始化 hls.js 或原生播放
             if (Hls.isSupported()) {
                 const hls = new Hls(HLS_CONFIG);
+                resource.hls = hls;
                 hls.loadSource(streamUrl);
                 hls.attachMedia(video);
-                hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    if (!resource.disposed) video.play().catch(() => {});
+                });
+                hls.on(Hls.Events.ERROR, (event, data) => {
+                    if (data && data.fatal && !resource.disposed && resource.hls === hls) {
+                        replacePlayerWithError(resource, '⚠️ 無法播放直播，請再試一次');
+                        currentHLSInstances = currentHLSInstances.filter(instance => instance !== hls);
+                        resource.hls = null;
+                        try { hls.destroy(); } catch (error) {}
+                    }
+                });
                 currentHLSInstances.push(hls);
             } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
                 video.src = streamUrl;
             } else {
-                video.replaceWith(buildErrorDiv('⚠️ 瀏覽器不支援 HLS'));
+                replacePlayerWithError(resource, '⚠️ 瀏覽器不支援 HLS');
             }
         };
 
         // 呼叫執行
-        initPlayer();
+        queueMicrotask(initPlayer);
         return video;
     },
 
@@ -348,11 +359,27 @@ const RENDERERS = {
         video.autoplay = true;
         video.muted = muted;
         video.playsInline = true;
+        const resource = { video, element: video, disposed: false, failed: false, hls: null, flv: null };
+        playerResources.set(video, resource);
+        video.addEventListener('error', () => {
+            if (!resource.disposed) { resource.failed = true; video.pause(); }
+        });
         const flvPlayer = flvjs.createPlayer({
             type: 'flv',
             url: p.buildUrl(channel, muted),
             isLive: true,
             cors: true
+        });
+        resource.flv = flvPlayer;
+        flvPlayer.on(flvjs.Events.ERROR, () => {
+            if (resource.disposed || resource.flv !== flvPlayer) return;
+            replacePlayerWithError(resource, '⚠️ 無法播放直播，請再試一次');
+            resource.flv = null;
+            currentFLVInstances = currentFLVInstances.filter(instance => instance !== flvPlayer);
+            for (const method of ['pause', 'unload', 'detachMediaElement', 'destroy']) {
+                try { flvPlayer[method](); } catch (error) {}
+            }
+            try { video.pause(); video.removeAttribute('src'); video.load(); } catch (error) {}
         });
         flvPlayer.attachMediaElement(video);
         flvPlayer.load();
@@ -377,6 +404,10 @@ let channelStatuses = {};
 let currentHLSInstances = [];
 let currentFLVInstances = [];
 let currentDisplayChannel = null;
+const activePlayers = new Map();
+const playerResources = new WeakMap();
+const statusScheduler = StreamPerformance.createStatusScheduler({ maxConcurrent: 4, cacheMs: 30000 });
+const goshMetadataRequests = StreamPerformance.createInFlightCoalescer();
 const parent = location.hostname || "localhost";
 
 /* ★ 記錄上一次 ch1.txt 的原始內容，用來偵測是否有更新 */
@@ -388,6 +419,25 @@ const HLS_CONFIG = {
     maxBufferLength: 15,
     maxMaxBufferLength: 30
 };
+
+function getGoshMetadata(channel) {
+    return goshMetadataRequests.run(channel.id, () => StreamPerformance.withRequestTimeout(async signal => {
+        const proxy = getNextGoshProxy();
+        const response = await fetch(`${proxy}/?channelId=${encodeURIComponent(channel.id)}`, { signal });
+        if (!response.ok) throw new Error('Gosh channel unavailable');
+        return response.json();
+    }));
+}
+
+function replacePlayerWithError(resource, message) {
+    if (resource.disposed || resource.errorShown || !resource.element.isConnected) return;
+    const error = buildErrorDiv(message);
+    error.style.order = resource.element.style.order;
+    resource.element.replaceWith(error);
+    resource.element = error;
+    resource.failed = true;
+    resource.errorShown = true;
+}
 
 /* ======================== 平台工具函式 ======================== */
 function getPlatform(key) {
@@ -416,26 +466,38 @@ function resolvePlatform(raw) {
 }
 
 /* ------------------------ 核心播放銷毀 ------------------------ */
-function destroyAllHLSInstances() {
-    if (currentHLSInstances.length) {
-        currentHLSInstances.forEach(instance => {
-            if (instance && typeof instance.destroy === 'function') instance.destroy();
-        });
-        currentHLSInstances = [];
-    }
-    if (currentFLVInstances.length) {
-        currentFLVInstances.forEach(instance => {
-            if (instance) {
-                try {
-                    instance.pause();
-                    instance.unload();
-                    instance.detachMediaElement();
-                    instance.destroy();
-                } catch (e) { console.warn(e); }
+function disposePlayer(entry) {
+    const resource = entry.resource;
+    const element = resource ? resource.element : entry.element;
+    if (resource) {
+        resource.disposed = true;
+        try { resource.video.pause(); } catch (error) {}
+        if (resource.hls) {
+            const hls = resource.hls;
+            resource.hls = null;
+            currentHLSInstances = currentHLSInstances.filter(instance => instance !== hls);
+            try { hls.destroy(); } catch (error) {}
+        }
+        if (resource.flv) {
+            const flv = resource.flv;
+            resource.flv = null;
+            for (const method of ['pause', 'unload', 'detachMediaElement', 'destroy']) {
+                try { flv[method](); } catch (error) {}
             }
-        });
-        currentFLVInstances = [];
+            currentFLVInstances = currentFLVInstances.filter(instance => instance !== flv);
+        }
+        try { resource.video.removeAttribute('src'); resource.video.load(); } catch (error) {}
     }
+    element.remove();
+}
+
+function destroyAllHLSInstances() {
+    activePlayers.forEach(disposePlayer);
+    activePlayers.clear();
+    currentHLSInstances.forEach(instance => { try { instance.destroy(); } catch (error) {} });
+    currentFLVInstances.forEach(instance => { try { instance.destroy(); } catch (error) {} });
+    currentHLSInstances = [];
+    currentFLVInstances = [];
 }
 
 function renderChannelElement(channel, muted, wrapperClass) {
@@ -446,33 +508,73 @@ function renderChannelElement(channel, muted, wrapperClass) {
 }
 
 /* ------------------------ 單台觀看 ------------------------ */
-function displaySingleChannel(channel) {
+function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     const container = document.getElementById("multi-stream-container");
     if (!container) return;
-    destroyAllHLSInstances();
-    container.innerHTML = "";
-    container.style.gridTemplateColumns = "1fr";
-    container.style.gridTemplateRows = "1fr";
-
-    if (!channel) {
-        container.innerHTML = `<div style="color:var(--label-2); text-align:center; padding:2rem;">未選擇頻道</div>`;
-        currentDisplayChannel = null;
+    const selected = ChannelList.mergeChannels(requested);
+    const desired = new Set(selected.map(ChannelList.channelKey));
+    for (const [key, entry] of activePlayers) {
+        if (!desired.has(key)) { disposePlayer(entry); activePlayers.delete(key); }
+    }
+    // Remove the initial placeholder without disconnecting retained players.
+    const retained = new Set(Array.from(activePlayers.values(), entry => entry.resource ? entry.resource.element : entry.element));
+    for (const child of Array.from(container.children)) {
+        if (!retained.has(child)) child.remove();
+    }
+    const count = selected.length;
+    const muted = count > 1;
+    const cols = Math.max(1, Math.ceil(Math.sqrt(count)));
+    const rows = Math.max(1, Math.ceil(count / cols));
+    container.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+    container.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+    currentDisplayChannel = count === 1 ? selected[0] : null;
+    if (!count) {
+        container.innerHTML = `<div style="color:var(--label-2); text-align:center; padding:2rem;">${emptyMessage}</div>`;
         return;
     }
-    currentDisplayChannel = channel;
-    const el = renderChannelElement(channel, false, "full-screen-video");
-    container.appendChild(el);
+    selected.forEach((channel, index) => {
+        const key = ChannelList.channelKey(channel);
+        let entry = activePlayers.get(key);
+        const nativePlayer = entry && entry.resource;
+        const element = entry && (nativePlayer ? nativePlayer.element : entry.element);
+        const reusable = entry && element.isConnected && !entry.failed && !(nativePlayer && nativePlayer.failed) && (nativePlayer || entry.muted === muted);
+        if (!reusable) {
+            if (entry) disposePlayer(entry);
+            const rendered = renderChannelElement(channel, muted, count === 1 ? 'full-screen-video' : 'video');
+            const resource = playerResources.get(rendered);
+            const type = getPlatform(channel.platform)?.type;
+            entry = { channel, element: rendered, resource, muted, failed: !resource && (type === 'hls' || type === 'flv') };
+            activePlayers.set(key, entry);
+            container.appendChild(rendered);
+        } else {
+            // Preserve manual mute, volume and pause changes within the same mode.
+            if (entry.resource && entry.muted !== muted) entry.resource.video.muted = muted;
+            entry.muted = muted;
+            entry.channel = channel;
+        }
+        const visible = entry.resource ? entry.resource.element : entry.element;
+        visible.classList.toggle('full-screen-video', count === 1);
+        visible.classList.toggle('video', count > 1);
+        // Moving an iframe in the DOM can restart it; CSS order keeps it connected.
+        visible.style.order = String(index);
+    });
+}
+
+function pruneActivePlayers() {
+    if (!activePlayers.size) return;
+    const available = new Map(channels.map(channel => [ChannelList.channelKey(channel), channel]));
+    const remaining = Array.from(activePlayers, ([key, entry]) => available.get(key)).filter(Boolean);
+    if (remaining.length !== activePlayers.size) syncActivePlayers(remaining);
+}
+
+function displaySingleChannel(channel) {
+    syncActivePlayers(channel ? [channel] : []);
 }
 
 /* ------------------------ 多台觀看 ------------------------ */
 function watchSelectedChannels() {
     const selectionDiv = document.getElementById("channel-selection");
     if (selectionDiv) selectionDiv.style.display = "none";
-    const container = document.getElementById("multi-stream-container");
-    if (!container) return;
-    destroyAllHLSInstances();
-    container.innerHTML = "";
-
     const checkboxes = document.querySelectorAll("#channel-options input:checked");
     const selected = Array.from(checkboxes).map(cb => ({
         id: cb.value, platform: cb.dataset.platform, name: cb.dataset.name || ""
@@ -481,25 +583,7 @@ function watchSelectedChannels() {
         .map(sel => channels.find(ch => ch.id === sel.id && ch.platform === sel.platform))
         .filter(Boolean);
 
-    if (fullSelected.length === 0) {
-        container.innerHTML = `<div style="color:var(--label-2); text-align:center; padding:2rem;">未選擇任何頻道</div>`;
-        return;
-    }
-
-    const isMuted = fullSelected.length > 1;
-    const isOnlyOne = fullSelected.length === 1;
-    const count = fullSelected.length;
-    const cols = Math.ceil(Math.sqrt(count));
-    const rows = Math.ceil(count / cols);
-    container.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-    container.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
-
-    const frag = document.createDocumentFragment();
-    fullSelected.forEach(ch => {
-        const wrapperClass = isOnlyOne ? "full-screen-video" : "video";
-        frag.appendChild(renderChannelElement(ch, isMuted, wrapperClass));
-    });
-    container.appendChild(frag);
+    syncActivePlayers(fullSelected, '未選擇任何頻道');
 }
 
 /* =============== 頻道儲存 / 載入 =============== */
@@ -524,6 +608,7 @@ async function loadTwitchCredentials() {
 async function loadChannelsFromUrl(providedTxtRaw) {
     const loaded = await ChannelList.loadChannels(localStorage, fetch, providedTxtRaw);
     channels = loaded.channels;
+    pruneActivePlayers();
     if (loaded.raw !== null) _lastCh1TxtRaw = loaded.raw;
     generateButtons();
 }
@@ -650,28 +735,34 @@ function updateUIForChannel(channel) {
     updateChannelOptionLabel(channel);
 }
 
-async function fetchStatus(channel) {
+async function fetchStatus(channel, { force = false } = {}) {
     if (!channel || !channel.id) return;
     const statusKey = `${channel.platform}_${channel.id}`;
     const p = getPlatform(channel.platform);
     if (!p) return;
 
-    let status = 'unknown';
+    let status;
     try {
-        if (channel.platform !== 'twitch' || (TWITCH_TOKEN && TWITCH_CLIENT_ID)) {
-            status = p.status ? await p.status(channel) : 'unknown';
-        }
-        if (!['live', 'not-live', 'unknown', 'unknown2'].includes(status)) status = 'unknown';
+        status = await statusScheduler.run(statusKey, async signal => {
+            let value = 'unknown';
+            if (channel.platform !== 'twitch' || (TWITCH_TOKEN && TWITCH_CLIENT_ID)) {
+                value = p.status ? await p.status(channel, signal) : 'unknown';
+            }
+            return ['live', 'not-live', 'unknown', 'unknown2'].includes(value) ? value : 'unknown';
+        }, { force });
     } catch (e) {
         console.warn(`[status error] ${channel.platform}/${channel.id}`, e);
         status = 'unknown';
     }
-    channelStatuses[statusKey] = status;
-    updateUIForChannel(channel);
+    if (channelStatuses[statusKey] !== status) {
+        channelStatuses[statusKey] = status;
+        updateUIForChannel(channel);
+    }
+    return status;
 }
 
-function fetchAllStatuses() {
-    channels.forEach(ch => fetchStatus(ch));
+function fetchAllStatuses(options) {
+    return Promise.all(channels.map(ch => fetchStatus(ch, options)));
 }
 
 function generateChannelOptions() {
@@ -692,6 +783,7 @@ function generateChannelOptions() {
                    value="${escapeHtml(ch.id)}"
                    data-platform="${ch.platform}"
                    data-name="${escapeHtml(ch.name)}"
+                   ${activePlayers.has(ChannelList.channelKey(ch)) ? 'checked' : ''}
                    id="chk_${idSafe}">
             <label class="channel-option-label"
                    id="status-label-${idSafe}"
@@ -833,6 +925,7 @@ function confirmDeleteChannels() {
     );
     if (newChannels.length === channels.length) return;
     channels = newChannels;
+    pruneActivePlayers();
     saveChannelsToStorage();
     generateButtons();
 
@@ -845,7 +938,6 @@ function confirmDeleteChannels() {
         toggleChannelMenu();
         setTimeout(() => toggleChannelMenu(), 100);
     }
-    fetchAllStatuses();
     closeDeleteModal();
 }
 window.editClick = function () { openDeleteModal(); };
@@ -856,7 +948,6 @@ function showPopup() {
 
 /* 隱藏離線開關 */
 (function initHideNotLiveToggle() {
-    fetchAllStatuses();
     const toggle = document.getElementById('toggleNotLive');
     let styleEl = null;
     function apply(shouldHide) {
@@ -1076,7 +1167,6 @@ document.getElementById('confirmAddChannel').onclick = async () => {
     saveChannelsToStorage();
     generateButtons();
     document.getElementById('addChannelModal').classList.remove('active');
-    fetchAllStatuses();
 };
 document.getElementById('cancelAddChannel').onclick = () =>
     document.getElementById('addChannelModal').classList.remove('active');
@@ -1098,7 +1188,7 @@ async function initializeTvApp() {
     await loadChannelsFromUrl();
 
     // 狀態檢查：原本的 5 分鐘
-    setInterval(fetchAllStatuses, 300000);
+    setInterval(() => fetchAllStatuses({ force: true }), 300000);
 
     // ★ ch1.txt 內容偵測：每 60 秒一次（可自行調整）
     setInterval(pollCh1TxtForUpdates, 1080000);
@@ -1109,3 +1199,6 @@ async function initializeTvApp() {
 }
 
 window.tvAppReady = initializeTvApp();
+window.addEventListener('pagehide', event => {
+    if (!event.persisted) destroyAllHLSInstances();
+});

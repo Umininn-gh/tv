@@ -72,6 +72,7 @@
             needsReload = true;
             await loadScript('./jquery-3.6.0.min.js', 'module');
             await loadScript('./channel-list.js');
+            await loadScript('./stream-performance.js');
             await loadScript('./tv-app.js');
             if (!window.tvAppReady || typeof window.tvAppReady.then !== 'function') {
                 throw new Error('TV application did not initialize');

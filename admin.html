@@ -8,6 +8,7 @@
     <!-- HLS.js 播放 M3U8 串流 -->
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script src="./channel-list.js"></script>
+    <script src="./stream-performance.js"></script>
 		<script type="module" src="jquery-3.6.0.min.js"></script>
     <style>
         * {
@@ -732,7 +733,11 @@ textarea:focus {
         let TWITCH_CLIENT_ID = "";
         let channels = [];               // 儲存所有頻道物件
         let channelStatuses = {};       // 記錄每個頻道的直播狀態
-        let currentHLSInstances = [];   // 存放 HLS.js 實例便於銷毀
+        const adminPlayers = new Map();
+        const adminStatusScheduler = StreamPerformance.createStatusScheduler({ maxConcurrent: 4, cacheMs: 30000 });
+        const adminGoshRequests = StreamPerformance.createInFlightCoalescer();
+        let adminPlayersMounted = false;
+        let adminEmptyMessage = null;
 
         function channelStatusKey(channel) {
             return ChannelList.channelKey(channel);
@@ -742,190 +747,199 @@ textarea:focus {
             return channelStatusKey(channel).replace(/[^a-zA-Z0-9]/g, '_');
         }
 
-        async function fetchGoshChannel(channel) {
-            const proxies = ['https://gosh.chicktv02.workers.dev', 'https://dry-wildflower-371d.forgosh.workers.dev'];
-            for (const proxy of proxies) {
-                try {
-                    const response = await fetch(`${proxy}/?channelId=${encodeURIComponent(channel.id)}`);
-                    if (!response.ok) continue;
-                    const data = await response.json();
-                    if (data && typeof data.isLive === 'boolean') return data;
-                } catch (error) {}
-            }
-            throw new Error('Unable to load Gosh channel');
+        function fetchGoshChannel(channel) {
+            return adminGoshRequests.run(channelStatusKey(channel), () => StreamPerformance.withRequestTimeout(async signal => {
+                const proxies = ['https://gosh.chicktv02.workers.dev', 'https://dry-wildflower-371d.forgosh.workers.dev'];
+                for (const proxy of proxies) {
+                    try {
+                        const response = await fetch(proxy + '/?channelId=' + encodeURIComponent(channel.id), { signal });
+                        if (!response.ok) continue;
+                        const data = await response.json();
+                        if (data && typeof data.isLive === 'boolean') return data;
+                    } catch (error) {
+                        if (signal.aborted) throw error;
+                    }
+                }
+                throw new Error('Unable to load Gosh channel');
+            }));
         }
 
-        async function attachHlsVideo(videoElem, channel) {
+        function releaseAdminMedia(player) {
+            const hls = player.hls;
+            player.hls = null;
+            if (hls) {
+                try { hls.destroy(); } catch (error) { console.warn(error); }
+            }
+            const video = player.video;
+            player.video = null;
+            if (video) {
+                try { video.pause(); } catch (error) {}
+                try { video.removeAttribute('src'); } catch (error) {}
+                try { video.load(); } catch (error) {}
+            }
+        }
+
+        function showAdminPlayerError(player) {
+            if (player.disposed || player.failed || !player.element.isConnected) return;
+            player.failed = true;
+            releaseAdminMedia(player);
+            const message = document.createElement('div');
+            message.style.cssText = 'color:#aaa;text-align:center;padding:2rem';
+            message.textContent = '目前未有可播放的直播訊號';
+            player.element.replaceChildren(message);
+        }
+
+        async function attachHlsVideo(videoElem, channel, player) {
             try {
                 const source = channel.platform === 'gosh' ? (await fetchGoshChannel(channel)).m3u8Url : channel.id;
-                if (!videoElem.isConnected) return;
+                if (player.disposed || player.failed || !videoElem.isConnected) return;
                 if (typeof source !== 'string' || !/^https?:\/\//i.test(source)) throw new Error('No active HLS stream');
                 if (Hls.isSupported()) {
                     const hls = new Hls({ enableWorker: true, autoStartLoad: true });
+                    player.hls = hls;
+                    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                        if (!player.disposed && !player.failed && videoElem.isConnected) videoElem.play().catch(() => {});
+                    });
+                    if (Hls.Events.ERROR) hls.on(Hls.Events.ERROR, (_event, data) => {
+                        if (data && data.fatal) showAdminPlayerError(player);
+                    });
                     hls.loadSource(source);
                     hls.attachMedia(videoElem);
-                    hls.on(Hls.Events.MANIFEST_PARSED, () => videoElem.play().catch(() => {}));
-                    currentHLSInstances.push(hls);
                 } else if (videoElem.canPlayType('application/vnd.apple.mpegurl')) {
                     videoElem.src = source;
                 } else {
                     throw new Error('HLS unavailable');
                 }
             } catch (error) {
-                if (!videoElem.isConnected) return;
-                const message = document.createElement('div');
-                message.style.cssText = 'color:#aaa;text-align:center;padding:2rem';
-                message.textContent = '目前未有可播放的直播訊號';
-                videoElem.replaceWith(message);
+                if (!player.disposed && videoElem.isConnected) showAdminPlayerError(player);
             }
+        }
+
+        function disposeAdminPlayer(player) {
+            if (!player || player.disposed) return;
+            player.disposed = true;
+            releaseAdminMedia(player);
+            if (player.iframe) {
+                try { player.iframe.src = 'about:blank'; } catch (error) {}
+            }
+            player.element.remove();
         }
 
         // ======================== HLS 清理函式 ========================
         function destroyAllHLSInstances() {
-            if (currentHLSInstances.length) {
-                currentHLSInstances.forEach(instance => {
-                    if (instance && typeof instance.destroy === 'function') instance.destroy();
-                });
-                currentHLSInstances = [];
+            adminPlayers.forEach(disposeAdminPlayer);
+            adminPlayers.clear();
+        }
+
+        function createAdminPlayer(channel) {
+            const element = document.createElement('div');
+            const player = { key: channelStatusKey(channel), channel, element, video: null, iframe: null, hls: null, disposed: false, failed: false };
+            if (channel.platform === 'm3u8' || channel.platform === 'gosh') {
+                const video = document.createElement('video');
+                video.className = 'hls-video-element';
+                video.controls = true;
+                video.autoplay = true;
+                video.muted = false;
+                video.playsInline = true;
+                video.style.width = '100%';
+                video.style.height = '100%';
+                video.addEventListener('error', () => showAdminPlayerError(player));
+                element.appendChild(video);
+                player.video = video;
+                player.start = () => { void attachHlsVideo(video, channel, player); };
+            } else {
+                const iframe = document.createElement('iframe');
+                iframe.className = 'full-screen-video';
+                if (channel.platform === 'youtube') {
+                    const id = channel.id;
+                    iframe.src = id.startsWith('UC') || id.startsWith('HC') || id.includes('channel')
+                        ? 'https://www.youtube.com/embed/live_stream?channel=' + id + '&autoplay=1&mute=0'
+                        : 'https://www.youtube.com/embed/' + id + '?autoplay=1&mute=0';
+                    iframe.referrerPolicy = 'strict-origin-when-cross-origin';
+                    iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
+                } else {
+                    iframe.src = getStreamUrl(channel);
+                    iframe.allow = 'autoplay';
+                }
+                iframe.allowFullscreen = true;
+                iframe.frameBorder = '0';
+                iframe.addEventListener('error', () => showAdminPlayerError(player));
+                element.appendChild(iframe);
+                player.iframe = iframe;
             }
+            return player;
+        }
+
+        function renderAdminChannels(selected, emptyText) {
+            const container = document.getElementById('multi-stream-container');
+            if (!container) return;
+            const desired = ChannelList.mergeChannels(selected);
+            const desiredKeys = new Set(desired.map(channelStatusKey));
+            if (!adminPlayersMounted) {
+                // The initial public iframe is replaced once; retained players stay connected.
+                container.querySelectorAll('iframe').forEach(iframe => { iframe.src = 'about:blank'; });
+                container.replaceChildren();
+                adminPlayersMounted = true;
+            }
+            if (adminEmptyMessage) {
+                adminEmptyMessage.remove();
+                adminEmptyMessage = null;
+            }
+            for (const [key, player] of adminPlayers) {
+                if (!desiredKeys.has(key) || player.failed || player.disposed || !player.element.isConnected) {
+                    disposeAdminPlayer(player);
+                    adminPlayers.delete(key);
+                }
+            }
+            if (!desired.length) {
+                adminEmptyMessage = document.createElement('div');
+                adminEmptyMessage.style.cssText = 'color:#aaa;text-align:center;padding:2rem';
+                adminEmptyMessage.textContent = emptyText;
+                container.appendChild(adminEmptyMessage);
+                return;
+            }
+            const isOnlyOne = desired.length === 1;
+            desired.forEach((channel, index) => {
+                const key = channelStatusKey(channel);
+                let player = adminPlayers.get(key);
+                if (!player) {
+                    player = createAdminPlayer(channel);
+                    adminPlayers.set(key, player);
+                    container.appendChild(player.element);
+                    if (player.start) player.start();
+                }
+                player.channel = channel;
+                player.element.className = isOnlyOne ? 'full-screen-video' : 'video';
+                player.element.style.width = isOnlyOne ? '100%' : '48%';
+                player.element.style.height = isOnlyOne ? '100%' : '48%';
+                // CSS order updates do not detach iframe browsing contexts.
+                player.element.style.order = String(index);
+            });
         }
 
         // ======================== 單一頻道播放（主畫面）================
         function displaySingleChannel(channel) {
-            const container = document.getElementById("multi-stream-container");
-            if (!container) return;
-            destroyAllHLSInstances();
-            container.innerHTML = "";
-            if (!channel) {
-                container.innerHTML = `<div style="color:#aaa; text-align:center; padding:2rem;">未選擇頻道</div>`;
-                return;
-            }
-            const platform = channel.platform;
-            const idOrUrl = channel.id;
-
-            // M3U8 使用 HLS.js
-            if (platform === "m3u8" || platform === "gosh") {
-                const videoElem = document.createElement("video");
-                videoElem.className = "hls-video-element";
-                videoElem.controls = true;
-                videoElem.autoplay = true;
-                videoElem.muted = false;
-                videoElem.playsInline = true;
-                videoElem.style.width = "100%";
-                videoElem.style.height = "100%";
-                container.appendChild(videoElem);
-                void attachHlsVideo(videoElem, channel);
-            }
-            // YouTube 直播嵌入
-            else if (platform === "youtube") {
-                const iframe = document.createElement("iframe");
-                iframe.className = "full-screen-video";
-                // 判斷是頻道 ID (UC開頭) 或是影片 ID
-                let embedSrc = "";
-                if (idOrUrl.startsWith("UC") || idOrUrl.startsWith("HC") || idOrUrl.includes("channel")) {
-                    embedSrc = `https://www.youtube.com/embed/live_stream?channel=${idOrUrl}&autoplay=1&mute=0`;
-                } else {
-                    embedSrc = `https://www.youtube.com/embed/${idOrUrl}?autoplay=1&mute=0`;
-                }
-                iframe.src = embedSrc;
-                iframe.allowFullscreen = true;
-				iframe.referrerpolicy = "strict-origin-when-cross-origin";
-                iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture";
-                iframe.frameBorder = "0";
-                container.appendChild(iframe);
-            }
-            // 其他平台（Twitch、Kick、OK、AngelThump）使用 iframe
-            else {
-                const iframe = document.createElement("iframe");
-                iframe.className = "full-screen-video";
-                iframe.src = getStreamUrl(channel);
-                iframe.allowFullscreen = true;
-                iframe.allow = "autoplay";
-                iframe.frameBorder = "0";
-                container.appendChild(iframe);
-            }
+            renderAdminChannels(channel ? [channel] : [], '未選擇頻道');
         }
 
         // 取得各平台 iframe 嵌入網址（不包含 M3U8 / YouTube）
         function getStreamUrl(channel) {
-            if (!channel) return "";
-            if (channel.platform === "kick") return `https://player.kick.com/${channel.id}?muted=false&autoplay=true`;
-            if (channel.platform === "twitch") return `https://player.twitch.tv/?channel=${channel.id}&parent=${encodeURIComponent(location.hostname || 'localhost')}`;
-            if (channel.platform === "ok") return `https://ok.ru/videoembed/${channel.id}?nochat=1&autoplay=1`;
-            if (channel.platform === "at") return `https://player.angelthump.com/?channel=${channel.id}`;
-            return "";
+            if (!channel) return '';
+            if (channel.platform === 'kick') return 'https://player.kick.com/' + channel.id + '?muted=false&autoplay=true';
+            if (channel.platform === 'twitch') return 'https://player.twitch.tv/?channel=' + channel.id + '&parent=' + encodeURIComponent(location.hostname || 'localhost');
+            if (channel.platform === 'ok') return 'https://ok.ru/videoembed/' + channel.id + '?nochat=1&autoplay=1';
+            if (channel.platform === 'at') return 'https://player.angelthump.com/?channel=' + channel.id;
+            return '';
         }
 
         // ======================== 看更台（多視窗）=====================
         function watchSelectedChannels() {
-            const selectionDiv = document.getElementById("channel-selection");
-            if (selectionDiv) selectionDiv.style.display = "none";
-            const container = document.getElementById("multi-stream-container");
-            if (!container) return;
-            destroyAllHLSInstances();
-            container.innerHTML = "";
-            const checkboxes = document.querySelectorAll("#channel-options input:checked");
-            const selected = Array.from(checkboxes).map(cb => ({ 
-                id: cb.value, 
-                platform: cb.dataset.platform,
-                name: cb.dataset.name || ""
-            }));
-            const fullSelected = selected.map(sel => channels.find(ch => ch.id === sel.id && ch.platform === sel.platform)).filter(Boolean);
-            if (fullSelected.length === 0) {
-                container.innerHTML = `<div style="color:#aaa; text-align:center; padding:2rem;">未選擇任何頻道</div>`;
-                return;
-            }
-            const isOnlyOne = fullSelected.length === 1;
-            fullSelected.forEach(ch => {
-                const platform = ch.platform;
-                const idOrUrl = ch.id;
-                const wrapperClass = isOnlyOne ? "full-screen-video" : "video";
-                if (platform === "m3u8" || platform === "gosh") {
-                    const videoElem = document.createElement("video");
-                    videoElem.className = `hls-video-element ${wrapperClass}`;
-                    videoElem.controls = true;
-                    videoElem.autoplay = true;
-                    videoElem.muted = false;
-                    videoElem.playsInline = true;
-                    if (!isOnlyOne) {
-                        videoElem.style.width = "48%";
-                        videoElem.style.height = "48%";
-                        
-                    } else {
-                        videoElem.style.width = "100%";
-                        videoElem.style.height = "100%";
-                    }
-                    container.appendChild(videoElem);
-                    void attachHlsVideo(videoElem, ch);
-                } else if (platform === "youtube") {
-                    const iframe = document.createElement("iframe");
-                    iframe.className = wrapperClass;
-                    let embedSrc = "";
-                    if (idOrUrl.startsWith("UC") || idOrUrl.startsWith("HC") || idOrUrl.includes("channel")) {
-                        embedSrc = `https://www.youtube.com/embed/live_stream?channel=${idOrUrl}&autoplay=1`;
-                    } else {
-                        embedSrc = `https://www.youtube.com/embed/${idOrUrl}?autoplay=1`;
-                    }
-                    iframe.src = embedSrc;
-                    iframe.allowFullscreen = true;
-					iframe.referrerpolicy = "strict-origin-when-cross-origin";
-                    iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture";
-                    iframe.frameBorder = "0";
-                    if (!isOnlyOne) {
-                        iframe.style.width = "48%%";
-                        iframe.style.height = "48%";
-                    }
-                    container.appendChild(iframe);
-                } else {
-                    const iframe = document.createElement("iframe");
-                    iframe.className = wrapperClass;
-                    iframe.src = getStreamUrl(ch);
-                    iframe.allowFullscreen = true;
-                    iframe.allow = "autoplay";
-                    iframe.frameBorder = "0";
-                    container.appendChild(iframe);
-                }
-            });
+            const selectionDiv = document.getElementById('channel-selection');
+            if (selectionDiv) selectionDiv.style.display = 'none';
+            const selected = Array.from(document.querySelectorAll('#channel-options input:checked'));
+            const byKey = new Map(channels.map(channel => [channelStatusKey(channel), channel]));
+            const fullSelected = selected.map(cb => byKey.get(channelStatusKey({ name: cb.dataset.name || 'channel', id: cb.value, platform: cb.dataset.platform }))).filter(Boolean);
+            renderAdminChannels(fullSelected, '未選擇任何頻道');
         }
 
         // ======================== 加台彈窗邏輯 ========================
@@ -958,7 +972,6 @@ textarea:focus {
             saveChannelsToStorage();
             generateButtons();
             closeAddChannelModal();
-            fetchAllStatuses();
         }
 
         // 儲存自訂頻道到 localStorage
@@ -993,14 +1006,14 @@ textarea:focus {
         }
 
         // ======================== 產生頂部按鈕 & 刪除模式 =================
-        function generateButtons() {
+        function generateButtons(refreshStatuses = true) {
             const container = document.getElementById("lists");
             if (!container) return;
             container.innerHTML = "";
             if (window.innerWidth > 768) {
                 channels.forEach(channel => addButton(channel));
             }
-            fetchAllStatuses();
+            if (refreshStatuses) fetchAllStatuses();
         }
 
         function addButton(channel) {
@@ -1029,7 +1042,9 @@ textarea:focus {
                 channels = channels.filter(ch => !(ch.id === channel.id && ch.platform === channel.platform));
                 saveChannelsToStorage();
                 generateButtons();
-                if (channels.length === 0) displaySingleChannel(null);
+                if (adminPlayers.has(channelStatusKey(channel))) {
+                    renderAdminChannels(Array.from(adminPlayers.values()).filter(player => player.key !== channelStatusKey(channel)).map(player => player.channel), '未選擇頻道');
+                } else if (channels.length === 0) displaySingleChannel(null);
                 if (document.getElementById("channel-selection").style.display !== "none") generateChannelOptions();
             };
             const wrapper = document.createElement("div");
@@ -1157,6 +1172,7 @@ textarea:focus {
                 cb.dataset.platform = channel.platform;
                 cb.dataset.name = channel.name;
                 cb.id = `chk_${channelDomId(channel)}`;
+                cb.checked = adminPlayers.has(channelStatusKey(channel));
                 const label = document.createElement("label");
                 label.htmlFor = cb.id;
                 label.className = "channel-option-label";
@@ -1178,44 +1194,35 @@ textarea:focus {
         }
 
         // ======================== 直播狀態查詢 ========================
-        async function fetchStatus(channel) {
+        async function readAdminChannelStatus(channel, signal) {
+            if (channel.platform === 'at' || channel.platform === 'youtube') return 'unknown2';
+            if (channel.platform === 'm3u8') return 'live';
+            if (channel.platform === 'gosh') return (await fetchGoshChannel(channel)).isLive ? 'live' : 'not-live';
+            const url = getPlatformUrl(channel);
+            if (!url || (channel.platform === 'twitch' && (!TWITCH_TOKEN || !TWITCH_CLIENT_ID))) return 'unknown';
+            const headers = channel.platform === 'twitch' ? { 'Authorization': 'Bearer ' + TWITCH_TOKEN, 'Client-Id': TWITCH_CLIENT_ID } : {};
+            const response = await fetch(url, { headers, signal });
+            if (!response.ok) throw new Error('Channel status unavailable');
+            if (channel.platform === 'ok') {
+                const html = await response.text();
+                return html.includes('status:"online"') || html.includes('"status":"online"') ? 'live' : 'not-live';
+            }
+            const data = await response.json();
+            const live = channel.platform === 'kick' ? data.livestream?.is_live === true : data.data?.length > 0;
+            return live ? 'live' : 'not-live';
+        }
+
+        async function fetchStatus(channel, force = false) {
             if (!channel || !channel.id) return;
             const key = channelStatusKey(channel);
             let status = 'unknown';
             try {
-                if (channel.platform === 'at' || channel.platform === 'youtube') {
-                    status = 'unknown2';
-                } else if (channel.platform === 'm3u8') {
-                    status = 'live';
-                } else if (channel.platform === 'gosh') {
-                    const data = await fetchGoshChannel(channel);
-                    status = data.isLive ? 'live' : 'not-live';
-                } else {
-                    const url = getPlatformUrl(channel);
-                    if (!url || (channel.platform === 'twitch' && (!TWITCH_TOKEN || !TWITCH_CLIENT_ID))) {
-                        channelStatuses[key] = status;
-                        updateUIForChannel(channel);
-                        return;
-                    }
-                    const headers = channel.platform === 'twitch' ? { 'Authorization': `Bearer ${TWITCH_TOKEN}`, 'Client-Id': TWITCH_CLIENT_ID } : {};
-                    const response = await fetch(url, { headers });
-                    if (!response.ok) throw new Error('Channel status unavailable');
-                    if (channel.platform === 'ok') {
-                        const html = await response.text();
-                        status = html.includes('status:"online"') || html.includes('"status":"online"') ? 'live' : 'not-live';
-                    } else {
-                        const data = await response.json();
-                        const live = channel.platform === 'kick' ? data.livestream?.is_live === true : data.data?.length > 0;
-                        status = live ? 'live' : 'not-live';
-                    }
-                }
-            } catch(e) {
-                status = 'unknown';
-            }
+                status = await adminStatusScheduler.run(key, signal => readAdminChannelStatus(channel, signal), { force });
+            } catch (error) {}
             channelStatuses[key] = status;
             updateUIForChannel(channel);
         }
-        
+
         function updateUIForChannel(channel) {
             updateButtonStatus(channel);
             updateMenuButtonStatus(channel);
@@ -1263,7 +1270,14 @@ textarea:focus {
         }
 
         // ======================== 初始化與響應式 ========================
-        window.addEventListener('resize', () => generateButtons());
+        let adminResizeFrame = null;
+        window.addEventListener('resize', () => {
+            if (adminResizeFrame !== null) return;
+            adminResizeFrame = requestAnimationFrame(() => {
+                adminResizeFrame = null;
+                generateButtons(false);
+            });
+        });
         document.addEventListener('DOMContentLoaded', async () => {
             await loadTwitchCredentials();
             await loadChannelsFromUrl();
