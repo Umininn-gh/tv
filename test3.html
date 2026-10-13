@@ -2463,12 +2463,15 @@ async function fetchRecentMessages(older = false) {
     const shouldScroll = autoScroll && !older;
     if (older) { autoScroll = false; isInitialLoad = false; }
     const limit = older || !historyHasLoaded ? 100 : 800;
+    const recovering = !older && historyHasLoaded;
+    const recoveryTimestamp = recovering ? latestChatTimestamp : 0;
     const before = older ? `&before=${oldestHistoryCursor}` : '';
+    const after = recovering && recoveryTimestamp > 0 ? `&after=${recoveryTimestamp}` : '';
     setHistoryStatus(older ? '正在載入更早留言…' : '正在補回留言…');
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 12000);
     try {
-        const response = await fetch(`https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(CHANNEL)}?limit=${limit}${before}`, { signal: controller.signal });
+        const response = await fetch(`https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(CHANNEL)}?limit=${limit}${before}${after}`, { signal: controller.signal });
         if (!response.ok) throw new Error(`歷史訊息服務回應 ${response.status}`);
         const data = await response.json();
         const rawEvents = Array.isArray(data.messages) ? data.messages : [];
@@ -2483,19 +2486,25 @@ async function fetchRecentMessages(older = false) {
                 Number(getTagValue(b.tags, 'tmi-sent-ts') || 0));
         const unique = new Map();
         history.forEach(message => unique.set(chatMessageKey(message) || message, message));
-        const messages = Array.from(unique.values());
+        const available = Array.from(unique.values());
+        const messages = recovering ? available.filter(message =>
+            Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts')) >= recoveryTimestamp
+        ) : available.slice(-30);
         messages.forEach(message => {
             try { renderChatMessage(message, true); }
             catch (err) { console.error('處理歷史訊息錯誤:', err); }
         });
-        const cursors = parsedHistory.map(message => Number(getTagValue(message.tags, 'rm-received-ts') || getTagValue(message.tags, 'tmi-sent-ts')))
+        // 向前翻頁以實際顯示的最早留言為界，避免跳過未顯示的紀錄。
+        const cursorMessages = messages.length ? messages : parsedHistory;
+        const cursors = cursorMessages.map(message => Number(getTagValue(message.tags, 'rm-received-ts') || getTagValue(message.tags, 'tmi-sent-ts')))
             .filter(time => Number.isFinite(time) && time > 0);
-        if (cursors.length) oldestHistoryCursor = Math.min(oldestHistoryCursor ?? Infinity, ...cursors);
+        if (!recovering && cursors.length) oldestHistoryCursor = Math.min(oldestHistoryCursor ?? Infinity, ...cursors);
         historyHasLoaded = true;
         historyRetryOlder = null;
         const advanced = oldestHistoryCursor !== null && (previousCursor === null || oldestHistoryCursor < previousCursor);
         if (button) {
-            button.disabled = oldestHistoryCursor === null || (older && (!advanced || rawEvents.length < limit));
+            const hasUnshownMessages = !recovering && available.length > messages.length;
+            button.disabled = oldestHistoryCursor === null || (older && (!advanced || (!hasUnshownMessages && rawEvents.length < limit)));
             button.textContent = button.disabled ? '已載入可用歷史' : '載入更早留言';
         }
         setHistoryStatus(older && !advanced ? '暫時沒有更早的可用留言。' : '留言已更新；可載入更早留言。');
@@ -2570,6 +2579,7 @@ function parseIrcLine(line) {
     return { tags: match[1] || '', source: match[2] || '', command, params: middleParams, body };
 }
 const seenMessageIds = new Set();
+let latestChatTimestamp = 0;
 let chatResourcesReady = false;
 let hasJoinedChannel = false;
 let needsHistoryRefresh = false;
@@ -2580,6 +2590,8 @@ function chatMessageKey(message) {
 }
 function renderChatMessage(message, historical = false) {
     if (message.command !== "PRIVMSG" || message.params[0]?.toLowerCase() !== `#${CHANNEL.toLowerCase()}`) return;
+    const timestamp = Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts'));
+    if (Number.isFinite(timestamp) && timestamp > 0) latestChatTimestamp = Math.max(latestChatTimestamp, timestamp);
     const key = chatMessageKey(message);
     if (key && seenMessageIds.has(key)) return;
     let line;
