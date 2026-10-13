@@ -1616,13 +1616,15 @@ function onMediaLoaded() {
 
 function appendMessageWithScroll(html) {
     if (document.hidden) {
-        messageBuffer.push(html);
+        const timestamp = Number(html.match(/data-msg-ts="(\d+)"/)?.[1]) || Date.now();
+        messageBuffer.push({ html, timestamp });
+        messageBuffer.sort((a, b) => a.timestamp - b.timestamp);
         if (messageBuffer.length > MAX_BUFFER_SIZE) messageBuffer.shift();
         return;
     }
     const $newElements = $(html);
     addTimestampsToElements($newElements);
-    $("#messages").append($newElements);
+    insertMessageElements($newElements);
     
     $newElements.find('video.media-preview').addBack('video.media-preview').each(function() {
         mediaObserver.observe(this);
@@ -1631,12 +1633,22 @@ function appendMessageWithScroll(html) {
     if (autoScroll) forceScrollToBottom(false);
 }
 
+function insertMessageElements($elements) {
+    const messages = document.getElementById('messages');
+    $elements.each(function() {
+        const ts = Number(this.dataset && this.dataset.msgTs);
+        const next = Number.isFinite(ts) ? Array.from(messages.children).find(el =>
+            Number(el.dataset.msgTs) > ts
+        ) : null;
+        messages.insertBefore(this, next || null);
+    });
+}
+
 document.addEventListener('visibilitychange', () => {
     if (!document.hidden && messageBuffer.length > 0) {
-        const $msgs = $("#messages");
-        const $elements = $(messageBuffer.join(''));
+        const $elements = $(messageBuffer.map(message => message.html).join(''));
         addTimestampsToElements($elements);
-        $msgs.append($elements);
+        insertMessageElements($elements);
         $elements.find('video.media-preview').addBack('video.media-preview').each(function() {
             mediaObserver.observe(this);
         });
@@ -2380,63 +2392,121 @@ window.insertRecursiveQuote = function(login, ts) {
 
 // ===================== 歷史訊息 =====================
 let isFetchingHistory = false;
+let pendingHistoryRefresh = false;
 async function fetchRecentMessages() {
-    if (isFetchingHistory) return;
+    if (isFetchingHistory) { pendingHistoryRefresh = true; return; }
     isFetchingHistory = true;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
     try {
-        const response = await fetch(`https://recent-messages.robotty.de/api/v2/recent-messages/${CHANNEL}?limit=30`);
+        // API 的筆數包含 IRC 控制訊息；先取較多筆，再保留最新 30 則留言。
+        const response = await fetch(`https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(CHANNEL)}?limit=100`, { signal: controller.signal });
+        if (!response.ok) throw new Error(`歷史訊息服務回應 ${response.status}`);
         const data = await response.json();
-        if (data && data.messages && data.messages.length > 0) {
-            let combinedHtml = ""; 
-            data.messages.forEach(rawIrcMsg => {
-                const match = rawIrcMsg.match(/^(?:@(\S+) )?:([^!]+)![^ ]+ PRIVMSG #[^ ]+ :([\s\S]+)/);
-                if (match) {
-                    const tagStr = match[1] || "";
-                    const userLogin = match[2];
-                    const messageContent = match[3];
-                    const tags = {};
-                    if (tagStr) {
-                        tagStr.split(';').forEach(t => {
-                            const pair = t.split('=');
-                            if (pair.length === 2) tags[pair[0]] = pair[1];
-                        });
-                    }
-                    const displayName = tags['display-name'] ? decodeURIComponent(tags['display-name']) : userLogin;
-                    const userColor = tags['color'] ? tags['color'] : "#9147ff";
-                    const ts = "hist_" + Date.now() + "_" + Math.random().toString(36).substr(2, 5);
-                    const histTs = tags['tmi-sent-ts'] || Date.now().toString();
-                    const userRecord = {
-                        content: messageContent,
-                        user: { login: userLogin, displayName: displayName },
-                        displayName: displayName,
-                        timestamp: parseInt(histTs) || Date.now(),
-                        avatar: 'https://static-cdn.jtvnw.net/user-default-pictures-uv/75305d54-c7cc-40d1-bb9c-91fbe85943c7-profile_image-70x70.png'
-                    };
-                    msgCache[ts] = userRecord;
-                    addRecentUser({ login: userLogin, displayName: displayName, badges: "", avatar: userRecord.avatar });
-                    const rTagProcessed = processRTag(messageContent, 0); 
-                    const highlightedMsg = highlightSelfMentions(rTagProcessed);
-                    const contentHtml = parseContent(highlightedMsg);
-                    combinedHtml += `
-                        <div class="chat-line historical-msg id-${ts}" data-user-login="${userLogin}" data-msg-ts="${histTs}">
-                            <div class="reply-btn-group">
-                                <div class="reply-btn" onclick="replyNative('${displayName}','${ts}','${userLogin}')"><img src="./re2.png"></div>
-                                <div class="reply-btn2" onclick="insertRecursiveQuote('${displayName}','${ts}')" title="引用">🔗</div>
-                            </div>
-                            <b class="display-name" style="color:${userColor}; cursor:pointer;" onclick="insertTag('${displayName}')">${formatNameHtml(displayName, userLogin)}:</b> 
-                            <span class="message">${contentHtml}</span>
-                        </div>`;
-                }
-            });
-            if (combinedHtml) appendMessageWithScroll(combinedHtml);
-        }
+        const history = (Array.isArray(data.messages) ? data.messages : [])
+            .flatMap(raw => typeof raw === 'string' ? raw.split(/\r?\n/) : [])
+            .map(parseIrcLine)
+            .filter(message => message && message.command === 'PRIVMSG' &&
+                message.params[0]?.toLowerCase() === `#${CHANNEL.toLowerCase()}`)
+            .sort((a, b) => Number(getTagValue(a.tags, 'tmi-sent-ts') || 0) -
+                Number(getTagValue(b.tags, 'tmi-sent-ts') || 0));
+        const unique = new Map();
+        history.forEach(message => unique.set(chatMessageKey(message) || message, message));
+        Array.from(unique.values()).slice(-30).forEach(message => {
+            try { renderChatMessage(message, true); }
+            catch (err) { console.error('處理歷史訊息錯誤:', err); }
+        });
     } catch (err) { console.error('獲取歷史訊息失敗:', err); }
-    finally { isFetchingHistory = false; }
+    finally {
+        clearTimeout(timeoutId);
+        isFetchingHistory = false;
+        if (pendingHistoryRefresh) {
+            pendingHistoryRefresh = false;
+            fetchRecentMessages();
+        }
+    }
     forceScrollToBottom(true);
     setTimeout(() => { isInitialLoad = false; }, 8000);
 }
 
 // ===================== 連線邏輯 =====================
+function parseIrcLine(line) {
+    const match = line.match(/^(?:@([^ ]+) )?(?::([^ ]+) )?([A-Za-z0-9]+)(?: (.*))?$/);
+    if (!match) return null;
+    let params = match[4] || '';
+    let body = '';
+    const bodyIndex = params.startsWith(':') ? 0 : params.indexOf(' :');
+    if (bodyIndex !== -1) {
+        body = params.substring(bodyIndex + (bodyIndex === 0 ? 1 : 2));
+        params = params.substring(0, bodyIndex);
+    }
+    return { tags: match[1] || '', source: match[2] || '', command: match[3].toUpperCase(),
+        params: params.split(/ +/).filter(Boolean), body };
+}
+const seenMessageIds = new Set();
+let chatResourcesReady = false;
+let hasJoinedChannel = false;
+let needsHistoryRefresh = false;
+function chatMessageKey(message) {
+    const id = getTagValue(message.tags, 'id');
+    const ts = getTagValue(message.tags, 'tmi-sent-ts');
+    return id || (ts ? `${message.params[0]}:${message.source}:${ts}:${message.body}` : null);
+}
+function renderChatMessage(message, historical = false) {
+    if (message.command !== "PRIVMSG" || message.params[0]?.toLowerCase() !== `#${CHANNEL.toLowerCase()}`) return;
+    const key = chatMessageKey(message);
+    if (key && seenMessageIds.has(key)) return;
+    const tags = message.tags;
+    const rawMsg = message.body;
+    const nickFromSource = message.source.split("!")[0];
+    let msgId = getTagValue(tags, "id");
+    let ts = getTagValue(tags, "tmi-sent-ts") || Date.now().toString();
+    let color = getTagValue(tags, "color") || "#9147ff";
+    let badgeStr = getTagValue(tags, "badges");
+    let userLogin = nickFromSource || getTagValue(tags, "login") || "";
+    let displayNameRaw = getTagValue(tags, "display-name");
+    let user = displayNameRaw || userLogin || "User";
+    userCache[userLogin] = user;
+    let msgRecord = {
+        content: rawMsg, user: { login: userLogin, displayName: user }, displayName: user,
+        badges: badgeStr, avatar: 'https://static-cdn.jtvnw.net/user-default-pictures-uv/75305d54-c7cc-40d1-bb9c-91fbe85943c7-profile_image-70x70.png',
+        timestamp: parseInt(ts)
+    };
+    if (msgId) msgCache[msgId] = msgRecord;
+    msgCache[ts] = msgRecord;
+    addRecentUser({ login: userLogin, displayName: user, badges: badgeStr, avatar: msgRecord.avatar });
+    let replyHtml = "", displayMsg = rawMsg;
+    let pUser = getTagValue(tags, "reply-parent-display-name");
+    let pId = getTagValue(tags, "reply-parent-msg-id");
+    let pBodyRaw = getTagValue(tags, "reply-parent-msg-body");
+    if (pUser && pId) {
+        let isMe = (pUser === myDisplayName || pUser === myLoginId);
+        let originalText = pBodyRaw ? pBodyRaw.replace(/\\([s:nr\\])/g, (_, char) =>
+            ({ s: ' ', ':': ';', n: '\n', r: '\r', '\\': '\\' })[char]) : "...";
+        let processed = processRTag(originalText, 0);
+        let pBody = parseContent(processed);
+        let userTagClass = isMe ? 'quote-user mention-self-tag' : 'quote-user';
+        replyHtml = `<div class="quote-box" onclick="scrollToMsg('${pId}')"><svg width="17" height="17" viewBox="0 0 24 20" fill="currentColor"><path d="M9 10h2v2H9v-2Zm6 0h-2v2h2v-2Z"></path><path fill-rule="evenodd" d="m12 22-3-3H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 2 2h-4l-3 3Zm-2.172-5L12 19.172 14.172 17H19V5H5v12h4.828Z" clip-rule="evenodd"></path></svg> 回覆<span class="${userTagClass}">@${pUser}:</span>${pBody}</div>`;
+        const mentions = [pUser, getTagValue(tags, 'reply-parent-user-login')].filter(Boolean);
+        const mention = mentions.find(name => displayMsg.toLowerCase().startsWith(`@${name.toLowerCase()} `));
+        if (mention) displayMsg = displayMsg.substring(mention.length + 2);
+    }
+    displayMsg = processRTag(displayMsg, 0);
+    displayMsg = highlightSelfMentions(displayMsg);
+    let contentHtml = parseContent(displayMsg);
+    let badgeHtml = renderBadges(badgeStr);
+    let line = `<div class="chat-line ${historical ? 'historical-msg ' : ''}ts-${ts} id-${msgId||ts}" data-user-login="${userLogin}" data-msg-ts="${ts}">
+        <div class="reply-btn-group">
+            <div class="reply-btn" onclick="replyNative('${userLogin}','${msgId||ts}','${user}')"><img src="./re2.png"></div>
+            <div class="reply-btn2" onclick="insertRecursiveQuote('${userLogin}','${ts}')" title="插入引用代碼 [r]">🔗</div>
+        </div>
+        <b style="color:${color}">${badgeHtml}${formatNameHtml(user, userLogin)}:</b> <span>${replyHtml}${contentHtml}</span>
+    </div>`;
+    appendMessageWithScroll(line);
+    if (key) seenMessageIds.add(key);
+    if (seenMessageIds.size > 500) seenMessageIds.delete(seenMessageIds.values().next().value);
+}
+
 function startChat() {
     if (isConnecting) return;
     if (socket && socket.readyState === WebSocket.OPEN) return;
@@ -2468,93 +2538,54 @@ function startChat() {
         document.getElementById('status').innerHTML = statusMsg;
         document.getElementById('msginput').disabled = !ACCESS_TOKEN;
         document.getElementById('sendbtn').disabled = false;
+        hasJoinedChannel = false;
+        needsHistoryRefresh = true;
     };
     socket.onerror = (err) => { document.getElementById('status').textContent = '連線錯誤，即將重連...'; };
     socket.onclose = (event) => {
         isConnecting = false;
+        hasJoinedChannel = false;
         if (socket) socket = null;
         if (event.code !== 1000) scheduleReconnect();
         document.getElementById('status').textContent = `已斷線 (${event.code})，重連中...`;
     };
     socket.onmessage = (e) => {
-        try {
-            let data = e.data;
-            if (data.startsWith('PING')) { socket.send('PONG :tmi.twitch.tv'); return; }
-            if (data.includes('CAP') || data.includes('USERSTATE')) {
-                if (data.includes('USERSTATE')) {
-                    let badgeTag = getTagValue(data, "badges");
+        // 一個 WebSocket frame 可能包含多個 IRC 命令，逐行處理並隔離錯誤。
+        String(e.data).split(/\r?\n/).forEach(data => {
+            try {
+                const message = parseIrcLine(data);
+                if (!message) return;
+                if (['JOIN', 'ROOMSTATE', '366'].includes(message.command) &&
+                    message.params.some(param => param.toLowerCase() === `#${CHANNEL.toLowerCase()}`)) {
+                    hasJoinedChannel = true;
+                    if (chatResourcesReady && needsHistoryRefresh) {
+                        needsHistoryRefresh = false;
+                        fetchRecentMessages();
+                    }
+                }
+                if (message.command === 'PING') {
+                    socket.send(`PONG :${message.body || message.params[0] || 'tmi.twitch.tv'}`);
+                    return;
+                }
+                if (message.command === 'RECONNECT') {
+                    socket.close();
+                    scheduleReconnect();
+                    return;
+                }
+                if (message.command === 'USERSTATE') {
+                    const badgeTag = getTagValue(message.tags, 'badges');
                     if (badgeTag) {
                         myBadges = badgeTag;
                         localStorage.setItem('twitch_my_badges', badgeTag);
                         updateBadgeCarousel();
                     }
-                    let colorTag = getTagValue(data, "color");
+                    const colorTag = getTagValue(message.tags, 'color');
                     if (colorTag) myColor = colorTag;
+                    return;
                 }
-                return;
-            }
-            if (!data.includes('PRIVMSG')) return;
-            let privmsgIdx = data.indexOf(` PRIVMSG #${CHANNEL} :`);
-            if (privmsgIdx === -1) return;
-            let leftPart = data.substring(0, privmsgIdx);
-            let rawMsg = data.substring(privmsgIdx + ` PRIVMSG #${CHANNEL} :`.length).trim();
-            let tags = leftPart;
-            let source = "";
-            if (leftPart.includes(' :')) {
-                let spaceIdx = leftPart.lastIndexOf(' :');
-                if (spaceIdx !== -1) {
-                    tags = leftPart.substring(0, spaceIdx);
-                    source = leftPart.substring(spaceIdx+2);
-                }
-            }
-            let nickFromSource = "";
-            if (source) {
-                let excl = source.indexOf('!');
-                if (excl !== -1) nickFromSource = source.substring(0, excl);
-            }
-            let msgId = getTagValue(tags, "id");
-            let ts = getTagValue(tags, "tmi-sent-ts") || Date.now().toString();
-            let color = getTagValue(tags, "color") || "#9147ff";
-            let badgeStr = getTagValue(tags, "badges");
-            let userLogin = nickFromSource || getTagValue(tags, "login") || "";
-            let displayNameRaw = getTagValue(tags, "display-name");
-            let user = displayNameRaw || userLogin || "User";
-            userCache[userLogin] = user;
-            let msgRecord = {
-                content: rawMsg, user: { login: userLogin, displayName: user }, displayName: user,
-                badges: badgeStr, avatar: 'https://static-cdn.jtvnw.net/user-default-pictures-uv/75305d54-c7cc-40d1-bb9c-91fbe85943c7-profile_image-70x70.png',
-                timestamp: parseInt(ts)
-            };
-            if (msgId) msgCache[msgId] = msgRecord;
-            msgCache[ts] = msgRecord;
-            addRecentUser({ login: userLogin, displayName: user, badges: badgeStr, avatar: msgRecord.avatar });
-            let replyHtml = "", displayMsg = rawMsg;
-            let pUser = getTagValue(tags, "reply-parent-display-name");
-            let pId = getTagValue(tags, "reply-parent-msg-id");
-            let pBodyRaw = getTagValue(tags, "reply-parent-msg-body");
-            if (pUser && pId) {
-                let isMe = (pUser === myDisplayName || pUser === myLoginId);
-                let originalText = pBodyRaw ? pBodyRaw.replace(/\\s/g, " ") : "...";
-                let processed = processRTag(originalText, 0);
-                let pBody = parseContent(processed);
-                let userTagClass = isMe ? 'quote-user mention-self-tag' : 'quote-user';
-                replyHtml = `<div class="quote-box" onclick="scrollToMsg('${pId}')"><svg width="17" height="17" viewBox="0 0 24 20" fill="currentColor"><path d="M9 10h2v2H9v-2Zm6 0h-2v2h2v-2Z"></path><path fill-rule="evenodd" d="m12 22-3-3H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 2 2h-4l-3 3Zm-2.172-5L12 19.172 14.172 17H19V5H5v12h4.828Z" clip-rule="evenodd"></path></svg> 回覆<span class="${userTagClass}">@${pUser}:</span>${pBody}</div>`;
-                let mention = `@${pUser} `;
-                if (displayMsg.startsWith(mention)) displayMsg = displayMsg.substring(mention.length);
-            }
-            displayMsg = processRTag(displayMsg, 0);
-            displayMsg = highlightSelfMentions(displayMsg);
-            let contentHtml = parseContent(displayMsg);
-            let badgeHtml = renderBadges(badgeStr);
-            let line = `<div class="chat-line ts-${ts} id-${msgId||ts}" data-user-login="${userLogin}" data-msg-ts="${ts}">
-                <div class="reply-btn-group">
-                    <div class="reply-btn" onclick="replyNative('${userLogin}','${msgId||ts}','${user}')"><img src="./re2.png"></div>
-                    <div class="reply-btn2" onclick="insertRecursiveQuote('${userLogin}','${ts}')" title="插入引用代碼 [r]">🔗</div>
-                </div>
-                <b style="color:${color}">${badgeHtml}${formatNameHtml(user, userLogin)}:</b> <span>${replyHtml}${contentHtml}</span>
-            </div>`;
-            appendMessageWithScroll(line);
-        } catch(err) { console.error('處理訊息錯誤:', err, e.data); }
+                renderChatMessage(message);
+            } catch (err) { console.error('處理訊息錯誤:', err); }
+        });
     };
 }
 
@@ -2684,12 +2715,16 @@ async function initApp() {
     setupScrollListener();
     await fetchBadges();
     await loadResources();
+    chatResourcesReady = true;
     updateBadgeCarousel();
     setupAutoTag();
     setupMentionEvents();
     setupEmojiPanelDrag();
     if (!ACCESS_TOKEN) startChat();
-    fetchRecentMessages();
+    if (hasJoinedChannel) {
+        needsHistoryRefresh = false;
+        fetchRecentMessages();
+    }
     if(scrollToBottomBtn) scrollToBottomBtn.addEventListener('click', () => forceScrollToBottom(true));
     const messagesContainer = document.getElementById('messages');
     if (messagesContainer) {

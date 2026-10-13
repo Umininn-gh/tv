@@ -52,6 +52,8 @@ node set-login-password.cjs --generate
 
 頂欄的 TWITCH 切換仍可開啟同頻道的 Twitch 官方聊天室，並記住選擇。目前先修復觀看訊息；自訂聊天室的 Twitch 發言登入尚未重新設定或驗證。
 
+即時收訊會逐則解析 Twitch IRC，避免同批收到多則留言或控制訊息時漏顯示。新開頁面和重新連線時會從 Recent Messages 取得歷史紀錄，過濾控制訊息後保留最新 30 則留言；與即時訊息合併時按時間排列並避免重複，歷史留言也保留 Twitch 回覆引用。能補回的內容仍取決於外部服務已保存的紀錄，不能保證與 SKLive 的歷史快取完全相同。
+
 ## 之後搬到 Cloudflare Pages
 
 登入與播放器程式仍可沿用，不需要重寫整個網站。Cloudflare Pages 支援直接部署靜態 HTML：
