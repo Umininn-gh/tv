@@ -2,6 +2,7 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Chickchat7</title>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
     <style>
@@ -1222,7 +1223,7 @@
         body.theme-sk .setting-btn:hover { color: #9147ff; background: #2a2a2e; }
     </style>
 </head>
-<body onload="initApp()" class="theme-discord">
+<body class="theme-discord">
 
 <header class="header-bar">
     <div id="status">載入中...</div>
@@ -1339,7 +1340,7 @@
                 <svg viewBox="0 0 24 24"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg> 音訊
             </button>
 			<button class="tool-link" onclick="renderEmojiPanel(); $('#emojiPanel').css('display','flex')" title="表情/資源庫">
-                    <img src="https://chicktv.github.io/tv/chick.webp" style="width:20px; height:auto; padding-left:10px; padding-right:10px;">
+                    <img src="./chick.webp" style="width:20px; height:auto; padding-left:10px; padding-right:10px;">
                 </button>
            
             <span id="recording-status" style="color: var(--danger); font-size: 11px; display: none; font-weight: 600;">上傳中...</span>
@@ -1946,14 +1947,14 @@ async function fetchBadges() {
             } catch (err) { console.warn('GraphQL Badges 失敗:', err); }
         }
         if (!success) {
-            const res = await fetch('https://chicktv.github.io/tv/b.txt');
+            const res = await fetch('./b.txt');
             customBadges = await res.json();
         }
     } catch(e) { console.error('載入 Badges 嚴重錯誤:', e); customBadges = {}; }
 }
 async function loadAudioData() {
     try {
-        const remote = await fetch('https://chicktv.github.io/tv/audio.txt').then(r => r.json());
+        const remote = await fetch('./audio.txt').then(r => r.json());
         const local = JSON.parse(localStorage.getItem('myAudios') || '[]');
         audioLists["音訊"] = { audios: mergeAudioLists(remote, local), image: "🔊" };
     } catch(e) { audioLists["音訊"] = { audios: JSON.parse(localStorage.getItem('myAudios') || '[]'), image: "🔊" }; }
@@ -1968,18 +1969,18 @@ async function loadResources() {
     try {
         const sk = await $.getJSON("https://live.sk-knower.com/lib/iconjsonp.php?channel=whitewing940920");
         if (Array.isArray(sk)) {
-            emojiLists["本台"] = { emojis: sk, image: sk[0].src , image: "https://chicktv.github.io/tv/chick.png" };
+            emojiLists["本台"] = { emojis: sk, image: sk[0].src , image: "./chick.png" };
             sk.forEach(i => { if(i.alt) altMap[i.alt.toLowerCase()] = i.src; });
         }
         const bttv = JSON.parse(localStorage.getItem('myBTTV') || '[]');
         emojiLists["BTTV"] = { emojis: bttv.map(url => ({ alt: url.split('/').pop().split('?')[0], src: url })), image: "https://static-cdn.jtvnw.net/badges/v1/ed51a614-2c44-4a60-80b6-62908436b43a/3" };
         await loadAudioData();
-        const shows = await $.getJSON("https://chicktv.github.io/tv/showset.txt");
+        const shows = await $.getJSON("./showset.txt");
         for (let item of shows.set) {
             let n = typeof item === 'object' ? item.name : item;
             let img = typeof item === 'object' ? item.image : "";
             if (!n || n === "skuser_icon") continue;
-            let url = (n === "twitch") ? `https://chicktv.github.io/tv/${n}.txt` : `https://sk-knower.com/sklive_api/read/skchat_icon.php?set=${n}`;
+            let url = (n === "twitch") ? `./${n}.txt` : `https://sk-knower.com/sklive_api/read/skchat_icon.php?set=${n}`;
             $.getJSON(url, d => {
                 let list = d[n] || [];
                 emojiLists[n] = { emojis: list, image: img };
@@ -2352,7 +2353,7 @@ function sendMessage() {
     addRecentUser({ login: myLoginId, displayName: myDisplayName, badges: myBadgeStr, avatar: myAvatar });
     let line = `<div class="chat-line ts-${selfTs} id-${selfTs}" data-user-login="${myLoginId}" data-msg-ts="${selfTs}">
         <div class="reply-btn-group">
-            <div class="reply-btn" onclick="replyNative('${myLoginId}','${selfTs}','${myDisplayName}')"><img src="https://chicktv.github.io/tv/re2.png"></div>
+            <div class="reply-btn" onclick="replyNative('${myLoginId}','${selfTs}','${myDisplayName}')"><img src="./re2.png"></div>
             <div class="reply-btn2" onclick="insertRecursiveQuote('${myLoginId}','${selfTs}')" title="sk回覆格式">🔗</div>
         </div>
         <b class="self-name" style="color:${myColor}">${badgeHtml}${formatNameHtml(myDisplayName || myLoginId, myLoginId)}:</b> <span>${replyDisplay}${parseContent(processedContentForDisplay)}</span>
@@ -2419,7 +2420,7 @@ async function fetchRecentMessages() {
                     combinedHtml += `
                         <div class="chat-line historical-msg id-${ts}" data-user-login="${userLogin}" data-msg-ts="${histTs}">
                             <div class="reply-btn-group">
-                                <div class="reply-btn" onclick="replyNative('${displayName}','${ts}','${userLogin}')"><img src="https://chicktv.github.io/tv/re2.png"></div>
+                                <div class="reply-btn" onclick="replyNative('${displayName}','${ts}','${userLogin}')"><img src="./re2.png"></div>
                                 <div class="reply-btn2" onclick="insertRecursiveQuote('${displayName}','${ts}')" title="引用">🔗</div>
                             </div>
                             <b class="display-name" style="color:${userColor}; cursor:pointer;" onclick="insertTag('${displayName}')">${formatNameHtml(displayName, userLogin)}:</b> 
@@ -2547,7 +2548,7 @@ function startChat() {
             let badgeHtml = renderBadges(badgeStr);
             let line = `<div class="chat-line ts-${ts} id-${msgId||ts}" data-user-login="${userLogin}" data-msg-ts="${ts}">
                 <div class="reply-btn-group">
-                    <div class="reply-btn" onclick="replyNative('${userLogin}','${msgId||ts}','${user}')"><img src="https://chicktv.github.io/tv/re2.png"></div>
+                    <div class="reply-btn" onclick="replyNative('${userLogin}','${msgId||ts}','${user}')"><img src="./re2.png"></div>
                     <div class="reply-btn2" onclick="insertRecursiveQuote('${userLogin}','${ts}')" title="插入引用代碼 [r]">🔗</div>
                 </div>
                 <b style="color:${color}">${badgeHtml}${formatNameHtml(user, userLogin)}:</b> <span>${replyHtml}${contentHtml}</span>

@@ -1,7 +1,7 @@
 [
   {
     "name": "做咩挑釁我",
-    "url": "https://chicktv.github.io/tv/audio1.m4a"
+    "url": "./audio1.m4a"
   },
   {
     "name": "what?", 
@@ -9,7 +9,7 @@
   },
   {
     "name": "吔屎啦你", 
-    "url": "https://chicktv.github.io/tv/吔屎啦你.m4a"
+    "url": "./吔屎啦你.m4a"
   },
   {
     "name": "我們懷念他", 

@@ -46,6 +46,12 @@ node set-login-password.cjs --generate
 
 儲存並等待部署完成後，使用原有 `https://umininn-gh.github.io/tv/` 網址。
 
+## 聊天室
+
+首頁預設載入本程式庫的 `test3.html`，並以匿名模式接收 Twitch `whitewing940920` 的訊息。這與 [SK 雞友直播台](https://skknower.com/user/ctvhiki49713?ch=12) 的右側 SKChat 使用相同的 Twitch 頻道；貼圖、回覆圖示和本地資源清單改從本網站讀取，不依賴已關閉的 chicktv GitHub Pages。
+
+頂欄的 TWITCH 切換仍可開啟同頻道的 Twitch 官方聊天室，並記住選擇。目前先修復觀看訊息；自訂聊天室的 Twitch 發言登入尚未重新設定或驗證。
+
 ## 之後搬到 Cloudflare Pages
 
 登入與播放器程式仍可沿用，不需要重寫整個網站。Cloudflare Pages 支援直接部署靜態 HTML：

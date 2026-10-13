@@ -957,7 +957,7 @@ function showPopup() {
         if (isAltChat) {
             iframe.src = `https://www.twitch.tv/embed/whitewing940920/chat?darkpopout&parent=${encodeURIComponent(parent)}`;
         } else {
-            iframe.src = 'https://chicktv.github.io/tv/test3.html';
+            iframe.src = './test3.html';
         }
     }
     const savedState = localStorage.getItem('chatToggleState');
