@@ -1243,6 +1243,10 @@
             </div>
 </header>
 
+<div style="display:flex;align-items:center;gap:10px;padding:6px 10px;font-size:12px;flex-wrap:wrap;">
+    <button id="loadMoreHistoryBtn" onclick="loadMoreHistory()" class="btn-primary" style="padding:5px 10px;" disabled>載入更早留言</button>
+    <span id="historyStatus" role="status" aria-live="polite">正在連接聊天室…</span>
+</div>
 <main id="chat-container">
     <div id="messages"></div>
 </main>
@@ -1417,7 +1421,7 @@ window.resetMediaSize = resetMediaSize;
 
 // ===================== CPU 優化全局變數 =====================
 let messageBuffer = []; 
-const MAX_BUFFER_SIZE = 50;
+const MAX_BUFFER_SIZE = 1000;
 
 const mediaObserver = new IntersectionObserver((entries) => {
     entries.forEach(entry => {
@@ -1463,7 +1467,7 @@ let scrollTimeout = null;
 let scrollRequestActive = false; 
 let isInitialLoad = true; 
 const scrollToBottomBtn = document.getElementById('scrollToBottomBtn');
-const MAX_MESSAGES = 50;
+const MAX_MESSAGES = 1000;
 let recentUsers = [];
 let seenUsersSet = new Set(); 
 let mentionListVisible = false;
@@ -1488,6 +1492,7 @@ const RE_IS_STEAM = /steampowered|steamcommunity/i;
 
 // ===================== 工具函數 =====================
 function getParameterByName(name, url) {
+    url = url.replace(/&amp;/g, '&');
     name = name.replace(/[\[]/, "\\\[").replace(/[\]]/, "\\\]");
     let regex = new RegExp("[\\?&]" + name + "=([^&#]*)");
     let results = regex.exec(url);
@@ -1501,7 +1506,14 @@ function getTagValue(tags, key) {
 function limitMessages() {
     const $msgs = $("#messages");
     const children = $msgs.children();
-    if(children.length > MAX_MESSAGES) children.slice(0, children.length - MAX_MESSAGES).remove();
+    if(children.length > MAX_MESSAGES) {
+        const removed = children.slice(0, children.length - MAX_MESSAGES);
+        removed.find('video').each(function() { mediaObserver.unobserve(this); });
+        removed.remove();
+        setHistoryStatus(`目前顯示最近 ${MAX_MESSAGES} 則；較早留言已移出畫面。`);
+        const button = document.getElementById('loadMoreHistoryBtn');
+        if (button) { button.disabled = true; button.textContent = '本頁已達保留上限'; }
+    }
 }
 function getUserDisplayName(userId, fallbackName) {
     if(userCache[userId]) return userCache[userId];
@@ -1529,8 +1541,8 @@ function renderBadges(badgeStr) {
 function getMyBadges() { return myBadges || ""; }
 
 function formatNameHtml(displayName, login) {
-    const dn = (displayName && displayName !== 'User') ? displayName : (login || 'User');
-    const ln = login || '';
+    const dn = escapeChatText((displayName && displayName !== 'User') ? displayName : (login || 'User'));
+    const ln = escapeChatText(login || '');
     if (showUsernameInChat && ln && ln.toLowerCase() !== dn.toLowerCase()) {
         return `${dn}<span class="login-name">(${ln})</span>`;
     }
@@ -1549,12 +1561,14 @@ function highlightSelfMentions(text) {
     if (!text || (!myDisplayName && !myLoginId)) return text;
     let result = text;
     if (myDisplayName) {
-        const regexName = new RegExp(`(^|\\s)(@${myDisplayName})(?!\\w)`, 'gi');
-        result = result.replace(regexName, `$1<span class="mention-self-tag">$2</span>`);
+        const name = escapeChatText(myDisplayName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regexName = new RegExp(`(^|\\s)(@${name})(?!\\w)`, 'gi');
+            result = result.replace(regexName, (_, prefix, name) => prefix + protectChatHtml(`<span class="mention-self-tag">${name}</span>`));
     }
     if (myLoginId && myLoginId.toLowerCase() !== (myDisplayName || "").toLowerCase()) {
-        const regexLogin = new RegExp(`(^|\\s)(@${myLoginId})(?!\\w)`, 'gi');
-        result = result.replace(regexLogin, `$1<span class="mention-self-tag">$2</span>`);
+        const name = escapeChatText(myLoginId).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regexLogin = new RegExp(`(^|\\s)(@${name})(?!\\w)`, 'gi');
+            result = result.replace(regexLogin, (_, prefix, name) => prefix + protectChatHtml(`<span class="mention-self-tag">${name}</span>`));
     }
     return result;
 }
@@ -1605,7 +1619,7 @@ function onMediaLoaded() {
     const chat = document.getElementById('chat-container');
     if (!chat) return;
     const isNearBottom = (chat.scrollHeight - chat.clientHeight - chat.scrollTop) < 800;
-    if (autoScroll || isNearBottom || isInitialLoad) {
+    if (autoScroll || isInitialLoad) {
         if (mediaScrollTimer) clearTimeout(mediaScrollTimer);
         mediaScrollTimer = setTimeout(() => {
             autoScroll = true;
@@ -1619,7 +1633,10 @@ function appendMessageWithScroll(html) {
         const timestamp = Number(html.match(/data-msg-ts="(\d+)"/)?.[1]) || Date.now();
         messageBuffer.push({ html, timestamp });
         messageBuffer.sort((a, b) => a.timestamp - b.timestamp);
-        if (messageBuffer.length > MAX_BUFFER_SIZE) messageBuffer.shift();
+        if (messageBuffer.length > MAX_BUFFER_SIZE) {
+            messageBuffer.shift();
+            setHistoryStatus(`背景期間累積超過 ${MAX_BUFFER_SIZE} 則；回到分頁後會補抓可用紀錄。`);
+        }
         return;
     }
     const $newElements = $(html);
@@ -1645,6 +1662,7 @@ function insertMessageElements($elements) {
 }
 
 document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && hasJoinedChannel) fetchRecentMessages();
     if (!document.hidden && messageBuffer.length > 0) {
         const $elements = $(messageBuffer.map(message => message.html).join(''));
         addTimestampsToElements($elements);
@@ -1729,25 +1747,28 @@ function generateWaveformSvg(url) {
     return `<svg viewBox="0 0 ${viewBoxWidth} 26" preserveAspectRatio="none" class="wave-svg">${rects}</svg>`;
 }
 
-function parseContent(str) {
+function parseContent(str, escapedInput = false) {
+    str = escapedInput ? String(str || '') : escapeChatText(str || '');
     try {
         if (!str) return str;
         if (!str.includes('[') && !str.includes('http')) {
-            return str.split(' ').map(w => {
+            const plain = str.split(' ').map(w => {
                 let src = altMap[w.toLowerCase()];
-                return src ? `<img src="${src}" class="alt-emoji" loading="lazy" decoding="async">` : w;
+                return src ? `<img src="${escapeChatText(src)}" class="alt-emoji" loading="lazy" decoding="async">` : w;
             }).join(' ');
+            return escapedInput ? restoreChatHtml(plain) : plain;
         }
         let a = str, placeholders = [];
+        const mediaPrefix = `__MEDIA_${Math.random().toString(36).slice(2)}_`;
         a = a.replace(RE_S_TAG, (m, b) => {
             b = b.replace(/[\r\n]/g, "").replace(/ /g, '').replace('[S]', '').replace('[', '');
-            let id = `__PH_${placeholders.length}__`;
+            let id = `${mediaPrefix}${placeholders.length}__`;
             placeholders.push(`<a class="media-preview" href="${b}" target="_blank"><img src="${b}" onload="onMediaLoaded()" onerror="onMediaLoaded()" loading="lazy" decoding="async"/></a>`);
             return id;
         });
         a = a.replace(RE_s_TAG, (m, content) => {
             let b = content.replace(/[\r\n]/g, "").replace(/ /g, '').replace('[s]', '').replace('[', '');
-            let id = `__PH_${placeholders.length}__`, e = "";
+            let id = `${mediaPrefix}${placeholders.length}__`, e = "";
             if (RE_IS_YOUTUBE.test(b) && !RE_IS_IMG_EXT.test(b)) {
                 let vid = b.includes('watch?') ? getParameterByName('v', b) : b.replace('https://www.', '').replace('https://', '').replace('youtu.be/', '').replace('youtube.com/embed/', '').replace('youtube.com/shorts/', '').replace('youtube.com/live/', '').replace('&feature=share', '');
                 let t = getParameterByName('t', b);
@@ -1770,14 +1791,14 @@ function parseContent(str) {
             return id;
         });
         a = a.replace(RE_s_URL, (m, url) => {
-            if (url.includes('__PH_')) return m;
-            let id = `__PH_${placeholders.length}__`;
+            if (url.includes(mediaPrefix)) return m;
+            let id = `${mediaPrefix}${placeholders.length}__`;
             placeholders.push(`<a href="${url}" target="_blank"><img src="${url}" class="media-preview" onload="onMediaLoaded()" onerror="onMediaLoaded()" loading="lazy" decoding="async"/></a>`);
             return id;
         });
         a = a.replace(RE_y_TAG, (m, content) => {
             let b = content.replace(/[\r\n]/g, "").replace(/ /g, '').replace('[y]', '').replace('[', '');
-            let id = `__PH_${placeholders.length}__`, e = "";
+            let id = `${mediaPrefix}${placeholders.length}__`, e = "";
             if (b.includes('facebook')) {
                 e = `<iframe src="https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(b)}&show_text=0&width=300" width="300" height="200" style="border:none;overflow:hidden" scrolling="no" frameborder="0" allowfullscreen onload="onMediaLoaded()" loading="lazy"></iframe>`;
             } else if (RE_IS_YOUTUBE.test(b)) {
@@ -1795,8 +1816,8 @@ function parseContent(str) {
             return id;
         });
         a = a.replace(RE_y_URL, (m, b) => {
-            if (b.includes('__PH_')) return m;
-            let id = `__PH_${placeholders.length}__`, e = "";
+            if (b.includes(mediaPrefix)) return m;
+            let id = `${mediaPrefix}${placeholders.length}__`, e = "";
             if (b.includes('facebook')) {
                 e = `<iframe src="https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(b)}&show_text=0&width=300" width="300" height="200" style="border:none;overflow:hidden" scrolling="no" frameborder="0" allowfullscreen onload="onMediaLoaded()" loading="lazy"></iframe>`;
             } else if (RE_IS_YOUTUBE.test(b)) {
@@ -1814,7 +1835,7 @@ function parseContent(str) {
             return id;
         });
         a = a.replace(RE_a_TAG, (m, url) => {
-            let id = `__PH_${placeholders.length}__`;
+            let id = `${mediaPrefix}${placeholders.length}__`;
             let safeUrl = url.trim().replace(/"/g, '&quot;');
             let waveSvg = generateWaveformSvg(safeUrl);
             placeholders.push(`<div class="wa-audio-player" data-url="${safeUrl}" data-state="paused">
@@ -1828,26 +1849,27 @@ function parseContent(str) {
             return id;
         });
         a = a.replace(RE_HTTP_LINK, (match, space, url) => {
-            if (url.includes('__PH_')) return match;
+            if (url.includes(mediaPrefix)) return match;
             return space + `<a href="${url}" target="_blank" style="color:#58a6ff;">${url}</a>`;
         });
         let words = a.split(' ');
         a = words.map(w => {
-            if (w.includes('__PH_')) return w;
+            if (w.includes(mediaPrefix)) return w;
             let src = altMap[w.toLowerCase()];
-            return src ? `<img src="${src}" class="alt-emoji" loading="lazy" decoding="async">` : w;
+            return src ? `<img src="${escapeChatText(src)}" class="alt-emoji" loading="lazy" decoding="async">` : w;
         }).join(' ');
-        placeholders.forEach((html, i) => { a = a.replace(`__PH_${i}__`, html); });
-        return a;
-    } catch (e) { console.error('parseContent Error:', e); return str; }
+        placeholders.forEach((html, i) => { a = a.replace(`${mediaPrefix}${i}__`, () => html); });
+        return escapedInput ? restoreChatHtml(a) : a;
+    } catch (e) { console.error('parseContent Error:', e); return escapedInput ? restoreChatHtml(str) : str; }
 }
-function processRTag(str, depth = 0) {
-    if (!str) return str;
+function processRTag(str, depth = 0, visited = new Set()) {
+    if (!str) return '';
     if (depth > MAX_RTAG_DEPTH) return '[遞迴引用達最大深度]';
+    str = escapeChatText(str);
     return str.replace(/\[r\]([^,]+),([0-9]+)\[m\]/gi, (match, login, ts) => {
         const displayName = getUserDisplayName(login, login);
         const isSelf = (myLoginId && login === myLoginId);
-        const mentionHtml = isSelf ? `<span class="mention-self-tag">@${myDisplayName || displayName}</span>` : `@${displayName}`;
+        const mentionHtml = isSelf ? `<span class="mention-self-tag">@${escapeChatText(myDisplayName || displayName)}</span>` : `@${escapeChatText(displayName)}`;
         let quotedMsg = msgCache[ts];
         let foundContent = null;
         if ((!quotedMsg || !quotedMsg.content) && login === myLoginId) {
@@ -1866,67 +1888,94 @@ function processRTag(str, depth = 0) {
                 }
             }
             if (bestMatch && bestMatch.content) foundContent = bestMatch.content;
-            if (!foundContent) return mentionHtml;
+            if (!foundContent) return protectChatHtml(mentionHtml);
         } else if (quotedMsg && quotedMsg.content) {
             foundContent = quotedMsg.content;
-        } else { return mentionHtml; }
+        } else { return protectChatHtml(mentionHtml); }
         let quotedContent = foundContent;
-        if (quotedContent.includes(`[r]${login},${ts}[m]`)) return `${mentionHtml}:${parsedQuote}`;
-        const parsedQuote = parseContent(processRTag(quotedContent, depth + 1));
-        return `<div class="quote-box" onclick="scrollToMsg('${ts}')"><svg width="17" height="17" viewBox="0 0 24 20" fill="currentColor" style="vertical-align: middle;"><path d="M9 10h2v2H9v-2Zm6 0h-2v2h2v-2Z"></path><path fill-rule="evenodd" d="m12 22-3-3H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 2 2h-4l-3 3Zm-2.172-5L12 19.172 14.172 17H19V5H5v12h4.828Z" clip-rule="evenodd"></path></svg> 引用${mentionHtml}:${parsedQuote}</div>`;
+        const reference = `${login}:${ts}`;
+        if (visited.has(reference) || quotedContent.includes(`[r]${login},${ts}[m]`)) {
+            return protectChatHtml(`${mentionHtml}:[循環引用]`);
+        }
+        const nextVisited = new Set(visited);
+        nextVisited.add(reference);
+        const parsedQuote = parseContent(processRTag(quotedContent, depth + 1, nextVisited), true);
+        return protectChatHtml(`<div class="quote-box" onclick="scrollToMsg('${ts}')"><svg width="17" height="17" viewBox="0 0 24 20" fill="currentColor" style="vertical-align: middle;"><path d="M9 10h2v2H9v-2Zm6 0h-2v2h2v-2Z"></path><path fill-rule="evenodd" d="m12 22-3-3H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 2 2h-4l-3 3Zm-2.172-5L12 19.172 14.172 17H19V5H5v12h4.828Z" clip-rule="evenodd"></path></svg> 引用${mentionHtml}:${parsedQuote}</div>`);
     });
 }
 
 // ===================== 資源載入與表情面板 =====================
-async function fetchBadges() {
+async function fetchResourceJson(url, options = {}) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
     try {
-        let success = false;
+        const response = await fetch(url, { ...options, signal: controller.signal });
+        if (!response.ok) throw new Error(`資源回應 ${response.status}: ${url}`);
+        return await response.json();
+    } finally { clearTimeout(timeoutId); }
+}
+function readResourceArray(key) {
+    try {
+        const data = JSON.parse(localStorage.getItem(key) || '[]');
+        return Array.isArray(data) ? data : [];
+    } catch (err) { return []; }
+}
+function refreshChatResources() {
+    try {
+        refreshVisibleMessages();
+        updateBadgeCarousel();
+    } catch (err) { console.warn('重新顯示聊天資源失敗:', err); }
+}
+function collectResourceBadges(sets, setKey, imageKey, target) {
+    (Array.isArray(sets) ? sets : []).forEach(set => {
+        if (!set || !Array.isArray(set.versions)) return;
+        set.versions.forEach(version => {
+            if (!version || typeof version[imageKey] !== 'string' || !version[imageKey]) return;
+            const name = set[setKey];
+            if (!name || version.id == null) return;
+            target[`${name}/${version.id}`] = version[imageKey];
+            if (!target[name]) target[name] = version[imageKey];
+        });
+    });
+}
+async function fetchBadges() {
+    let success = false;
+    const localBadges = fetchResourceJson('./b.txt').then(data => {
+        if (!success && data && typeof data === 'object' && !Array.isArray(data)) {
+            customBadges = data;
+            refreshChatResources();
+        }
+    }).catch(err => console.warn('本地 Badges 失敗:', err));
+    try {
         if (ACCESS_TOKEN) {
             try {
-                const userRes = await fetch(`https://api.twitch.tv/helix/users?login=${CHANNEL}`, {
-                    headers: { 'Client-ID': CLIENT_ID, 'Authorization': 'Bearer ' + ACCESS_TOKEN }
-                });
-                if (userRes.ok) {
-                    const userData = await userRes.json();
-                    if (userData.data && userData.data.length > 0) {
-                        const broadcasterId = userData.data[0].id;
-                        let newBadges = {};
-                        const globalRes = await fetch(`https://api.twitch.tv/helix/chat/badges/global`, {
-                            headers: { 'Client-ID': CLIENT_ID, 'Authorization': 'Bearer ' + ACCESS_TOKEN }
-                        });
-                        if (globalRes.ok) {
-                            const globalData = await globalRes.json();
-                            globalData.data.forEach(set => {
-                                set.versions.forEach(v => {
-                                    newBadges[`${set.set_id}/${v.id}`] = v.image_url_1x;
-                                    if (!newBadges[set.set_id]) newBadges[set.set_id] = v.image_url_1x;
-                                });
-                            });
-                        }
-                        const channelRes = await fetch(`https://api.twitch.tv/helix/chat/badges?broadcaster_id=${broadcasterId}`, {
-                            headers: { 'Client-ID': CLIENT_ID, 'Authorization': 'Bearer ' + ACCESS_TOKEN }
-                        });
-                        if (channelRes.ok) {
-                            const channelData = await channelRes.json();
-                            channelData.data.forEach(set => {
-                                set.versions.forEach(v => {
-                                    newBadges[`${set.set_id}/${v.id}`] = v.image_url_1x;
-                                    if (!newBadges[set.set_id]) newBadges[set.set_id] = v.image_url_1x;
-                                });
-                            });
-                        }
-                        if (Object.keys(newBadges).length > 0) { customBadges = newBadges; success = true; }
-                    }
+                const headers = { 'Client-ID': CLIENT_ID, 'Authorization': 'Bearer ' + ACCESS_TOKEN };
+                const userData = await fetchResourceJson(`https://api.twitch.tv/helix/users?login=${encodeURIComponent(CHANNEL)}`, { headers });
+                const broadcasterId = userData?.data?.[0]?.id;
+                if (broadcasterId) {
+                    const newBadges = {};
+                    await Promise.allSettled([
+                        'https://api.twitch.tv/helix/chat/badges/global',
+                        `https://api.twitch.tv/helix/chat/badges?broadcaster_id=${encodeURIComponent(broadcasterId)}`
+                    ].map(async url => {
+                        try {
+                            const data = await fetchResourceJson(url, { headers });
+                            collectResourceBadges(data?.data, 'set_id', 'image_url_1x', newBadges);
+                            if (Object.keys(newBadges).length > 0) {
+                                customBadges = { ...newBadges }; success = true; refreshChatResources();
+                            }
+                        } catch (err) { console.warn('Helix Badge 資源失敗:', err); }
+                    }));
                 }
             } catch(err) { console.warn('Helix Badges 失敗:', err); }
         }
         if (!success) {
             try {
-                const gqlRes = await fetch("https://gql.twitch.tv/gql", {
-                    method: "POST",
-                    headers: { "Client-Id": "kimne78kx3ncx6brgo4mv6wki5h1ko" },
+                const gqlData = await fetchResourceJson('https://gql.twitch.tv/gql', {
+                    method: 'POST',
+                    headers: { 'Client-Id': 'kimne78kx3ncx6brgo4mv6wki5h1ko' },
                     body: JSON.stringify([{
-                        operationName: "Chat_Badges",
+                        operationName: 'Chat_Badges',
                         variables: { channelLogin: CHANNEL },
                         query: `query Chat_Badges($channelLogin: String!) {
                             badges { setID versions { id imageURL(size: "1") } }
@@ -1934,72 +1983,62 @@ async function fetchBadges() {
                         }`
                     }])
                 });
-                if (gqlRes.ok) {
-                    const gqlData = await gqlRes.json();
-                    const resData = gqlData[0].data;
-                    let newBadges = {};
-                    if (resData.badges) {
-                        resData.badges.forEach(set => {
-                            set.versions.forEach(v => {
-                                newBadges[`${set.setID}/${v.id}`] = v.imageURL;
-                                if (!newBadges[set.setID]) newBadges[set.setID] = v.imageURL;
-                            });
-                        });
-                    }
-                    if (resData.user && resData.user.badges) {
-                        resData.user.badges.forEach(set => {
-                            set.versions.forEach(v => {
-                                newBadges[`${set.setID}/${v.id}`] = v.imageURL;
-                                if (!newBadges[set.setID]) newBadges[set.setID] = v.imageURL;
-                            });
-                        });
-                    }
-                    if (Object.keys(newBadges).length > 0) { customBadges = newBadges; success = true; }
+                const resData = gqlData?.[0]?.data;
+                const newBadges = {};
+                collectResourceBadges(resData?.badges, 'setID', 'imageURL', newBadges);
+                collectResourceBadges(resData?.user?.badges, 'setID', 'imageURL', newBadges);
+                if (Object.keys(newBadges).length > 0) {
+                    customBadges = newBadges; success = true; refreshChatResources();
                 }
             } catch (err) { console.warn('GraphQL Badges 失敗:', err); }
         }
-        if (!success) {
-            const res = await fetch('./b.txt');
-            customBadges = await res.json();
-        }
-    } catch(e) { console.error('載入 Badges 嚴重錯誤:', e); customBadges = {}; }
+    } finally { await localBadges; }
 }
 async function loadAudioData() {
+    const local = readResourceArray('myAudios');
+    audioLists["音訊"] = { audios: mergeAudioLists([], local), image: "🔊" };
     try {
-        const remote = await fetch('./audio.txt').then(r => r.json());
-        const local = JSON.parse(localStorage.getItem('myAudios') || '[]');
+        const remote = await fetchResourceJson('./audio.txt');
         audioLists["音訊"] = { audios: mergeAudioLists(remote, local), image: "🔊" };
-    } catch(e) { audioLists["音訊"] = { audios: JSON.parse(localStorage.getItem('myAudios') || '[]'), image: "🔊" }; }
+        refreshChatResources();
+    } catch(e) { console.warn('音訊資源載入失敗:', e); }
 }
 function mergeAudioLists(remote, local) {
-    const merged = [...remote];
-    const set = new Set(remote.map(a => a.url));
-    local.forEach(l => { if(!set.has(l.url)) { merged.push(l); set.add(l.url); } });
+    const valid = list => (Array.isArray(list) ? list : []).filter(item => item && typeof item.url === 'string' && item.url);
+    const merged = valid(remote);
+    const set = new Set(merged.map(a => a.url));
+    valid(local).forEach(l => { if(!set.has(l.url)) { merged.push(l); set.add(l.url); } });
     return merged;
 }
 async function loadResources() {
-    try {
-        const sk = await $.getJSON("https://live.sk-knower.com/lib/iconjsonp.php?channel=whitewing940920");
-        if (Array.isArray(sk)) {
-            emojiLists["本台"] = { emojis: sk, image: sk[0].src , image: "./chick.png" };
-            sk.forEach(i => { if(i.alt) altMap[i.alt.toLowerCase()] = i.src; });
-        }
-        const bttv = JSON.parse(localStorage.getItem('myBTTV') || '[]');
-        emojiLists["BTTV"] = { emojis: bttv.map(url => ({ alt: url.split('/').pop().split('?')[0], src: url })), image: "https://static-cdn.jtvnw.net/badges/v1/ed51a614-2c44-4a60-80b6-62908436b43a/3" };
-        await loadAudioData();
-        const shows = await $.getJSON("./showset.txt");
-        for (let item of shows.set) {
-            let n = typeof item === 'object' ? item.name : item;
-            let img = typeof item === 'object' ? item.image : "";
-            if (!n || n === "skuser_icon") continue;
-            let url = (n === "twitch") ? `./${n}.txt` : `https://sk-knower.com/sklive_api/read/skchat_icon.php?set=${n}`;
-            $.getJSON(url, d => {
-                let list = d[n] || [];
-                emojiLists[n] = { emojis: list, image: img };
-                list.forEach(e => { if(e.alt) altMap[e.alt.toLowerCase()] = e.src; });
-            });
-        }
-    } catch(e) { console.error(e); }
+    const bttv = readResourceArray('myBTTV').filter(url => typeof url === 'string' && url);
+    emojiLists["本台"] = { emojis: [], image: "./chick.png" };
+    emojiLists["BTTV"] = { emojis: bttv.map(url => ({ alt: url.split('/').pop().split('?')[0], src: url })), image: "https://static-cdn.jtvnw.net/badges/v1/ed51a614-2c44-4a60-80b6-62908436b43a/3" };
+    refreshChatResources();
+    const applyEmojiList = (name, data, image) => {
+        const list = (Array.isArray(data) ? data : []).filter(item => item && typeof item.alt === 'string' && typeof item.src === 'string');
+        emojiLists[name] = { emojis: list, image };
+        list.forEach(item => { if(item.alt) altMap[item.alt.toLowerCase()] = item.src; });
+        refreshChatResources();
+    };
+    await Promise.allSettled([
+        fetchResourceJson(`https://live.sk-knower.com/lib/iconjsonp.php?channel=${encodeURIComponent(CHANNEL)}`)
+            .then(sk => applyEmojiList('本台', sk, './chick.png'))
+            .catch(err => console.warn('本台貼圖資源失敗:', err)),
+        loadAudioData(),
+        fetchResourceJson('./showset.txt').then(async shows => {
+            await Promise.allSettled((Array.isArray(shows?.set) ? shows.set : []).map(async item => {
+                const name = typeof item === 'string' ? item : item?.name;
+                const image = typeof item === 'object' ? item?.image || '' : '';
+                if (typeof name !== 'string' || !name || name === 'skuser_icon') return;
+                const url = name === 'twitch' ? './twitch.txt' : `https://sk-knower.com/sklive_api/read/skchat_icon.php?set=${encodeURIComponent(name)}`;
+                try {
+                    const data = await fetchResourceJson(url);
+                    applyEmojiList(name, data?.[name], image);
+                } catch (err) { console.warn(`貼圖集 ${name} 載入失敗:`, err); }
+            }));
+        }).catch(err => console.warn('貼圖設定載入失敗:', err))
+    ]);
 }
 function renderEmojiPanel() {
     const tabs = $("#emojiTabs").empty();
@@ -2360,7 +2399,7 @@ function sendMessage() {
         finalCmd = `PRIVMSG #${CHANNEL} :${val}`;
     }
     socket.send(finalCmd);
-    const selfMsgRecord = { content: processedContentForDisplay, user: { login: myLoginId, displayName: myDisplayName }, displayName: myDisplayName, badges: myBadgeStr, avatar: myAvatar, timestamp: Date.now() };
+    const selfMsgRecord = { content: val, user: { login: myLoginId, displayName: myDisplayName }, displayName: myDisplayName, badges: myBadgeStr, avatar: myAvatar, timestamp: Date.now() };
     msgCache[selfTs] = selfMsgRecord;
     addRecentUser({ login: myLoginId, displayName: myDisplayName, badges: myBadgeStr, avatar: myAvatar });
     let line = `<div class="chat-line ts-${selfTs} id-${selfTs}" data-user-login="${myLoginId}" data-msg-ts="${selfTs}">
@@ -2368,7 +2407,7 @@ function sendMessage() {
             <div class="reply-btn" onclick="replyNative('${myLoginId}','${selfTs}','${myDisplayName}')"><img src="./re2.png"></div>
             <div class="reply-btn2" onclick="insertRecursiveQuote('${myLoginId}','${selfTs}')" title="sk回覆格式">🔗</div>
         </div>
-        <b class="self-name" style="color:${myColor}">${badgeHtml}${formatNameHtml(myDisplayName || myLoginId, myLoginId)}:</b> <span>${replyDisplay}${parseContent(processedContentForDisplay)}</span>
+        <b class="self-name" style="color:${myColor}">${badgeHtml}${formatNameHtml(myDisplayName || myLoginId, myLoginId)}:</b> <span>${replyDisplay}${parseContent(processedContentForDisplay, true)}</span>
     </div>`;
     appendMessageWithScroll(line);
     cancelReply();
@@ -2393,45 +2432,127 @@ window.insertRecursiveQuote = function(login, ts) {
 // ===================== 歷史訊息 =====================
 let isFetchingHistory = false;
 let pendingHistoryRefresh = false;
-async function fetchRecentMessages() {
-    if (isFetchingHistory) { pendingHistoryRefresh = true; return; }
+let pendingOlderHistory = false;
+let historyHasLoaded = false;
+let oldestHistoryCursor = null;
+let historyRetryOlder = null;
+function setHistoryStatus(text) {
+    const status = document.getElementById('historyStatus');
+    if (status && status.textContent !== text) status.textContent = text;
+}
+function loadMoreHistory() { return fetchRecentMessages(historyRetryOlder ?? (oldestHistoryCursor !== null)); }
+async function fetchRecentMessages(older = false) {
+    if (older && (document.getElementById('messages')?.children?.length || 0) >= MAX_MESSAGES) {
+        setHistoryStatus(`本頁已達 ${MAX_MESSAGES} 則保留上限，停止載入較早留言。`);
+        const button = document.getElementById('loadMoreHistoryBtn');
+        if (button) { button.disabled = true; button.textContent = '本頁已達保留上限'; }
+        return;
+    }
+    if (isFetchingHistory) {
+        pendingHistoryRefresh = true;
+        pendingOlderHistory ||= older;
+        return;
+    }
+    if (older && oldestHistoryCursor === null) return;
     isFetchingHistory = true;
+    const button = document.getElementById('loadMoreHistoryBtn');
+    if (button) button.disabled = true;
+    const chat = document.getElementById('chat-container');
+    const previousHeight = chat?.scrollHeight || 0;
+    const previousTop = chat?.scrollTop || 0;
+    const shouldScroll = autoScroll && !older;
+    if (older) { autoScroll = false; isInitialLoad = false; }
+    const limit = older || !historyHasLoaded ? 100 : 800;
+    const before = older ? `&before=${oldestHistoryCursor}` : '';
+    setHistoryStatus(older ? '正在載入更早留言…' : '正在補回留言…');
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 12000);
     try {
-        // API 可能包含控制或重複訊息；先取較多筆，再保留最新 30 則留言。
-        const response = await fetch(`https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(CHANNEL)}?limit=100`, { signal: controller.signal });
+        const response = await fetch(`https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(CHANNEL)}?limit=${limit}${before}`, { signal: controller.signal });
         if (!response.ok) throw new Error(`歷史訊息服務回應 ${response.status}`);
         const data = await response.json();
-        const history = (Array.isArray(data.messages) ? data.messages : [])
+        const rawEvents = Array.isArray(data.messages) ? data.messages : [];
+        const previousCursor = oldestHistoryCursor;
+        const parsedHistory = rawEvents
             .flatMap(raw => typeof raw === 'string' ? raw.split(/\r?\n/) : [])
-            .map(parseIrcLine)
+            .map(parseIrcLine).filter(Boolean);
+        const history = parsedHistory
             .filter(message => message && message.command === 'PRIVMSG' &&
                 message.params[0]?.toLowerCase() === `#${CHANNEL.toLowerCase()}`)
             .sort((a, b) => Number(getTagValue(a.tags, 'tmi-sent-ts') || 0) -
                 Number(getTagValue(b.tags, 'tmi-sent-ts') || 0));
         const unique = new Map();
         history.forEach(message => unique.set(chatMessageKey(message) || message, message));
-        Array.from(unique.values()).slice(-30).forEach(message => {
+        const messages = Array.from(unique.values());
+        messages.forEach(message => {
             try { renderChatMessage(message, true); }
             catch (err) { console.error('處理歷史訊息錯誤:', err); }
         });
-    } catch (err) { console.error('獲取歷史訊息失敗:', err); }
+        const cursors = parsedHistory.map(message => Number(getTagValue(message.tags, 'rm-received-ts') || getTagValue(message.tags, 'tmi-sent-ts')))
+            .filter(time => Number.isFinite(time) && time > 0);
+        if (cursors.length) oldestHistoryCursor = Math.min(oldestHistoryCursor ?? Infinity, ...cursors);
+        historyHasLoaded = true;
+        historyRetryOlder = null;
+        const advanced = oldestHistoryCursor !== null && (previousCursor === null || oldestHistoryCursor < previousCursor);
+        if (button) {
+            button.disabled = oldestHistoryCursor === null || (older && (!advanced || rawEvents.length < limit));
+            button.textContent = button.disabled ? '已載入可用歷史' : '載入更早留言';
+        }
+        setHistoryStatus(older && !advanced ? '暫時沒有更早的可用留言。' : '留言已更新；可載入更早留言。');
+        if ((document.getElementById('messages')?.children?.length || 0) >= MAX_MESSAGES) {
+            setHistoryStatus(`目前顯示最近 ${MAX_MESSAGES} 則；較早留言已移出畫面。`);
+            if (button) { button.disabled = true; button.textContent = '本頁已達保留上限'; }
+        }
+        if (older && chat) chat.scrollTop = previousTop + Math.max(0, chat.scrollHeight - previousHeight);
+    } catch (err) {
+        console.error('獲取歷史訊息失敗:', err);
+        historyRetryOlder = older;
+        setHistoryStatus('歷史載入失敗，即時訊息仍會繼續；可稍後再試。');
+        if (button) {
+            button.disabled = false;
+            button.textContent = '重試載入留言';
+        }
+    }
     finally {
         clearTimeout(timeoutId);
         isFetchingHistory = false;
         if (pendingHistoryRefresh) {
             pendingHistoryRefresh = false;
-            fetchRecentMessages();
+            const nextOlder = pendingOlderHistory;
+            pendingOlderHistory = false;
+            fetchRecentMessages(nextOlder);
         }
     }
-    forceScrollToBottom(true);
+    if (shouldScroll && autoScroll) forceScrollToBottom(true);
     setTimeout(() => { isInitialLoad = false; }, 8000);
 }
 
 // ===================== 連線邏輯 =====================
+function escapeChatText(value) {
+    return String(value ?? '').replace(/[&<>"']/g, char =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+}
+const trustedChatHtml = new Map();
+const chatHtmlPrefix = `__CHAT_${Math.random().toString(36).slice(2)}_`;
+let chatHtmlCounter = 0;
+function protectChatHtml(html) {
+    const token = `${chatHtmlPrefix}${++chatHtmlCounter}__`;
+    trustedChatHtml.set(token, html);
+    if (trustedChatHtml.size > 200) trustedChatHtml.delete(trustedChatHtml.keys().next().value);
+    return token;
+}
+function restoreChatHtml(text) {
+    for (const [token, html] of trustedChatHtml) {
+        if (text.includes(token)) {
+            text = text.split(token).join(html);
+            trustedChatHtml.delete(token);
+        }
+    }
+    return text;
+}
+
 function parseIrcLine(line) {
-    const match = line.match(/^(?:@([^ ]+) )?(?::([^ ]+) )?([A-Za-z0-9]+)(?: (.*))?$/);
+    const match = line.match(/^(?:@([^ ]+) )?(?::([^ ]+) )?([A-Za-z0-9]+)(?: ([\s\S]*))?$/);
     if (!match) return null;
     let params = match[4] || '';
     let body = '';
@@ -2461,6 +2582,20 @@ function renderChatMessage(message, historical = false) {
     if (message.command !== "PRIVMSG" || message.params[0]?.toLowerCase() !== `#${CHANNEL.toLowerCase()}`) return;
     const key = chatMessageKey(message);
     if (key && seenMessageIds.has(key)) return;
+    let line;
+    try { line = buildChatMessageHtml(message, historical); }
+    catch (err) {
+        console.error('訊息格式轉換失敗，保留原文:', err);
+        const ts = getTagValue(message.tags, 'tmi-sent-ts') || Date.now().toString();
+        const user = getTagValue(message.tags, 'display-name') || message.source.split('!')[0];
+        line = `<div class="chat-line" data-msg-ts="${escapeChatText(ts)}"><b>${escapeChatText(user)}:</b> <span>${escapeChatText(message.body)}</span></div>`;
+    }
+    appendMessageWithScroll(line);
+    if (key) seenMessageIds.add(key);
+    if (seenMessageIds.size > 2000) seenMessageIds.delete(seenMessageIds.values().next().value);
+}
+
+function buildChatMessageHtml(message, historical = false) {
     const tags = message.tags;
     const rawMsg = message.body;
     const nickFromSource = message.source.split("!")[0];
@@ -2475,7 +2610,7 @@ function renderChatMessage(message, historical = false) {
     let msgRecord = {
         content: rawMsg, user: { login: userLogin, displayName: user }, displayName: user,
         badges: badgeStr, avatar: 'https://static-cdn.jtvnw.net/user-default-pictures-uv/75305d54-c7cc-40d1-bb9c-91fbe85943c7-profile_image-70x70.png',
-        timestamp: parseInt(ts)
+        timestamp: parseInt(ts), ircMessage: message
     };
     if (msgId) msgCache[msgId] = msgRecord;
     msgCache[ts] = msgRecord;
@@ -2489,44 +2624,61 @@ function renderChatMessage(message, historical = false) {
         let originalText = pBodyRaw ? pBodyRaw.replace(/\\([s:nr\\])/g, (_, char) =>
             ({ s: ' ', ':': ';', n: '\n', r: '\r', '\\': '\\' })[char]) : "...";
         let processed = processRTag(originalText, 0);
-        let pBody = parseContent(processed);
+        let pBody = parseContent(processed, true);
         let userTagClass = isMe ? 'quote-user mention-self-tag' : 'quote-user';
-        replyHtml = `<div class="quote-box" onclick="scrollToMsg('${pId}')"><svg width="17" height="17" viewBox="0 0 24 20" fill="currentColor"><path d="M9 10h2v2H9v-2Zm6 0h-2v2h2v-2Z"></path><path fill-rule="evenodd" d="m12 22-3-3H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 2 2h-4l-3 3Zm-2.172-5L12 19.172 14.172 17H19V5H5v12h4.828Z" clip-rule="evenodd"></path></svg> 回覆<span class="${userTagClass}">@${pUser}:</span>${pBody}</div>`;
+        replyHtml = `<div class="quote-box" onclick="scrollToMsg('${escapeChatText(pId)}')"><svg width="17" height="17" viewBox="0 0 24 20" fill="currentColor"><path d="M9 10h2v2H9v-2Zm6 0h-2v2h2v-2Z"></path><path fill-rule="evenodd" d="m12 22-3-3H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 2 2h-4l-3 3Zm-2.172-5L12 19.172 14.172 17H19V5H5v12h4.828Z" clip-rule="evenodd"></path></svg> 回覆<span class="${userTagClass}">@${escapeChatText(pUser)}:</span>${pBody}</div>`;
         const mentions = [pUser, getTagValue(tags, 'reply-parent-user-login')].filter(Boolean);
         const mention = mentions.find(name => displayMsg.toLowerCase().startsWith(`@${name.toLowerCase()} `));
         if (mention) displayMsg = displayMsg.substring(mention.length + 2);
     }
     displayMsg = processRTag(displayMsg, 0);
     displayMsg = highlightSelfMentions(displayMsg);
-    let contentHtml = parseContent(displayMsg);
+    let contentHtml = parseContent(displayMsg, true);
     let badgeHtml = renderBadges(badgeStr);
-    let line = `<div class="chat-line ${historical ? 'historical-msg ' : ''}ts-${ts} id-${msgId||ts}" data-user-login="${userLogin}" data-msg-ts="${ts}">
+    const replyAction = escapeChatText(`replyNative(${JSON.stringify(userLogin)},${JSON.stringify(msgId || ts)},${JSON.stringify(user)})`);
+    let line = `<div class="chat-line ${historical ? 'historical-msg ' : ''}ts-${escapeChatText(ts)} id-${escapeChatText(msgId||ts)}" data-message-id="${escapeChatText(msgId || ts)}" data-user-login="${escapeChatText(userLogin)}" data-msg-ts="${escapeChatText(ts)}">
         <div class="reply-btn-group">
-            <div class="reply-btn" onclick="replyNative('${userLogin}','${msgId||ts}','${user}')"><img src="./re2.png"></div>
+            <div class="reply-btn" onclick="${replyAction}"><img src="./re2.png"></div>
             <div class="reply-btn2" onclick="insertRecursiveQuote('${userLogin}','${ts}')" title="插入引用代碼 [r]">🔗</div>
         </div>
-        <b style="color:${color}">${badgeHtml}${formatNameHtml(user, userLogin)}:</b> <span>${replyHtml}${contentHtml}</span>
+        <b style="color:${/^#[0-9a-f]{6}$/i.test(color) ? color : '#9147ff'}">${badgeHtml}${formatNameHtml(user, userLogin)}:</b> <span>${replyHtml}${contentHtml}</span>
     </div>`;
-    appendMessageWithScroll(line);
-    if (key) seenMessageIds.add(key);
-    if (seenMessageIds.size > 500) seenMessageIds.delete(seenMessageIds.values().next().value);
+    return line;
 }
 
-function startChat() {
-    if (isConnecting) return;
-    if (socket && socket.readyState === WebSocket.OPEN) return;
+function refreshVisibleMessages() {
+    document.querySelectorAll('#messages .chat-line[data-message-id]').forEach(row => {
+        const record = msgCache[row.dataset.messageId];
+        if (!record?.ircMessage) return;
+        try {
+            const replacement = $(buildChatMessageHtml(record.ircMessage, row.classList.contains('historical-msg')));
+            addTimestampsToElements(replacement);
+            row.querySelectorAll('video').forEach(video => mediaObserver.unobserve(video));
+            row.replaceWith(replacement[0]);
+            replacement.find('video.media-preview').each(function() { mediaObserver.observe(this); });
+        } catch (err) { console.warn('更新訊息資源失敗，保留目前內容:', err); }
+    });
+}
+
+function startChat(forceRestart = false) {
+    if (!forceRestart && isConnecting) return;
+    if (!forceRestart && socket && socket.readyState === WebSocket.OPEN) return;
     if (socket) {
-        socket.onclose = null;
-        try { socket.close(); } catch(e) {}
+        const previousSocket = socket;
         socket = null;
+        previousSocket.onopen = previousSocket.onmessage = previousSocket.onerror = previousSocket.onclose = null;
+        try { previousSocket.close(); } catch(e) {}
     }
     isConnecting = true;
+    hasJoinedChannel = false;
     clearReconnectTimer();
-    socket = new WebSocket('wss://irc-ws.chat.twitch.tv:443');
-    socket.onopen = () => {
+    const ownedSocket = new WebSocket('wss://irc-ws.chat.twitch.tv:443');
+    socket = ownedSocket;
+    ownedSocket.onopen = () => {
+        if (socket !== ownedSocket) return;
         isConnecting = false;
         clearReconnectTimer();
-        socket.send('CAP REQ :twitch.tv/tags twitch.tv/commands');
+        ownedSocket.send('CAP REQ :twitch.tv/tags twitch.tv/commands');
         let pass, nick;
         if (ACCESS_TOKEN) {
             pass = `oauth:${ACCESS_TOKEN}`;
@@ -2536,9 +2688,9 @@ function startChat() {
             pass = `justinfan${rand}`;
             nick = `justinfan${rand}`;
         }
-        socket.send(`PASS ${pass}`);
-        socket.send(`NICK ${nick}`);
-        socket.send(`JOIN #${CHANNEL}`);
+        ownedSocket.send(`PASS ${pass}`);
+        ownedSocket.send(`NICK ${nick}`);
+        ownedSocket.send(`JOIN #${CHANNEL}`);
         let statusMsg = ACCESS_TOKEN ? `連線至 ${CHANNEL}` : `匿名觀看 ${CHANNEL}`;
         document.getElementById('status').innerHTML = statusMsg;
         document.getElementById('msginput').disabled = !ACCESS_TOKEN;
@@ -2546,20 +2698,31 @@ function startChat() {
         hasJoinedChannel = false;
         needsHistoryRefresh = true;
     };
-    socket.onerror = (err) => { document.getElementById('status').textContent = '連線錯誤，即將重連...'; };
-    socket.onclose = (event) => {
+    ownedSocket.onerror = (err) => {
+        if (socket !== ownedSocket) return;
+        document.getElementById('status').textContent = '連線錯誤，即將重連...';
+    };
+    ownedSocket.onclose = (event) => {
+        if (socket !== ownedSocket) return;
         isConnecting = false;
         hasJoinedChannel = false;
-        if (socket) socket = null;
-        if (event.code !== 1000) scheduleReconnect();
+        socket = null;
+        scheduleReconnect();
         document.getElementById('status').textContent = `已斷線 (${event.code})，重連中...`;
     };
-    socket.onmessage = (e) => {
+    ownedSocket.onmessage = (e) => {
+        if (socket !== ownedSocket) return;
         // 一個 WebSocket frame 可能包含多個 IRC 命令，逐行處理並隔離錯誤。
         String(e.data).split(/\r?\n/).forEach(data => {
             try {
+                if (socket !== ownedSocket) return;
                 const message = parseIrcLine(data);
                 if (!message) return;
+                if (message.command === 'NOTICE' && ACCESS_TOKEN &&
+                    /authentication failed|login unsuccessful|improperly formatted auth/i.test(message.body)) {
+                    switchToAnonymousChat();
+                    return;
+                }
                 if (['JOIN', 'ROOMSTATE', '366'].includes(message.command) &&
                     message.params.some(param => param.toLowerCase() === `#${CHANNEL.toLowerCase()}`)) {
                     hasJoinedChannel = true;
@@ -2569,11 +2732,11 @@ function startChat() {
                     }
                 }
                 if (message.command === 'PING') {
-                    socket.send(`PONG :${message.body || message.params[0] || 'tmi.twitch.tv'}`);
+                    ownedSocket.send(`PONG :${message.body || message.params[0] || 'tmi.twitch.tv'}`);
                     return;
                 }
                 if (message.command === 'RECONNECT') {
-                    socket.close();
+                    ownedSocket.close();
                     scheduleReconnect();
                     return;
                 }
@@ -2618,34 +2781,57 @@ function loginWithPopup() {
         }
     }, 500);
 }
+let userInfoRequestId = 0;
+function switchToAnonymousChat() {
+    userInfoRequestId++;
+    localStorage.removeItem('twitch_token');
+    localStorage.removeItem('twitch_my_badges');
+    ACCESS_TOKEN = '';
+    myLoginId = myDisplayName = myAvatar = myBadges = '';
+    myColor = '#9147ff';
+    document.getElementById('loginBtn').style.display = '';
+    document.getElementById('userInfo').style.display = 'none';
+    document.getElementById('userName').textContent = '';
+    document.getElementById('userAvatar').removeAttribute('src');
+    document.getElementById('status').textContent = '正在連線至匿名聊天室...';
+    startChat(true);
+}
 async function fetchUserInfo(token) {
+    const requestId = ++userInfoRequestId;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
     try {
         const res = await fetch('https://api.twitch.tv/helix/users', {
+            signal: controller.signal,
             headers: { 'Client-ID': CLIENT_ID, 'Authorization': 'Bearer ' + token }
         });
+        if (requestId !== userInfoRequestId) return;
+        if (!res.ok) throw new Error(`Twitch 登入資料回應 ${res.status}`);
         const data = await res.json();
-        if (data.data?.[0]) {
-            myLoginId = data.data[0].login;
-            myDisplayName = data.data[0].display_name;
-            myAvatar = data.data[0].profile_image_url;
-            loginSuccess();
-        }
-    } catch(e) { console.error(e); alert('登入失敗'); logout(); }
+        if (requestId !== userInfoRequestId) return;
+        if (!data.data?.[0]?.login) throw new Error('Twitch 登入資料沒有使用者');
+        myLoginId = data.data[0].login;
+        myDisplayName = data.data[0].display_name || myLoginId;
+        myAvatar = data.data[0].profile_image_url || '';
+        loginSuccess();
+    } catch(e) {
+        if (requestId !== userInfoRequestId) return;
+        console.error('Twitch 登入失效，改用匿名觀看:', e);
+        switchToAnonymousChat();
+    } finally { clearTimeout(timeoutId); }
 }
 function loginSuccess() {
-    document.getElementById('status').innerHTML = `已登入：${myDisplayName}`;
+    document.getElementById('status').textContent = `已登入：${myDisplayName}`;
     document.getElementById('msginput').disabled = false;
     document.getElementById('sendbtn').disabled = false;
     document.getElementById('loginBtn').style.display = 'none';
     document.getElementById('userInfo').style.display = 'none';
     document.getElementById('userAvatar').src = myAvatar;
     document.getElementById('userName').textContent = myDisplayName;
-    if (socket) socket.close();
-    startChat();
+    startChat(true);
 }
 function logout() {
-    localStorage.removeItem('twitch_token');
-    location.reload();
+    switchToAnonymousChat();
 }
 
 function setupAutoTag() {
@@ -2718,9 +2904,11 @@ async function initApp() {
     document.getElementById('loginBtn').onclick = loginWithPopup;
     document.getElementById('logoutBtn').onclick = logout;
     setupScrollListener();
-    await fetchBadges();
-    await loadResources();
     chatResourcesReady = true;
+    Promise.allSettled([fetchBadges(), loadResources()]).then(() => {
+        updateBadgeCarousel();
+        refreshVisibleMessages();
+    });
     updateBadgeCarousel();
     setupAutoTag();
     setupMentionEvents();
@@ -2737,7 +2925,7 @@ async function initApp() {
             const chat = document.getElementById('chat-container');
             if (!chat) return;
             const isNearBottom = (chat.scrollHeight - chat.clientHeight - chat.scrollTop) < 800;
-            if (autoScroll || isNearBottom || isInitialLoad) {
+            if (autoScroll || isInitialLoad) {
                 chat.scrollTop = chat.scrollHeight + 9999;
                 autoScroll = true;
             }
