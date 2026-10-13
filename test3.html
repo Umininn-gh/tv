@@ -1245,7 +1245,7 @@
 
 <div style="display:flex;align-items:center;gap:10px;padding:6px 10px;font-size:12px;flex-wrap:wrap;">
     <button id="loadMoreHistoryBtn" onclick="loadMoreHistory()" class="btn-primary" style="padding:5px 10px;" disabled>載入更早留言</button>
-    <span id="historyStatus" role="status" aria-live="polite">正在連接聊天室…</span>
+    <span id="historyStatus" role="status" aria-live="polite" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">正在連接聊天室…</span>
 </div>
 <main id="chat-container">
     <div id="messages"></div>
@@ -1469,6 +1469,7 @@ let maxReconnectDelay = 30000;
 let isConnecting = false;
 let dragging = false;
 let autoScroll = true;
+let retentionPaused = false;
 let scrollRequestActive = false; 
 let isInitialLoad = true; 
 let readingAnchor = null;
@@ -1509,18 +1510,28 @@ function getTagValue(tags, key) {
     const match = tags.match(regex); 
     return match ? match[1] : null; 
 }
+function getOldestRetainedHistoryCursor() {
+    const oldest = document.getElementById('messages')?.firstElementChild;
+    const tags = msgCache[oldest?.dataset.messageId]?.ircMessage?.tags || '';
+    const cursor = Number(getTagValue(tags, 'rm-received-ts') || oldest?.dataset.msgTs);
+    return Number.isFinite(cursor) && cursor > 0 ? cursor : null;
+}
 function limitMessages(viewport = captureChatViewport()) {
     const $msgs = $("#messages");
     const children = $msgs.children();
-    if(children.length > MAX_MESSAGES) {
+    if(!retentionPaused && children.length > MAX_MESSAGES) {
         const removed = children.slice(0, children.length - MAX_MESSAGES);
+        removed.each(function() { if (this.dataset.messageKey) seenMessageIds.delete(this.dataset.messageKey); });
         removed.find('video').each(function() { mediaObserver.unobserve(this); });
         removed.remove();
+        const cursor = getOldestRetainedHistoryCursor();
+        if (cursor !== null) oldestHistoryCursor = cursor;
+        hasMoreHistory = true;
         setHistoryStatus(`目前顯示最近 ${MAX_MESSAGES} 則；較早留言已移出畫面。`);
-        const button = document.getElementById('loadMoreHistoryBtn');
-        if (button) { button.disabled = true; button.textContent = '本頁已達保留上限'; }
     }
     restoreChatViewport(viewport);
+    if (retentionPaused) showPausedRetentionStatus();
+    updateHistoryButton();
 }
 function getUserDisplayName(userId, fallbackName) {
     if(userCache[userId]) return userCache[userId];
@@ -1635,27 +1646,40 @@ function restoreChatViewport(anchor) {
 
 function pauseChatFollowing() {
     autoScroll = false;
+    retentionPaused = true;
     restoredScrollTop = null;
     isInitialLoad = false;
     readingAnchor = captureChatViewport();
     if (scrollToBottomBtn) scrollToBottomBtn.style.display = 'flex';
+    showPausedRetentionStatus();
+    updateHistoryButton();
 }
 
 function forceScrollToBottom(force = false) {
-    if (force) { autoScroll = true; readingAnchor = null; }
+    if (force) {
+        autoScroll = true;
+        retentionPaused = false;
+        readingAnchor = null;
+        flushMessageBuffer();
+        limitMessages(null);
+        trimSeenMessageIds();
+        if ((document.getElementById('messages')?.children.length || 0) <= MAX_MESSAGES) {
+            setHistoryStatus(`已回到最新留言；恢復 ${MAX_MESSAGES} 則保留上限。`);
+        }
+    }
     if (!autoScroll) return;
     const chat = document.getElementById('chat-container');
     if (!chat) return;
     restoredScrollTop = null;
     chat.scrollTop = chat.scrollHeight;
-    if(scrollToBottomBtn) scrollToBottomBtn.style.display = 'none';
+    if(scrollToBottomBtn) scrollToBottomBtn.style.display = retentionPaused ? 'flex' : 'none';
     if (scrollRequestActive) return;
     scrollRequestActive = true;
     requestAnimationFrame(() => {
         scrollRequestActive = false;
         if (!autoScroll) return;
         chat.scrollTop = chat.scrollHeight;
-        if(scrollToBottomBtn) scrollToBottomBtn.style.display = 'none';
+        if(scrollToBottomBtn) scrollToBottomBtn.style.display = retentionPaused ? 'flex' : 'none';
     });
 }
 
@@ -1664,13 +1688,14 @@ function onMediaLoaded() {
     else restoreChatViewport(readingAnchor);
 }
 
-function appendMessageWithScroll(html) {
+function appendMessageWithScroll(html, key = null) {
     if (document.hidden) {
         const timestamp = Number(html.match(/data-msg-ts="(\d+)"/)?.[1]) || Date.now();
-        messageBuffer.push({ html, timestamp });
+        messageBuffer.push({ html, timestamp, key });
         messageBuffer.sort((a, b) => a.timestamp - b.timestamp);
-        if (messageBuffer.length > MAX_BUFFER_SIZE) {
-            messageBuffer.shift();
+        if (!retentionPaused && messageBuffer.length > MAX_BUFFER_SIZE) {
+            const removed = messageBuffer.shift();
+            if (removed.key) seenMessageIds.delete(removed.key);
             setHistoryStatus(`背景期間累積超過 ${MAX_BUFFER_SIZE} 則；回到分頁後會補抓可用紀錄。`);
         }
         return;
@@ -1698,9 +1723,8 @@ function insertMessageElements($elements) {
     });
 }
 
-document.addEventListener('visibilitychange', () => {
-    if (!document.hidden && hasJoinedChannel) fetchRecentMessages();
-    if (!document.hidden && messageBuffer.length > 0) {
+function flushMessageBuffer() {
+    if (messageBuffer.length > 0) {
         const viewport = captureChatViewport();
         const $elements = $(messageBuffer.map(message => message.html).join(''));
         addTimestampsToElements($elements);
@@ -1713,6 +1737,11 @@ document.addEventListener('visibilitychange', () => {
         if (autoScroll) forceScrollToBottom();
         setTimeout(() => { isInitialLoad = false; }, 8000);
     }
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && hasJoinedChannel) fetchRecentMessages();
+    if (!document.hidden) flushMessageBuffer();
     document.querySelectorAll('video.media-preview').forEach(v => {
         if (document.hidden) { v.pause(); }
         else {
@@ -1732,9 +1761,16 @@ function checkScrollPosition() {
     restoredScrollTop = null;
     const isAtBottom = chat.scrollHeight - chat.clientHeight - chat.scrollTop <= 2;
     autoScroll = isAtBottom;
-    if (!autoScroll) isInitialLoad = false;
+    if (!autoScroll) {
+        isInitialLoad = false;
+        if (!retentionPaused) {
+            retentionPaused = true;
+            showPausedRetentionStatus();
+            updateHistoryButton();
+        }
+    }
     readingAnchor = captureChatViewport();
-    if(scrollToBottomBtn) scrollToBottomBtn.style.display = autoScroll ? 'none' : 'flex';
+    if(scrollToBottomBtn) scrollToBottomBtn.style.display = autoScroll && !retentionPaused ? 'none' : 'flex';
 }
 
 function setupScrollListener() {
@@ -2481,16 +2517,33 @@ let pendingOlderHistory = false;
 let historyHasLoaded = false;
 let oldestHistoryCursor = null;
 let historyRetryOlder = null;
+let hasMoreHistory = false;
 function setHistoryStatus(text) {
     const status = document.getElementById('historyStatus');
-    if (status && status.textContent !== text) status.textContent = text;
+    if (status && status.textContent !== text) { status.textContent = text; status.title = text; }
 }
-function loadMoreHistory() { return fetchRecentMessages(historyRetryOlder ?? (oldestHistoryCursor !== null)); }
+function showPausedRetentionStatus() {
+    const count = (document.getElementById('messages')?.children.length || 0) + messageBuffer.length;
+    setHistoryStatus(`暫停移走舊留言（${count} 則）；按↓恢復上限。`);
+}
+function updateHistoryButton() {
+    const button = document.getElementById('loadMoreHistoryBtn');
+    if (!button) return;
+    const atCapacity = !retentionPaused && (document.getElementById('messages')?.children.length || 0) >= MAX_MESSAGES;
+    const retry = historyRetryOlder !== null;
+    const capacityBlocks = atCapacity && historyRetryOlder !== false;
+    button.disabled = isFetchingHistory || capacityBlocks || (!retry && !hasMoreHistory);
+    button.textContent = capacityBlocks ? '本頁已達保留上限' : retry ? '重試載入留言' : hasMoreHistory ? '載入更早留言' : '已載入可用歷史';
+}
+function loadMoreHistory() {
+    const older = historyRetryOlder ?? (oldestHistoryCursor !== null);
+    if (older) pauseChatFollowing();
+    return fetchRecentMessages(older);
+}
 async function fetchRecentMessages(older = false) {
-    if (older && (document.getElementById('messages')?.children?.length || 0) >= MAX_MESSAGES) {
+    if (older && !retentionPaused && (document.getElementById('messages')?.children?.length || 0) >= MAX_MESSAGES) {
         setHistoryStatus(`本頁已達 ${MAX_MESSAGES} 則保留上限，停止載入較早留言。`);
-        const button = document.getElementById('loadMoreHistoryBtn');
-        if (button) { button.disabled = true; button.textContent = '本頁已達保留上限'; }
+        updateHistoryButton();
         return;
     }
     if (isFetchingHistory) {
@@ -2503,7 +2556,6 @@ async function fetchRecentMessages(older = false) {
     const button = document.getElementById('loadMoreHistoryBtn');
     if (button) button.disabled = true;
     const shouldScroll = autoScroll && !older;
-    if (older) pauseChatFollowing();
     const limit = older || !historyHasLoaded ? 100 : 800;
     const recovering = !older && historyHasLoaded;
     const recoveryTimestamp = recovering ? latestChatTimestamp : 0;
@@ -2529,7 +2581,7 @@ async function fetchRecentMessages(older = false) {
         const unique = new Map();
         history.forEach(message => unique.set(chatMessageKey(message) || message, message));
         const available = Array.from(unique.values());
-        const remainingCapacity = Math.max(0, MAX_MESSAGES - (document.getElementById('messages')?.children.length || 0) - messageBuffer.length);
+        const remainingCapacity = retentionPaused ? Infinity : Math.max(0, MAX_MESSAGES - (document.getElementById('messages')?.children.length || 0) - messageBuffer.length);
         const batchSize = older ? Math.min(CHAT_HISTORY_BATCH_SIZE, remainingCapacity) : CHAT_HISTORY_BATCH_SIZE;
         const messages = recovering ? available.filter(message =>
             Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts')) >= recoveryTimestamp
@@ -2542,19 +2594,22 @@ async function fetchRecentMessages(older = false) {
         const cursorMessages = older && !remainingCapacity ? [] : messages.length ? messages : parsedHistory;
         const cursors = cursorMessages.map(message => Number(getTagValue(message.tags, 'rm-received-ts') || getTagValue(message.tags, 'tmi-sent-ts')))
             .filter(time => Number.isFinite(time) && time > 0);
-        if (!recovering && cursors.length) oldestHistoryCursor = Math.min(oldestHistoryCursor ?? Infinity, ...cursors);
+        if (!recovering) {
+            const retainedCursor = !older && !retentionPaused && (document.getElementById('messages')?.children.length || 0) >= MAX_MESSAGES ? getOldestRetainedHistoryCursor() : null;
+            if (retainedCursor !== null) oldestHistoryCursor = retainedCursor;
+            else if (cursors.length) oldestHistoryCursor = Math.min(oldestHistoryCursor ?? Infinity, ...cursors);
+        }
         historyHasLoaded = true;
         historyRetryOlder = null;
         const advanced = oldestHistoryCursor !== null && (previousCursor === null || oldestHistoryCursor < previousCursor);
-        if (button) {
+        if (!recovering && !(older && !remainingCapacity)) {
             const hasUnshownMessages = !recovering && available.length > messages.length;
-            button.disabled = oldestHistoryCursor === null || (older && (!advanced || (!hasUnshownMessages && rawEvents.length < limit)));
-            button.textContent = button.disabled ? '已載入可用歷史' : '載入更早留言';
+            hasMoreHistory = oldestHistoryCursor !== null && !(older && (!advanced || (!hasUnshownMessages && rawEvents.length < limit)));
         }
         setHistoryStatus(older && !advanced ? '暫時沒有更早的可用留言。' : '留言已更新；可載入更早留言。');
-        if ((document.getElementById('messages')?.children?.length || 0) >= MAX_MESSAGES) {
+        if (retentionPaused) showPausedRetentionStatus();
+        else if ((document.getElementById('messages')?.children?.length || 0) >= MAX_MESSAGES) {
             setHistoryStatus(`目前保留 ${MAX_MESSAGES} 則；已達上限，停止載入較早留言。`);
-            if (button) { button.disabled = true; button.textContent = '本頁已達保留上限'; }
         }
     } catch (err) {
         console.error('獲取歷史訊息失敗:', err);
@@ -2568,6 +2623,7 @@ async function fetchRecentMessages(older = false) {
     finally {
         clearTimeout(timeoutId);
         isFetchingHistory = false;
+        updateHistoryButton();
         if (pendingHistoryRefresh) {
             pendingHistoryRefresh = false;
             const nextOlder = pendingOlderHistory;
@@ -2622,6 +2678,15 @@ function parseIrcLine(line) {
     return { tags: match[1] || '', source: match[2] || '', command, params: middleParams, body };
 }
 const seenMessageIds = new Set();
+function trimSeenMessageIds() {
+    if (retentionPaused || seenMessageIds.size <= 2000) return;
+    const retainedKeys = new Set(Array.from(document.querySelectorAll('#messages .chat-line'), row => row.dataset.messageKey || row.dataset.messageId));
+    messageBuffer.forEach(message => { if (message.key) retainedKeys.add(message.key); });
+    for (const key of seenMessageIds) {
+        if (seenMessageIds.size <= 2000) break;
+        if (!retainedKeys.has(key)) seenMessageIds.delete(key);
+    }
+}
 let latestChatTimestamp = 0;
 let chatResourcesReady = false;
 let hasJoinedChannel = false;
@@ -2645,9 +2710,11 @@ function renderChatMessage(message, historical = false) {
         const user = getTagValue(message.tags, 'display-name') || message.source.split('!')[0];
         line = `<div class="chat-line" data-msg-ts="${escapeChatText(ts)}"><b>${escapeChatText(user)}:</b> <span>${escapeChatText(message.body)}</span></div>`;
     }
-    appendMessageWithScroll(line);
+    if (key) line = line.replace(/^<div\b/, () => `<div data-message-key="${escapeChatText(key)}"`);
     if (key) seenMessageIds.add(key);
-    if (seenMessageIds.size > 2000) seenMessageIds.delete(seenMessageIds.values().next().value);
+    try { appendMessageWithScroll(line, key); }
+    catch (err) { if (key) seenMessageIds.delete(key); throw err; }
+    trimSeenMessageIds();
 }
 
 function buildChatMessageHtml(message, historical = false) {
@@ -2708,6 +2775,7 @@ function refreshVisibleMessages() {
         if (!record?.ircMessage) return;
         try {
             const replacement = $(buildChatMessageHtml(record.ircMessage, row.classList.contains('historical-msg')));
+            if (row.dataset.messageKey) replacement.attr('data-message-key', row.dataset.messageKey);
             addTimestampsToElements(replacement);
             row.querySelectorAll('video').forEach(video => mediaObserver.unobserve(video));
             row.replaceWith(replacement[0]);
