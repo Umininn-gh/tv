@@ -102,17 +102,17 @@
             flex-shrink: 0; 
             z-index: 100;
         }
-        #chat-container { flex: 1; overflow-y: auto; padding: 15px; background: #0e0e10; scroll-behavior: auto; position: relative; word-wrap: break-word; overflow-wrap: break-word; }
+        #chat-container { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; background: #0e0e10; scroll-behavior: auto; position: relative; word-wrap: break-word; overflow-wrap: break-word; }
         
         .chat-line { 
             position: relative; 
             border-radius: 4px; 
-            line-height: 1.6; 
+            line-height: 1.4;
             word-wrap: break-word; 
             color: var(--t-text); 
             transition: background 0.3s, border 0.3s; 
-            padding: 1px 1px 18px 1px; 
-            margin-bottom: 5px; 
+            padding: 1px 1px 3px 1px;
+            margin-bottom: 2px;
             border: 1px solid transparent;
             content-visibility: visible !important;
             contain-intrinsic-size: 0 40px; 
@@ -157,10 +157,10 @@
         }
         body.hide-timestamps .msg-time { display: none; }
         body.hide-timestamps .chat-line { padding-bottom: 1px !important; }
-        body.hide-timestamps.theme-discord .chat-line { padding-bottom: 8px !important; }
-        body.hide-timestamps.theme-whatsapp .chat-line { padding-bottom: 6px !important; }
-        body.hide-timestamps.theme-whatsapp-dark .chat-line { padding-bottom: 6px !important; }
-        body.hide-timestamps.theme-sk .chat-line { padding-bottom: 0 !important; margin-bottom: 4px !important; }
+        body.hide-timestamps.theme-discord .chat-line { padding-bottom: 4px !important; }
+        body.hide-timestamps.theme-whatsapp .chat-line { padding-bottom: 4px !important; }
+        body.hide-timestamps.theme-whatsapp-dark .chat-line { padding-bottom: 4px !important; }
+        body.hide-timestamps.theme-sk .chat-line { padding-bottom: 0 !important; margin-bottom: 3px !important; }
 
 @keyframes blink {
     50% { opacity: 0.7; }
@@ -219,7 +219,7 @@
         
         #scrollToBottomBtn {
             position: absolute;
-            bottom: 80px;
+            bottom: calc(100% + 12px);
             right: 20px;
             width: 40px;
             height: 40px;
@@ -237,6 +237,14 @@
             font-size: 20px;
         }
         #scrollToBottomBtn:hover { background: rgba(145, 71, 255, 1); transform: scale(1.1); }
+        .unread-count {
+            position: absolute; top: -7px; right: -7px; min-width: 18px; max-width: 64px;
+            padding: 2px 4px; box-sizing: border-box; border: 1px solid var(--t-purp);
+            border-radius: 12px; background: var(--t-text); color: #18181b;
+            font-size: 11px; font-weight: 700; line-height: 15px; font-variant-numeric: tabular-nums;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        }
+        .unread-count[hidden] { display: none; }
         
         .delete-btn { position: absolute;top: -8px;right: -8px;background: #e91916;color: white;width: 20px;height: 20px;border-radius: 50%;font-size: 12px;line-height: 20px;text-align: center;cursor: pointer;display: none; z-index: 100; border: 1px solid white; box-shadow: 0 0 5px rgba(0,0,0,0.5); }
         .show-del .delete-btn { display: block; }
@@ -288,11 +296,13 @@
         .wa-waveform.playing { opacity: 1; }
         .wave-svg { width: 100%; height: 100%; fill: currentColor; }
         
-        #userInfo { display: none; align-items: center; gap: 8px; font-size: 13px; }
-        #userInfo img { width: 30px; height: 30px; border-radius: 50%; }
-        #logoutBtn { background: #e91916; color: white; border: none; border-radius: 4px; padding: 6px 12px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background-color 0.2s; margin-left: 8px; }
+        #auth-area { margin-left: auto; max-width: 100%; min-width: 0; }
+        #userInfo { display: none; align-items: center; gap: 4px; font-size: 12px; min-width: 0; }
+        #userInfo img { width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0; }
+        #userName { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #logoutBtn { background: #e91916; color: white; border: none; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background-color 0.2s; flex-shrink: 0; }
         #logoutBtn:hover { background: #c51614; }
-        #loginBtn { background: #9147ff; color: white; border: none; border-radius: 10px; cursor: pointer; font-size: 13px; font-weight: 600; transition: background-color 0.2s; padding: 8px 16px; }
+        #loginBtn { background: #9147ff; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; transition: background-color 0.2s; padding: 5px 8px; white-space: nowrap; }
         #loginBtn:hover { background: #772ce8; }
         #status { 
             font-weight: 600; color: var(--t-purp); font-size: 13px; 
@@ -329,11 +339,26 @@
         .footer { 
             background: #121214; padding: 5px 5px; 
             border-top: 1px solid var(--border-color); position: relative; z-index: 100;
+            flex-shrink: 0;
         }
+        .footer.composer-collapsed { height: 16px; padding: 0; border-top: 1px solid var(--border-color); }
+        .history-controls { display: flex; align-items: center; gap: 7px; padding: 5px 8px; font-size: 12px; flex-shrink: 0; }
+        #historyStatus { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        #loadMoreHistoryBtn { padding: 5px 10px; flex-shrink: 0; }
+        #composerToggleBtn {
+            display: flex; align-items: center; justify-content: center; width: 100%; height: 16px;
+            padding: 0; background: transparent; border: none; color: var(--text-muted); cursor: pointer;
+        }
+        #composerToggleBtn:hover { background: var(--bg-surface-active); color: var(--text-main); }
+        #composerToggleBtn svg { width: 16px; height: 16px; flex-shrink: 0; }
+        .footer:not(.composer-collapsed) #composerToggleBtn svg { transform: rotate(180deg); }
+        #composerPanel { padding-top: 4px; }
+        #composerPanel[hidden] { display: none; }
+        #composerToggleBtn:focus-visible, .setting-btn:focus-visible, #scrollToBottomBtn:focus-visible { outline: 2px solid var(--t-purp); outline-offset: 2px; }
         #reply-indicator { display:none; color:#adadb8; font-size:12px; margin-bottom:8px; padding:8px; background:rgba(145,71,255,0.1); border-radius:4px; border: 1px solid rgba(145,71,255,0.3); }
-       .input-section { display: flex; flex-direction: column; gap: 8px; position: relative; }
+       .input-section { display: flex; flex-direction: column; gap: 5px; position: relative; }
         
-        .tool-bar { display: flex; gap: 1px; align-items: center; padding-left: 4px; height:13px;}
+        .tool-bar { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding-left: 4px; min-height: 24px; }
         .tool-link { 
             background: none; border: none; color: var(--text-muted); 
             cursor: pointer; font-size: 13px; padding: 1px; font-weight: 500; 
@@ -346,7 +371,7 @@
         .input-box-wrapper { 
             display: flex; align-items: flex-end; 
             background: var(--bg-surface); border: 1px solid var(--border-strong); 
-            border-radius: var(--radius-md); padding: 8px 12px; 
+            border-radius: var(--radius-md); padding: 3px 8px; min-width: 0;
             transition: all var(--transition-fast);
             box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
         }
@@ -362,9 +387,9 @@
 
         #msginput { 
             flex: 1; background: transparent; border: none; color: var(--text-main); 
-            font-size: 15px; outline: none; padding: 4px 0; font-family: inherit; 
-            overflow-wrap: break-word; max-height: 150px; overflow: hidden auto;
-            white-space: pre-wrap; min-height: 24px; line-height: 1.5;
+            font-size: 15px; outline: none; padding: 0; font-family: inherit;
+            overflow-wrap: break-word; max-height: 100px; overflow: hidden auto;
+            white-space: pre-wrap; min-width: 0; min-height: 24px; line-height: 1.4;
         }
         #msginput:empty:before { content: attr(placeholder); color: var(--text-muted); pointer-events: none; }
         #msginput:disabled { cursor: not-allowed; opacity: 0.5; }
@@ -372,7 +397,7 @@
         #msginput::-webkit-scrollbar-track {background: transparent;}
         #msginput::-webkit-scrollbar-thumb {background: #888;border-radius: 10px;}
         #msginput::-webkit-scrollbar-thumb:hover {background: #555;}
-        .action-bar { display: flex; align-items: center; gap: 8px; margin-left: 12px; }
+        .action-bar { display: flex; align-items: center; gap: 4px; margin-left: 6px; flex-shrink: 0; }
         
         #voice-btn {
             background: transparent; border: none; font-size: 18px;
@@ -387,22 +412,21 @@
 
         #sendbtn { 
             background: var(--t-purp); border: none; color: white; cursor: pointer; 
-            padding: 8px 20px; border-radius: var(--radius-md); font-weight: 600; font-size: 14px; 
+            padding: 4px 12px; border-radius: var(--radius-md); font-weight: 600; font-size: 14px;
             transition: all var(--transition-fast);
         }
         #sendbtn:hover:not(:disabled) { background: var(--t-purp-hover); transform: translateY(-1px); }
         #sendbtn:disabled { background: var(--bg-surface-active); color: var(--text-muted); cursor: not-allowed; }
 
         .setting-btn { 
-            cursor: pointer; color: var(--text-muted); padding: 0px; 
+            cursor: pointer; color: var(--text-muted); padding: 4px; width: 28px; height: 28px; flex-shrink: 0;
             border-radius: var(--radius-sm); display: flex; align-items: center;
-            transition: all var(--transition-fast); display:block;
-			margin-left:auto;
+            justify-content: center; border: none; background: transparent; transition: all var(--transition-fast);
         }
         .setting-btn:hover { color: var(--t-purp); background: var(--bg-surface-active); }
 
         #emojiPanel { 
-            position: fixed; display: none; width: 350px; height: 400px; 
+            position: fixed; display: none; width: min(350px, calc(100vw - 16px)); height: min(400px, calc(100vh - 16px));
             background: #1f182e; border: 2px solid #443a5a; border-radius: 12px; 
             z-index: 5000; left: 50%; top: 50%; transform: translate(-50%, -50%); 
             flex-direction: column; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
@@ -481,7 +505,7 @@
             background: #ffffff;
             border-radius: 7.5px;
             border-top-left-radius: 0;
-            padding: 6px 9px 19px 9px;
+            padding: 4px 9px;
             margin-bottom: 2px;
             margin-left: 8px;
             color: #111b21;
@@ -714,7 +738,7 @@
             background: #202c33;
             border-radius: 7.5px;
             border-top-left-radius: 0;
-            padding: 6px 9px 19px 9px;
+            padding: 4px 9px;
             margin-bottom: 2px;
             margin-left: 8px;
             color: #e9edef;
@@ -903,8 +927,8 @@
         body.theme-discord #messages { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
         body.theme-discord .chat-line {
             width: fit-content; max-width: 95%; background: #2b2b2d; border-radius: 18px;
-            padding: 8px 12px 20px 12px; margin-bottom: 6px; border: 1px solid transparent;
-            color: #eaeaea; line-height: 1.5;
+            padding: 4px 10px; margin-bottom: 2px; border: 1px solid transparent;
+            color: #eaeaea; line-height: 1.4;
         }
         body.theme-discord .chat-line:hover { background: #333336; }
         body.theme-discord .chat-line.msg-self { background: #2f6b46; }
@@ -985,10 +1009,10 @@
             border: none !important;
             border-radius: 0;
             padding: 0;
-            margin: 0 0 8px 0;
+            margin: 0 0 3px 0;
             color: #efeff1;
             font-size: 13px;
-            line-height: 1.5;
+            line-height: 1.4;
             box-shadow: none !important;
             word-wrap: break-word;
             overflow-wrap: break-word;
@@ -1040,10 +1064,10 @@
             box-sizing: border-box;
             background: #313131;
             border-radius: 1px 7.5px 7.5px;
-            padding: 7px 12px 8px 12px;
+            padding: 4px 10px;
             color: #e6e6e6;
             font-size: 15px;
-            line-height: 1.5;
+            line-height: 1.4;
             word-wrap: break-word;
             overflow-wrap: break-word;
             margin-top: 2px;
@@ -1225,27 +1249,16 @@
 </head>
 <body class="theme-discord">
 
-<header class="header-bar">
-    <div id="status">載入中...</div>
-    <div id="auth-area">
-        <div id="userInfo">
-            <img id="userAvatar" src="" alt="頭像">
-            <span id="userName"></span>
-            <button id="logoutBtn" class="btn-danger">登出</button>
-        </div>
-        <button id="loginBtn" class="btn-primary">以TWITCH登入</button>
-		
-    </div>
-	 <div class="setting-btn" title="設定 (切換頻道/樣式)" onclick="openSettings()">
-                <svg width="28" height="28" viewBox="0 0 20 20" fill="currentColor">
+<div id="status" hidden>載入中...</div>
+
+<div class="history-controls">
+    <button id="settingsBtn" class="setting-btn" type="button" title="設定 (切換頻道/樣式)" aria-label="設定" onclick="openSettings()">
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                     <path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"></path>
                 </svg>
-            </div>
-</header>
-
-<div style="display:flex;align-items:center;gap:10px;padding:6px 10px;font-size:12px;flex-wrap:wrap;">
-    <button id="loadMoreHistoryBtn" onclick="loadMoreHistory()" class="btn-primary" style="padding:5px 10px;" disabled>載入更早留言</button>
-    <span id="historyStatus" role="status" aria-live="polite" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">正在連接聊天室…</span>
+    </button>
+    <button id="loadMoreHistoryBtn" onclick="loadMoreHistory()" class="btn-primary" disabled>載入更早留言</button>
+    <span id="historyStatus" role="status" aria-live="polite">正在連接聊天室…</span>
 </div>
 <main id="chat-container">
     <div id="messages"></div>
@@ -1261,7 +1274,7 @@
     <div id="emojiTabs"></div>
     <div id="emojiContent"></div>
 </div>
-<div id="settingsPanel" style="display:none; flex-direction: column; gap: 15px; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); background:var(--bg-surface-active); border: 1px solid var(--border-color); padding:20px; border-radius:12px; z-index:9999; box-shadow:0 10px 30px rgba(0,0,0,0.8); width: 300px; color: var(--text-main);">
+<div id="settingsPanel" style="display:none; flex-direction: column; gap: 15px; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); background:var(--bg-surface-active); border: 1px solid var(--border-color); padding:20px; border-radius:12px; z-index:9999; box-shadow:0 10px 30px rgba(0,0,0,0.8); width: min(300px, calc(100vw - 56px)); max-height:calc(100vh - 56px); overflow-y:auto; color: var(--text-main);">
     <div style="display:flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 10px;">
         <b style="font-size: 16px;">聊天室設定</b>
         <button onclick="closeSettings()" style="background:none; border:none; color:var(--text-muted); cursor:pointer; font-size:18px;">✕</button>
@@ -1326,7 +1339,15 @@
         </div>
     </div>
 </div>
-<footer class="footer">
+<footer class="footer composer-collapsed">
+    <button id="scrollToBottomBtn" type="button" title="回到最新留言" aria-label="回到最新留言">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg>
+        <span id="unreadCount" class="unread-count" hidden>0</span>
+    </button>
+    <button id="composerToggleBtn" type="button" title="展開聊天輸入" aria-label="展開聊天輸入" aria-controls="composerPanel" aria-expanded="false" onclick="setComposerExpanded(document.getElementById('composerPanel').hidden)">
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
+    </button>
+    <div id="composerPanel" hidden>
     <div id="reply-indicator">
         正在回覆 <span id="replying-to-user" style="color:#9147ff; font-weight:bold;"></span> 
         <span onclick="cancelReply()" style="float:right; cursor:pointer; color:#efeff1;">✕ 取消回覆</span>
@@ -1348,13 +1369,17 @@
                 </button>
            
             <span id="recording-status" style="color: var(--danger); font-size: 11px; display: none; font-weight: 600;">上傳中...</span>
+            <div id="auth-area">
+                <div id="userInfo">
+                    <img id="userAvatar" src="" alt="頭像">
+                    <span id="userName"></span>
+                    <button id="logoutBtn" class="btn-danger">登出</button>
+                </div>
+                <button id="loginBtn" class="btn-primary">Twitch登入</button>
+            </div>
         </div>
         
         <div class="input-box-wrapper">
-            <button id="scrollToBottomBtn" title="滾動到最新訊息">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></svg>
-            </button>
-            
             <div id="chat-badge-carousel" class="chat-badge-carousel"></div>
             
             <div id="msginput" contenteditable="plaintext-only" placeholder="傳送訊息到聊天室..." autocomplete="off" disabled></div>
@@ -1366,6 +1391,7 @@
                 <button id="sendbtn" onclick="sendMessage()" >傳送</button>
             </div>
         </div>
+    </div>
     </div>
 </footer>
 
@@ -1470,6 +1496,9 @@ let isConnecting = false;
 let dragging = false;
 let autoScroll = true;
 let retentionPaused = false;
+let unreadMessageCount = 0;
+let unreadWatermark = 0;
+let unreadResetVersion = 0;
 let scrollRequestActive = false; 
 let isInitialLoad = true; 
 let readingAnchor = null;
@@ -1616,6 +1645,44 @@ function addTimestampsToElements($elements) {
 }
 
 // ===================== 捲動相關 =====================
+function updateUnreadCounter() {
+    const badge = document.getElementById('unreadCount');
+    if (badge) { badge.textContent = String(unreadMessageCount); badge.hidden = unreadMessageCount === 0; }
+    if (scrollToBottomBtn) {
+        const label = unreadMessageCount ? `回到最新留言（${unreadMessageCount} 則未讀）` : '回到最新留言';
+        scrollToBottomBtn.title = label;
+        scrollToBottomBtn.setAttribute('aria-label', label);
+    }
+}
+
+function markRetentionPaused() {
+    if (retentionPaused) return;
+    retentionPaused = true;
+    unreadWatermark = latestChatTimestamp;
+}
+
+function setComposerExpanded(expanded) {
+    const panel = document.getElementById('composerPanel');
+    const toggle = document.getElementById('composerToggleBtn');
+    if (toggle) {
+        const label = expanded ? '收起聊天輸入' : '展開聊天輸入';
+        toggle.setAttribute('aria-expanded', String(Boolean(expanded)));
+        toggle.setAttribute('aria-label', label);
+        toggle.title = label;
+    }
+    if (!panel || panel.hidden === !expanded) return;
+    const viewport = captureChatViewport();
+    panel.hidden = !expanded;
+    panel.closest('.footer').classList.toggle('composer-collapsed', !expanded);
+    if (!expanded) {
+        document.getElementById('msginput')?.blur();
+        $('#mention-list, #emojiPanel').hide();
+        mentionListVisible = false;
+    }
+    restoreChatViewport(viewport);
+    if (autoScroll) forceScrollToBottom();
+}
+
 function captureChatViewport() {
     if (autoScroll) return null;
     const chat = document.getElementById('chat-container');
@@ -1646,7 +1713,7 @@ function restoreChatViewport(anchor) {
 
 function pauseChatFollowing() {
     autoScroll = false;
-    retentionPaused = true;
+    markRetentionPaused();
     restoredScrollTop = null;
     isInitialLoad = false;
     readingAnchor = captureChatViewport();
@@ -1659,6 +1726,9 @@ function forceScrollToBottom(force = false) {
     if (force) {
         autoScroll = true;
         retentionPaused = false;
+        unreadMessageCount = 0;
+        unreadResetVersion++;
+        updateUnreadCounter();
         readingAnchor = null;
         flushMessageBuffer();
         limitMessages(null);
@@ -1764,7 +1834,7 @@ function checkScrollPosition() {
     if (!autoScroll) {
         isInitialLoad = false;
         if (!retentionPaused) {
-            retentionPaused = true;
+            markRetentionPaused();
             showPausedRetentionStatus();
             updateHistoryButton();
         }
@@ -2165,6 +2235,7 @@ function renderTabContent(name) {
 function insertTextAtCursor(text) {
     const el = document.getElementById('msginput');
     if (!el) return;
+    setComposerExpanded(true);
     el.focus();
     const sel = window.getSelection();
     const isCollapsed = sel.rangeCount > 0 ? sel.getRangeAt(0).collapsed : true;
@@ -2495,6 +2566,7 @@ function sendMessage() {
     input.textContent = "";
 }
 function replyNative(userLogin, msgId, displayName){
+    setComposerExpanded(true);
     pendingReply = { id: msgId, user: userLogin, displayName: displayName || userLogin };
     $("#replying-to-user").text(displayName || userLogin);
     $("#reply-indicator").show();
@@ -2559,6 +2631,7 @@ async function fetchRecentMessages(older = false) {
     const limit = older || !historyHasLoaded ? 100 : 800;
     const recovering = !older && historyHasLoaded;
     const recoveryTimestamp = recovering ? latestChatTimestamp : 0;
+    const requestUnreadResetVersion = unreadResetVersion;
     const before = older ? `&before=${oldestHistoryCursor}` : '';
     const after = recovering && recoveryTimestamp > 0 ? `&after=${recoveryTimestamp}` : '';
     setHistoryStatus(older ? '正在載入更早留言…' : '正在補回留言…');
@@ -2576,8 +2649,8 @@ async function fetchRecentMessages(older = false) {
         const history = parsedHistory
             .filter(message => message && message.command === 'PRIVMSG' &&
                 message.params[0]?.toLowerCase() === `#${CHANNEL.toLowerCase()}`)
-            .sort((a, b) => Number(getTagValue(a.tags, 'tmi-sent-ts') || 0) -
-                Number(getTagValue(b.tags, 'tmi-sent-ts') || 0));
+            .sort((a, b) => Number(getTagValue(a.tags, 'tmi-sent-ts') || getTagValue(a.tags, 'rm-received-ts') || 0) -
+                Number(getTagValue(b.tags, 'tmi-sent-ts') || getTagValue(b.tags, 'rm-received-ts') || 0));
         const unique = new Map();
         history.forEach(message => unique.set(chatMessageKey(message) || message, message));
         const available = Array.from(unique.values());
@@ -2587,7 +2660,9 @@ async function fetchRecentMessages(older = false) {
             Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts')) >= recoveryTimestamp
         ) : batchSize ? available.slice(-batchSize) : [];
         messages.forEach(message => {
-            try { renderChatMessage(message, true); }
+            const timestamp = Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts'));
+            const countAsNew = recovering && requestUnreadResetVersion === unreadResetVersion && timestamp >= unreadWatermark;
+            try { renderChatMessage(message, true, countAsNew); }
             catch (err) { console.error('處理歷史訊息錯誤:', err); }
         });
         // 向前翻頁以實際顯示的最早留言為界，避免跳過未顯示的紀錄。
@@ -2693,10 +2768,10 @@ let hasJoinedChannel = false;
 let needsHistoryRefresh = false;
 function chatMessageKey(message) {
     const id = getTagValue(message.tags, 'id');
-    const ts = getTagValue(message.tags, 'tmi-sent-ts');
+    const ts = getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts');
     return id || (ts ? `${message.params[0]}:${message.source}:${ts}:${message.body}` : null);
 }
-function renderChatMessage(message, historical = false) {
+function renderChatMessage(message, historical = false, countAsNew = !historical) {
     if (message.command !== "PRIVMSG" || message.params[0]?.toLowerCase() !== `#${CHANNEL.toLowerCase()}`) return;
     const timestamp = Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts'));
     if (Number.isFinite(timestamp) && timestamp > 0) latestChatTimestamp = Math.max(latestChatTimestamp, timestamp);
@@ -2706,7 +2781,7 @@ function renderChatMessage(message, historical = false) {
     try { line = buildChatMessageHtml(message, historical); }
     catch (err) {
         console.error('訊息格式轉換失敗，保留原文:', err);
-        const ts = getTagValue(message.tags, 'tmi-sent-ts') || Date.now().toString();
+        const ts = getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts') || Date.now().toString();
         const user = getTagValue(message.tags, 'display-name') || message.source.split('!')[0];
         line = `<div class="chat-line" data-msg-ts="${escapeChatText(ts)}"><b>${escapeChatText(user)}:</b> <span>${escapeChatText(message.body)}</span></div>`;
     }
@@ -2714,6 +2789,7 @@ function renderChatMessage(message, historical = false) {
     if (key) seenMessageIds.add(key);
     try { appendMessageWithScroll(line, key); }
     catch (err) { if (key) seenMessageIds.delete(key); throw err; }
+    if (retentionPaused && countAsNew) { unreadMessageCount++; updateUnreadCounter(); }
     trimSeenMessageIds();
 }
 
@@ -2722,7 +2798,7 @@ function buildChatMessageHtml(message, historical = false) {
     const rawMsg = message.body;
     const nickFromSource = message.source.split("!")[0];
     let msgId = getTagValue(tags, "id");
-    let ts = getTagValue(tags, "tmi-sent-ts") || Date.now().toString();
+    let ts = getTagValue(tags, "tmi-sent-ts") || getTagValue(tags, "rm-received-ts") || Date.now().toString();
     let color = getTagValue(tags, "color") || "#9147ff";
     let badgeStr = getTagValue(tags, "badges");
     let userLogin = nickFromSource || getTagValue(tags, "login") || "";
@@ -3045,6 +3121,7 @@ async function initApp() {
         fetchRecentMessages();
     }
     if(scrollToBottomBtn) scrollToBottomBtn.addEventListener('click', () => forceScrollToBottom(true));
+    updateUnreadCounter();
     const messagesContainer = document.getElementById('messages');
     if (messagesContainer) {
         const resizeObserver = new ResizeObserver(() => {
