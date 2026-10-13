@@ -10,10 +10,42 @@
     const PLATFORMS = new Set(['twitch', 'kick', 'ok', 'at', 'm3u8', 'youtube', 'bs', 'vaughn', 'gosh', 'goodgame']);
     const CASE_INSENSITIVE_IDS = new Set(['twitch', 'kick', 'at', 'vaughn', 'gosh']);
     const ALIASES = { vl: 'kick', okru: 'ok', angelthump: 'at' };
+    // Confirmed unavailable on 2026-10-14; evidence and distinctions are in channel-validation.json.
+    // This affects the loaded list only: saved originals, backups and user tombstones remain intact.
+    const CONFIRMED_UNAVAILABLE_2026_10_14 = new Set([
+        'kick|wing36747', 'kick|no25no25', 'kick|cobra-and-godzilla', 'kick|cobra2024',
+        'kick|godzilla-cobra-2027', 'kick|godzilla-god-2077', 'kick|kww291603', 'kick|no52no52',
+        'kick|peterpig8964', 'kick|wing3674', 'kick|wingchihappy1', 'kick|wingwhite383', 'kick|wwhite1852',
+        'twitch|no25no2501', 'twitch|1', 'twitch|alancml', 'twitch|godzilla_2025',
+        'twitch|mingpig930_2', 'twitch|wing36747', 'twitch|ww291603', 'twitch|yaubotai2',
+        'ok|3849262800563', 'ok|9013975129715', 'ok|9770604043891', 'ok|9784642182771'
+    ]);
 
     function platformKey(value) {
         const key = typeof value === 'string' ? value.trim().toLowerCase() : '';
         return ALIASES[key] || key;
+    }
+
+    function canonicalChannelId(id, platform) {
+        if (!/^https?:\/\//i.test(id)) return id;
+        let url;
+        try { url = new URL(id); } catch (error) { return id; }
+        if (url.username || url.password || url.port) return id;
+        if (platform === 'twitch' && ['twitch.tv', 'www.twitch.tv', 'm.twitch.tv'].includes(url.hostname)) {
+            const match = url.pathname.match(/^\/([a-zA-Z0-9_]+)\/?$/);
+            if (match) return match[1];
+        }
+        if (platform === 'youtube') {
+            if (['youtube.com', 'www.youtube.com', 'm.youtube.com'].includes(url.hostname) && /^\/watch\/?$/.test(url.pathname)) {
+                const videoId = url.searchParams.get('v');
+                if (videoId && /^[a-zA-Z0-9_-]{11}$/.test(videoId)) return videoId;
+            }
+            if (['youtu.be', 'www.youtu.be'].includes(url.hostname)) {
+                const match = url.pathname.match(/^\/([a-zA-Z0-9_-]{11})\/?$/);
+                if (match) return match[1];
+            }
+        }
+        return id;
     }
 
     function normalizeChannel(value) {
@@ -23,7 +55,8 @@
         let id = String(value.id).trim();
         const name = typeof value.name === 'string' ? value.name.trim() : '';
         if (!id || !name) return null;
-        if (CASE_INSENSITIVE_IDS.has(platform)) id = id.toLowerCase();
+        id = canonicalChannelId(id, platform);
+        if (CASE_INSENSITIVE_IDS.has(platform) && !/^https?:\/\//i.test(id)) id = id.toLowerCase();
         const channel = { name, id, platform };
         // The historical CSV can have authentication fields after column 3.
         // Only GoodGame's public username belongs in the channel object.
@@ -134,7 +167,11 @@
     }
 
     function removedKeys(storage) {
-        return new Set(readArray(storage, REMOVED_KEY).filter(value => typeof value === 'string'));
+        return new Set(readArray(storage, REMOVED_KEY).filter(value => typeof value === 'string').map(value => {
+            const separator = value.indexOf('|');
+            if (separator === -1) return value;
+            return channelKey({ name: 'Removed channel', platform: value.slice(0, separator), id: value.slice(separator + 1) }) || value;
+        }));
     }
 
     function forgetChannel(storage, channel) {
@@ -169,7 +206,10 @@
             console.warn('Unable to refresh channels; keeping saved channels and the last valid list.');
         }
         const removed = removedKeys(storage);
-        return { channels: mergeChannels(custom, defaults).filter(channel => !removed.has(channelKey(channel))), raw };
+        return { channels: mergeChannels(custom, defaults).filter(channel => {
+            const key = channelKey(channel);
+            return !removed.has(key) && !CONFIRMED_UNAVAILABLE_2026_10_14.has(key);
+        }), raw };
     }
 
     const api = { platformKey, normalizeChannel, channelKey, mergeChannels, parseChannelText, readCustomChannels, saveCustomChannels, forgetChannel, restoreChannel, loadChannels };

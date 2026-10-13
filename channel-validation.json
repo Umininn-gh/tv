@@ -1,0 +1,2968 @@
+{
+  "checkedOn": "2026-10-14",
+  "timezone": "Asia/Hong_Kong",
+  "summary": {
+    "previouslyListed": 35,
+    "historicalRecords": 43,
+    "namedMissing": 3,
+    "checkedRecords": 81,
+    "activeChannels": 51,
+    "keptCurrent": 31,
+    "removedCurrent": 4,
+    "restoredHistorical": 17,
+    "addedNamed": 3,
+    "unavailable": 25,
+    "duplicateRecords": 2,
+    "endedArchives": 1,
+    "unverified": 2,
+    "skliveVisible": 16,
+    "skliveVisibleIncluded": 16
+  },
+  "rules": [
+    "離線不等於失效；帳戶存在便保留。",
+    "只合併相同平台的同一帳戶／影片；跨平台和同名不同 ID 分別保留。",
+    "HTTP 500、連線逾時或保護頁不能證明台已刪除；無法確認的項目暫緩加入。",
+    "已結束一次性活動的影片是存檔，沒有標作不存在。",
+    "所有 Twitch 舊入口均作個別官方查詢；API 的空結果只證明該名稱目前無法使用，不能判斷是否已改名。",
+    "串流和帳戶狀態是核查當時的結果；没有保存驗證資料、IP 欄位或臨時簽署播放網址。"
+  ],
+  "unavailableKeys": [
+    "twitch|no25no2501",
+    "kick|wing36747",
+    "kick|no25no25",
+    "kick|cobra-and-godzilla",
+    "kick|cobra2024",
+    "kick|godzilla-cobra-2027",
+    "kick|godzilla-god-2077",
+    "kick|kww291603",
+    "kick|no52no52",
+    "kick|peterpig8964",
+    "kick|wing3674",
+    "kick|wingchihappy1",
+    "kick|wingwhite383",
+    "kick|wwhite1852",
+    "ok|3849262800563",
+    "ok|9013975129715",
+    "ok|9770604043891",
+    "ok|9784642182771",
+    "twitch|1",
+    "twitch|alancml",
+    "twitch|godzilla_2025",
+    "twitch|mingpig930_2",
+    "twitch|wing36747",
+    "twitch|ww291603",
+    "twitch|yaubotai2"
+  ],
+  "skliveCrossCheck": {
+    "url": "https://skknower.com/user/ctvhiki49713",
+    "api": "https://live.sk-knower.com/skgamerversion_api.php?page=ctvhiki49713",
+    "visible": [
+      {
+        "name": "友寶G",
+        "id": "yaubotai01",
+        "platform": "gosh"
+      },
+      {
+        "name": "哥普",
+        "id": "zero_cobra",
+        "platform": "twitch"
+      },
+      {
+        "name": "哥2",
+        "id": "Godzilla_2027",
+        "platform": "gosh"
+      },
+      {
+        "name": "雀",
+        "id": "jeukpo",
+        "platform": "kick"
+      },
+      {
+        "name": "西野",
+        "id": "nanase-maru525",
+        "platform": "kick"
+      },
+      {
+        "name": "WC",
+        "id": "no25no2501",
+        "platform": "gosh"
+      },
+      {
+        "name": "ATV",
+        "id": "collartv",
+        "platform": "kick"
+      },
+      {
+        "name": "汁仔",
+        "id": "whw9457",
+        "platform": "kick"
+      },
+      {
+        "name": "然",
+        "id": "yinlove",
+        "platform": "kick"
+      },
+      {
+        "name": "羅拔",
+        "id": "baggio1967",
+        "platform": "kick"
+      },
+      {
+        "name": "火",
+        "id": "falconjurer",
+        "platform": "kick"
+      },
+      {
+        "name": "金剛",
+        "id": "KingKong_TV",
+        "platform": "gosh"
+      },
+      {
+        "name": "美1",
+        "id": "meidingdang",
+        "platform": "gosh"
+      },
+      {
+        "name": "美2",
+        "id": "meidingdang0",
+        "platform": "gosh"
+      },
+      {
+        "name": "有片",
+        "id": "fish3345678",
+        "platform": "gosh"
+      },
+      {
+        "name": "KA",
+        "id": "kinganime",
+        "platform": "gosh"
+      }
+    ]
+  },
+  "entries": [
+    {
+      "bucket": "restored",
+      "name": "絕",
+      "id": "ppkkkp",
+      "platform": "at",
+      "canonicalId": "ppkkkp",
+      "key": "at|ppkkkp",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方串流 API 回傳對應使用者 ID 及正在直播的資料。",
+      "publicPage": "https://api.angelthump.com/v2/streams/ppkkkp",
+      "evidence": [
+        {
+          "url": "https://api.angelthump.com/v2/streams/ppkkkp",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:18:57.705Z"
+        }
+      ],
+      "account": {
+        "username": "ppkkkp",
+        "userId": "20ad4962-23ae-452a-a360-636a68f04e0b"
+      },
+      "sources": [
+        "github-current-public",
+        "github-retained-old-default"
+      ],
+      "action": "keep",
+      "listName": "絕"
+    },
+    {
+      "bucket": "restored",
+      "name": "隨便",
+      "id": "justin_yu_1",
+      "platform": "twitch",
+      "canonicalId": "justin_yu_1",
+      "key": "twitch|justin_yu_1",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/justin_yu_1",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=justin_yu_1",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=justin_yu_1",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:02.911Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "60734116",
+        "login": "justin_yu_1",
+        "displayName": "隨便台"
+      },
+      "sources": [
+        "github-current-public"
+      ],
+      "action": "keep",
+      "listName": "隨便"
+    },
+    {
+      "bucket": "restored",
+      "name": "朗子",
+      "id": "anonymouscxz",
+      "platform": "twitch",
+      "canonicalId": "anonymouscxz",
+      "key": "twitch|anonymouscxz",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/anonymouscxz",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=anonymouscxz",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=anonymouscxz",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:02.915Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "1400570398",
+        "login": "anonymouscxz",
+        "displayName": "anonymouscxz"
+      },
+      "sources": [
+        "github-current-public"
+      ],
+      "action": "keep",
+      "listName": "朗子"
+    },
+    {
+      "bucket": "restored",
+      "name": "wc",
+      "id": "no25no2501",
+      "platform": "kick",
+      "canonicalId": "no25no2501",
+      "key": "kick|no25no2501",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/no25no2501",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/no25no2501",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:04.818Z"
+        }
+      ],
+      "account": {
+        "channelId": 103829571,
+        "userId": 105057771,
+        "canonicalSlug": "no25no2501",
+        "publicUsername": "no25no2501",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-current-public"
+      ],
+      "action": "keep",
+      "listName": "wc"
+    },
+    {
+      "bucket": "restored",
+      "name": "然",
+      "id": "yinlove",
+      "platform": "kick",
+      "canonicalId": "yinlove",
+      "key": "kick|yinlove",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/yinlove",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/yinlove",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:04.848Z"
+        }
+      ],
+      "account": {
+        "channelId": 78786373,
+        "userId": 79970188,
+        "canonicalSlug": "yinlove",
+        "publicUsername": "yinlove",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-current-public",
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "然"
+    },
+    {
+      "bucket": "restored",
+      "name": "NU",
+      "id": "number8atctv",
+      "platform": "kick",
+      "canonicalId": "number8atctv",
+      "key": "kick|number8atctv",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/number8atctv",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/number8atctv",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:04.849Z"
+        }
+      ],
+      "account": {
+        "channelId": 74183373,
+        "userId": 75358330,
+        "canonicalSlug": "number8atctv",
+        "publicUsername": "number8atctv",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-current-public"
+      ],
+      "action": "keep",
+      "listName": "NU"
+    },
+    {
+      "bucket": "restored",
+      "name": "火",
+      "id": "falconjurer",
+      "platform": "kick",
+      "canonicalId": "falconjurer",
+      "key": "kick|falconjurer",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/falconjurer",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/falconjurer",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:05.426Z"
+        }
+      ],
+      "account": {
+        "channelId": 87460156,
+        "userId": 88660904,
+        "canonicalSlug": "falconjurer",
+        "publicUsername": "Falconjurer",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-current-public",
+        "github-retained-old-default",
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "火"
+    },
+    {
+      "bucket": "restored",
+      "name": "洗衫",
+      "id": "laundrytoday",
+      "platform": "kick",
+      "canonicalId": "laundrytoday",
+      "key": "kick|laundrytoday",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/laundrytoday",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/laundrytoday",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:05.461Z"
+        }
+      ],
+      "account": {
+        "channelId": 111198391,
+        "userId": 112441403,
+        "canonicalSlug": "laundrytoday",
+        "publicUsername": "laundrytoday",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-current-public"
+      ],
+      "action": "keep",
+      "listName": "洗衫"
+    },
+    {
+      "bucket": "restored",
+      "name": "友2",
+      "id": "yaubotaibackup",
+      "platform": "kick",
+      "canonicalId": "yaubotaibackup",
+      "key": "kick|yaubotaibackup",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/yaubotaibackup",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/yaubotaibackup",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:05.717Z"
+        }
+      ],
+      "account": {
+        "channelId": 122113340,
+        "userId": 123369039,
+        "canonicalSlug": "yaubotaibackup",
+        "publicUsername": "yaubotaibackup",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-current-public"
+      ],
+      "action": "keep",
+      "listName": "友2"
+    },
+    {
+      "bucket": "restored",
+      "name": "羅拔",
+      "id": "baggio1967",
+      "platform": "kick",
+      "canonicalId": "baggio1967",
+      "key": "kick|baggio1967",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/baggio1967",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/baggio1967",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:05.745Z"
+        }
+      ],
+      "account": {
+        "channelId": 122715069,
+        "userId": 123971660,
+        "canonicalSlug": "baggio1967",
+        "publicUsername": "baggio1967",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-current-public",
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "羅拔"
+    },
+    {
+      "bucket": "restored",
+      "name": "絕2",
+      "id": "underwear",
+      "platform": "at",
+      "canonicalId": "underwear",
+      "key": "at|underwear",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方串流 API 回傳對應使用者 ID 及正在直播的資料。",
+      "publicPage": "https://api.angelthump.com/v2/streams/underwear",
+      "evidence": [
+        {
+          "url": "https://api.angelthump.com/v2/streams/underwear",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:18:57.739Z"
+        }
+      ],
+      "account": {
+        "username": "underwear",
+        "userId": "0ab79ba2-7b52-4139-b87e-56210d924056"
+      },
+      "sources": [
+        "github-current-public"
+      ],
+      "action": "keep",
+      "listName": "絕2"
+    },
+    {
+      "bucket": "restored",
+      "name": "頭交",
+      "id": "headjobdont",
+      "platform": "twitch",
+      "canonicalId": "headjobdont",
+      "key": "twitch|headjobdont",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/headjobdont",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=headjobdont",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=headjobdont",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:02.913Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "1373754170",
+        "login": "headjobdont",
+        "displayName": "headjobdont"
+      },
+      "sources": [
+        "github-current-public"
+      ],
+      "action": "keep",
+      "listName": "頭交"
+    },
+    {
+      "bucket": "restored",
+      "name": "Wc",
+      "id": "no25no2501",
+      "platform": "twitch",
+      "canonicalId": "no25no2501",
+      "key": "twitch|no25no2501",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 Helix 個別查詢回覆 200，但使用者列表為空；官方 GraphQL 同時回傳 user=null。此名稱目前無法解析，不能區分改名、停權或刪除。",
+      "publicPage": "https://www.twitch.tv/no25no2501",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=no25no2501",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=no25no2501",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:02.915Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "sources": [
+        "github-current-public"
+      ],
+      "action": "remove"
+    },
+    {
+      "bucket": "restored",
+      "name": "雀",
+      "id": "jeukpo",
+      "platform": "kick",
+      "canonicalId": "jeukpo",
+      "key": "kick|jeukpo",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/jeukpo",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/jeukpo",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:05.784Z"
+        }
+      ],
+      "account": {
+        "channelId": 36857078,
+        "userId": 37929725,
+        "canonicalSlug": "jeukpo",
+        "publicUsername": "jeukpo",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-current-public",
+        "github-retained-old-default",
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "雀"
+    },
+    {
+      "bucket": "restored",
+      "name": "汁仔",
+      "id": "whw9457",
+      "platform": "kick",
+      "canonicalId": "whw9457",
+      "key": "kick|whw9457",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/whw9457",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/whw9457",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:06.071Z"
+        }
+      ],
+      "account": {
+        "channelId": 93048995,
+        "userId": 94259191,
+        "canonicalSlug": "whw9457",
+        "publicUsername": "whw9457",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-current-public",
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "汁仔"
+    },
+    {
+      "bucket": "restored",
+      "name": "ATV",
+      "id": "collartv",
+      "platform": "kick",
+      "canonicalId": "collartv",
+      "key": "kick|collartv",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/collartv",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/collartv",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:06.102Z"
+        }
+      ],
+      "account": {
+        "channelId": 21775103,
+        "userId": 22769673,
+        "canonicalSlug": "collartv",
+        "publicUsername": "CollarTV",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-current-public",
+        "github-retained-old-default",
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "ATV"
+    },
+    {
+      "bucket": "restored",
+      "name": "槍戰",
+      "id": "step1h",
+      "platform": "twitch",
+      "canonicalId": "step1h",
+      "key": "twitch|step1h",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/step1h",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=step1h",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=step1h",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.394Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "1115491136",
+        "login": "step1h",
+        "displayName": "step1h"
+      },
+      "sources": [
+        "github-current-public"
+      ],
+      "action": "keep",
+      "listName": "槍戰"
+    },
+    {
+      "bucket": "restored",
+      "name": "美1",
+      "id": "meidingdang",
+      "platform": "gosh",
+      "canonicalId": "meidingdang",
+      "key": "gosh|meidingdang",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方創作者頁包含對應 ProfilePage / Person，播放查詢取得的 HLS 清單回覆 200。",
+      "publicPage": "https://gosh.com/meidingdang",
+      "evidence": [
+        {
+          "url": "https://gosh.com/meidingdang",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gosh.chicktv02.workers.dev/?channelId=meidingdang",
+          "httpStatus": 200,
+          "isLive": true
+        },
+        {
+          "streamHost": "pull.gosh6.app",
+          "httpStatus": 200,
+          "isHls": true
+        }
+      ],
+      "account": {
+        "name": "meidingdang",
+        "url": "https://gosh.com/meidingdang"
+      },
+      "sources": [
+        "github-current-public",
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "美1"
+    },
+    {
+      "bucket": "restored",
+      "name": "美2",
+      "id": "meidingdang0",
+      "platform": "gosh",
+      "canonicalId": "meidingdang0",
+      "key": "gosh|meidingdang0",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方創作者頁包含對應 ProfilePage / Person，播放查詢取得的 HLS 清單回覆 200。",
+      "publicPage": "https://gosh.com/meidingdang0",
+      "evidence": [
+        {
+          "url": "https://gosh.com/meidingdang0",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gosh.chicktv02.workers.dev/?channelId=meidingdang0",
+          "httpStatus": 200,
+          "isLive": true
+        },
+        {
+          "streamHost": "pull.gosh6.app",
+          "httpStatus": 200,
+          "isHls": true
+        }
+      ],
+      "account": {
+        "name": "meidingdang0",
+        "url": "https://gosh.com/meidingdang0"
+      },
+      "sources": [
+        "github-current-public",
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "美2"
+    },
+    {
+      "bucket": "restored",
+      "name": "金剛",
+      "id": "kingkong_tv",
+      "platform": "gosh",
+      "canonicalId": "kingkong_tv",
+      "key": "gosh|kingkong_tv",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方創作者頁包含對應 ProfilePage / Person，播放查詢取得的 HLS 清單回覆 200。",
+      "publicPage": "https://gosh.com/kingkong_tv",
+      "evidence": [
+        {
+          "url": "https://gosh.com/kingkong_tv",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gosh.chicktv02.workers.dev/?channelId=kingkong_tv",
+          "httpStatus": 200,
+          "isLive": true
+        },
+        {
+          "streamHost": "pull.gosh6.app",
+          "httpStatus": 200,
+          "isHls": true
+        }
+      ],
+      "account": {
+        "name": "KingKong_TV",
+        "url": "https://gosh.com/kingkong_tv"
+      },
+      "sources": [
+        "github-current-public",
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "金剛"
+    },
+    {
+      "bucket": "restored",
+      "name": "美3",
+      "id": "meidingdang1",
+      "platform": "gosh",
+      "canonicalId": "meidingdang1",
+      "key": "gosh|meidingdang1",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方創作者頁包含對應 ProfilePage / Person，播放查詢取得的 HLS 清單回覆 200。",
+      "publicPage": "https://gosh.com/meidingdang1",
+      "evidence": [
+        {
+          "url": "https://gosh.com/meidingdang1",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gosh.chicktv02.workers.dev/?channelId=meidingdang1",
+          "httpStatus": 200,
+          "isLive": true
+        },
+        {
+          "streamHost": "pull.gosh6.app",
+          "httpStatus": 200,
+          "isHls": true
+        }
+      ],
+      "account": {
+        "name": "meidingdang1",
+        "url": "https://gosh.com/meidingdang1"
+      },
+      "sources": [
+        "github-current-public"
+      ],
+      "action": "keep",
+      "listName": "美3"
+    },
+    {
+      "bucket": "restored",
+      "name": "w",
+      "id": "wing36747",
+      "platform": "kick",
+      "canonicalId": "wing36747",
+      "key": "kick|wing36747",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/wing36747",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/wing36747",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:06.225Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/wing36747",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:06.688Z"
+        }
+      ],
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "action": "remove"
+    },
+    {
+      "bucket": "restored",
+      "name": "N",
+      "id": "Eastsnake25",
+      "platform": "kick",
+      "canonicalId": "eastsnake25",
+      "key": "kick|eastsnake25",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/eastsnake25",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/eastsnake25",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:06.404Z"
+        }
+      ],
+      "account": {
+        "channelId": 32802810,
+        "userId": 33860600,
+        "canonicalSlug": "eastsnake25",
+        "publicUsername": "Eastsnake25",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "action": "keep",
+      "listName": "N"
+    },
+    {
+      "bucket": "restored",
+      "name": "西野",
+      "id": "nanase-maru525",
+      "platform": "kick",
+      "canonicalId": "nanase-maru525",
+      "key": "kick|nanase-maru525",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/nanase-maru525",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/nanase-maru525",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:06.406Z"
+        }
+      ],
+      "account": {
+        "channelId": 34871710,
+        "userId": 35937823,
+        "canonicalSlug": "nanase-maru525",
+        "publicUsername": "nanase_maru525",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-retained-old-default",
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "西野"
+    },
+    {
+      "bucket": "restored",
+      "name": "wc",
+      "id": "no25no25",
+      "platform": "kick",
+      "canonicalId": "no25no25",
+      "key": "kick|no25no25",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/no25no25",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/no25no25",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:06.716Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/no25no25",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:06.977Z"
+        }
+      ],
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "action": "remove"
+    },
+    {
+      "bucket": "restored",
+      "name": "哥",
+      "id": "cobra-and-godzilla",
+      "platform": "kick",
+      "canonicalId": "cobra-and-godzilla",
+      "key": "kick|cobra-and-godzilla",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/cobra-and-godzilla",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/cobra-and-godzilla",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:06.720Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/cobra-and-godzilla",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:06.988Z"
+        }
+      ],
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "action": "remove"
+    },
+    {
+      "bucket": "restored",
+      "name": "木",
+      "id": "muse_tw2",
+      "platform": "twitch",
+      "canonicalId": "muse_tw2",
+      "key": "twitch|muse_tw2",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/muse_tw2",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=muse_tw2",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=muse_tw2",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.098Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "486140210",
+        "login": "muse_tw2",
+        "displayName": "木棉花官方頻道二台"
+      },
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "action": "keep",
+      "listName": "木"
+    },
+    {
+      "bucket": "restored",
+      "name": "友",
+      "id": "yaubotai",
+      "platform": "kick",
+      "canonicalId": "yaubotai",
+      "key": "kick|yaubotai",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/yaubotai",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/yaubotai",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:06.908Z"
+        }
+      ],
+      "account": {
+        "channelId": 57856623,
+        "userId": 58989698,
+        "canonicalSlug": "yaubotai",
+        "publicUsername": "yaubotai",
+        "isBanned": false,
+        "isLive": false
+      },
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "action": "keep",
+      "listName": "友"
+    },
+    {
+      "bucket": "restored",
+      "name": "w",
+      "id": "10268974521971",
+      "platform": "ok",
+      "canonicalId": "10268974521971",
+      "key": "ok|10268974521971",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方嵌入播放器包含 LIVE_TV_ODKL 直播資料，當時暫停／離線；保留。",
+      "publicPage": "https://ok.ru/videoembed/10268974521971",
+      "evidence": [
+        {
+          "url": "https://ok.ru/videoembed/10268974521971",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:18:58.737Z"
+        }
+      ],
+      "sources": [
+        "github-retained-old-default"
+      ],
+      "action": "keep",
+      "listName": "w"
+    },
+    {
+      "bucket": "restored",
+      "name": "友寶G",
+      "id": "yaubotai01",
+      "platform": "gosh",
+      "canonicalId": "yaubotai01",
+      "key": "gosh|yaubotai01",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方創作者頁包含對應 ProfilePage / Person，播放查詢取得的 HLS 清單回覆 200。",
+      "publicPage": "https://gosh.com/yaubotai01",
+      "evidence": [
+        {
+          "url": "https://gosh.com/yaubotai01",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gosh.chicktv02.workers.dev/?channelId=yaubotai01",
+          "httpStatus": 200,
+          "isLive": true
+        },
+        {
+          "streamHost": "pull.gosh6.app",
+          "httpStatus": 200,
+          "isHls": true
+        }
+      ],
+      "account": {
+        "name": "yaubotai01",
+        "url": "https://gosh.com/yaubotai01"
+      },
+      "sources": [
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "友寶G"
+    },
+    {
+      "bucket": "restored",
+      "name": "哥普",
+      "id": "zero_cobra",
+      "platform": "twitch",
+      "canonicalId": "zero_cobra",
+      "key": "twitch|zero_cobra",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/zero_cobra",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=zero_cobra",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=zero_cobra",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.103Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "12581008",
+        "login": "zero_cobra",
+        "displayName": "哥普拉"
+      },
+      "sources": [
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "哥普"
+    },
+    {
+      "bucket": "restored",
+      "name": "哥2",
+      "id": "Godzilla_2027",
+      "platform": "gosh",
+      "canonicalId": "godzilla_2027",
+      "key": "gosh|godzilla_2027",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方創作者頁包含對應 ProfilePage / Person，播放查詢取得的 HLS 清單回覆 200。",
+      "publicPage": "https://gosh.com/Godzilla_2027",
+      "evidence": [
+        {
+          "url": "https://gosh.com/Godzilla_2027",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gosh.chicktv02.workers.dev/?channelId=Godzilla_2027",
+          "httpStatus": 200,
+          "isLive": true
+        },
+        {
+          "streamHost": "pull.gosh6.app",
+          "httpStatus": 200,
+          "isHls": true
+        }
+      ],
+      "account": {
+        "name": "Godzilla_2027",
+        "url": "https://gosh.com/Godzilla_2027"
+      },
+      "sources": [
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "哥2"
+    },
+    {
+      "bucket": "restored",
+      "name": "WC",
+      "id": "no25no2501",
+      "platform": "gosh",
+      "canonicalId": "no25no2501",
+      "key": "gosh|no25no2501",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方頁包含此創作者的 ProfilePage / Person、名稱及頭像；不存在帳戶的對照頁沒有這些資料。播放查詢顯示離線，保留有效入口。",
+      "publicPage": "https://gosh.com/no25no2501",
+      "evidence": [
+        {
+          "url": "https://gosh.com/no25no2501",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gosh.chicktv02.workers.dev/?channelId=no25no2501",
+          "httpStatus": 200,
+          "isLive": false
+        }
+      ],
+      "account": {
+        "name": "no25no2501",
+        "url": "https://gosh.com/no25no2501"
+      },
+      "sources": [
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "WC"
+    },
+    {
+      "bucket": "restored",
+      "name": "有片",
+      "id": "fish3345678",
+      "platform": "gosh",
+      "canonicalId": "fish3345678",
+      "key": "gosh|fish3345678",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方創作者頁包含對應 ProfilePage / Person，播放查詢取得的 HLS 清單回覆 200。",
+      "publicPage": "https://gosh.com/fish3345678",
+      "evidence": [
+        {
+          "url": "https://gosh.com/fish3345678",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gosh.chicktv02.workers.dev/?channelId=fish3345678",
+          "httpStatus": 200,
+          "isLive": true
+        },
+        {
+          "streamHost": "pull.gosh6.app",
+          "httpStatus": 200,
+          "isHls": true
+        }
+      ],
+      "account": {
+        "name": "fish3345678",
+        "url": "https://gosh.com/fish3345678"
+      },
+      "sources": [
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "有片"
+    },
+    {
+      "bucket": "restored",
+      "name": "KA",
+      "id": "kinganime",
+      "platform": "gosh",
+      "canonicalId": "kinganime",
+      "key": "gosh|kinganime",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方創作者頁包含對應 ProfilePage / Person，播放查詢取得的 HLS 清單回覆 200。",
+      "publicPage": "https://gosh.com/kinganime",
+      "evidence": [
+        {
+          "url": "https://gosh.com/kinganime",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gosh.chicktv02.workers.dev/?channelId=kinganime",
+          "httpStatus": 200,
+          "isLive": true
+        },
+        {
+          "streamHost": "pull.gosh6.app",
+          "httpStatus": 200,
+          "isHls": true
+        }
+      ],
+      "account": {
+        "name": "kinganime",
+        "url": "https://gosh.com/kinganime"
+      },
+      "sources": [
+        "sklive-visible"
+      ],
+      "action": "keep",
+      "listName": "KA"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "k",
+      "id": "krichure",
+      "platform": "at",
+      "canonicalId": "krichure",
+      "key": "at|krichure",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方串流 API 回傳對應使用者 ID 及正在直播的資料。",
+      "publicPage": "https://api.angelthump.com/v2/streams/krichure",
+      "evidence": [
+        {
+          "url": "https://api.angelthump.com/v2/streams/krichure",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:18:58.754Z"
+        }
+      ],
+      "account": {
+        "username": "krichure",
+        "userId": "945ebd95-e27d-46f9-8f4d-0d3a723f1dbc"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "530c3dcd1e3d1fd0549b2e74e88d5115f57dff6e",
+        "lastSeen": "2026-04-30T22:33:41+08:00"
+      },
+      "action": "add",
+      "listName": "k"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "動",
+      "id": "mrrock",
+      "platform": "at",
+      "canonicalId": "mrrock",
+      "key": "at|mrrock",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方串流 API 回傳對應使用者 ID 及正在直播的資料。",
+      "publicPage": "https://api.angelthump.com/v2/streams/mrrock",
+      "evidence": [
+        {
+          "url": "https://api.angelthump.com/v2/streams/mrrock",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:18:59.162Z"
+        }
+      ],
+      "account": {
+        "username": "mrrock",
+        "userId": "4299b96f-33f7-4d42-ad98-457cff25146d"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "d6a4e778b23e830e4108f64fca79481c40a8a7f3",
+        "lastSeen": "2026-08-25T16:35:21+08:00"
+      },
+      "action": "add",
+      "listName": "動"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "絕",
+      "id": "ppkkkpp",
+      "platform": "at",
+      "canonicalId": "ppkkkpp",
+      "key": "at|ppkkkpp",
+      "status": "unverified",
+      "liveNow": null,
+      "reason": "官方串流 API 重試仍回覆 500；有效台對照可正常回傳。服務錯誤無法證明帳戶已刪除，暫緩加入。",
+      "publicPage": "https://api.angelthump.com/v2/streams/ppkkkpp",
+      "evidence": [
+        {
+          "url": "https://api.angelthump.com/v2/streams/ppkkkpp",
+          "httpStatus": 500,
+          "checkedAt": "2026-10-13T22:20:26.443Z"
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "78148d34de508bd0f6af187bd7316be9621cde03",
+        "lastSeen": "2025-12-14T23:59:22+08:00"
+      },
+      "action": "defer"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "試",
+      "id": "219534",
+      "platform": "goodgame",
+      "canonicalId": "219534",
+      "key": "goodgame|219534",
+      "status": "unverified",
+      "liveNow": null,
+      "reason": "舊官方嵌入播放器及 API 多次連線逾時；直接瀏覽器載入同一播放器也逾時。無法確認，暫緩加入，沒有視為已刪除。",
+      "publicPage": "https://goodgame.ru/player?219534",
+      "evidence": [
+        {
+          "url": "https://goodgame.ru/player?219534",
+          "checkedAt": "2026-10-13T22:18:59.781Z",
+          "error": "fetch failed"
+        },
+        {
+          "url": "https://goodgame.ru/api/4/users/219534/stream",
+          "checkedAt": "2026-10-13T22:18:59.940Z",
+          "error": "fetch failed"
+        },
+        {
+          "url": "https://goodgame.ru/api/player?channel=219534",
+          "checkedAt": "2026-10-13T22:20:27.491Z",
+          "error": "fetch failed"
+        },
+        {
+          "url": "https://goodgame.ru/channel/219534",
+          "checkedAt": "2026-10-13T22:20:27.483Z",
+          "error": "fetch failed"
+        },
+        {
+          "url": "https://goodgame.ru/api/4/streams/219534",
+          "checkedAt": "2026-10-13T22:20:28.202Z",
+          "error": "fetch failed"
+        },
+        {
+          "url": "https://goodgame.ru/player?219534",
+          "checkedAt": "2026-10-13T22:22:50.602Z",
+          "error": "fetch failed"
+        }
+      ],
+      "source": {
+        "file": "ch1.txt",
+        "commit": "777f001f76740d1e18793778596290806c8b71ba",
+        "lastSeen": "2026-09-19T23:03:38+08:00"
+      },
+      "action": "defer"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "哥",
+      "id": "cobra2024",
+      "platform": "kick",
+      "canonicalId": "cobra2024",
+      "key": "kick|cobra2024",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/cobra2024",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/cobra2024",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:07.205Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/cobra2024",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:07.493Z"
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "4470bbd51f9cd0caed41a0b6e5d0f05b5e273313",
+        "lastSeen": "2025-08-07T21:29:17+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "哥二",
+      "id": "godzilla-cobra-2027",
+      "platform": "kick",
+      "canonicalId": "godzilla-cobra-2027",
+      "key": "kick|godzilla-cobra-2027",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/godzilla-cobra-2027",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/godzilla-cobra-2027",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:07.206Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/godzilla-cobra-2027",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:07.427Z"
+        }
+      ],
+      "source": {
+        "file": "ch1.txt",
+        "commit": "baee449bfbad641b6a7f193d86713a1f56f33524",
+        "lastSeen": "2026-08-10T23:22:26+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "神",
+      "id": "godzilla-god-2077",
+      "platform": "kick",
+      "canonicalId": "godzilla-god-2077",
+      "key": "kick|godzilla-god-2077",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/godzilla-god-2077",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/godzilla-god-2077",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:07.246Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/godzilla-god-2077",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:07.727Z"
+        }
+      ],
+      "source": {
+        "file": "ch1.txt",
+        "commit": "e9f656b3a910b65a552fce853bbc89a299a4a248",
+        "lastSeen": "2026-08-11T21:44:40+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "翼",
+      "id": "kww291603",
+      "platform": "kick",
+      "canonicalId": "kww291603",
+      "key": "kick|kww291603",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/kww291603",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/kww291603",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:07.653Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/kww291603",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:07.824Z"
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "07463c8b5153e3802c6105ee0263938151202a16",
+        "lastSeen": "2025-02-23T13:11:27+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "wc",
+      "id": "no25no2502",
+      "platform": "kick",
+      "canonicalId": "no25no2502",
+      "key": "kick|no25no2502",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/no25no2502",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/no25no2502",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:07.727Z"
+        }
+      ],
+      "account": {
+        "channelId": 104957089,
+        "userId": 106191277,
+        "canonicalSlug": "no25no2502",
+        "publicUsername": "no25no2502",
+        "isBanned": false,
+        "isLive": false
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "905954df4f8fc1fe90d491fce5472a76ed6dba15",
+        "lastSeen": "2026-06-04T12:32:08+08:00"
+      },
+      "action": "add",
+      "listName": "wc"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "wc",
+      "id": "no52no52",
+      "platform": "kick",
+      "canonicalId": "no52no52",
+      "key": "kick|no52no52",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/no52no52",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/no52no52",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:07.938Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/no52no52",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:08.190Z"
+        }
+      ],
+      "source": {
+        "file": "ch1.txt",
+        "commit": "4c4fc6e010f4a107444f7f6e9a22414df8e850c6",
+        "lastSeen": "2026-05-01T19:09:26+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "翼",
+      "id": "peterpig8964",
+      "platform": "kick",
+      "canonicalId": "peterpig8964",
+      "key": "kick|peterpig8964",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/peterpig8964",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/peterpig8964",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:08.042Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/peterpig8964",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:08.264Z"
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "92031fecdd4845c22f074f93e2e4c50b5a33b958",
+        "lastSeen": "2025-06-28T16:21:30+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "QT",
+      "id": "qt369",
+      "platform": "kick",
+      "canonicalId": "qt369",
+      "key": "kick|qt369",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳獨立頻道及使用者 ID；當時離線，保留有效入口。",
+      "publicPage": "https://kick.com/qt369",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/qt369",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:08.422Z"
+        }
+      ],
+      "account": {
+        "channelId": 22936762,
+        "userId": 23936788,
+        "canonicalSlug": "qt369",
+        "publicUsername": "qt369",
+        "isBanned": false,
+        "isLive": false
+      },
+      "source": {
+        "file": "channels.txt",
+        "commit": "e212eee2d854cee242496bfe0917b777f7b7c9c8",
+        "lastSeen": "2025-12-15T20:40:27+08:00"
+      },
+      "action": "add",
+      "listName": "QT"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "w",
+      "id": "wing3674",
+      "platform": "kick",
+      "canonicalId": "wing3674",
+      "key": "kick|wing3674",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/wing3674",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/wing3674",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:08.475Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/wing3674",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:08.937Z"
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "ffc0875fbf6092b0207abddafc846bb9e0f38658",
+        "lastSeen": "2025-12-14T18:52:21+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "wc",
+      "id": "wingchihappy1",
+      "platform": "kick",
+      "canonicalId": "wingchihappy1",
+      "key": "kick|wingchihappy1",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/wingchihappy1",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/wingchihappy1",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:08.541Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/wingchihappy1",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:08.845Z"
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "80d2c493899d30764791f01e82a2af0e186d1131",
+        "lastSeen": "2026-03-08T22:05:04+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "翼",
+      "id": "wingwhite383",
+      "platform": "kick",
+      "canonicalId": "wingwhite383",
+      "key": "kick|wingwhite383",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/wingwhite383",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/wingwhite383",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:08.690Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/wingwhite383",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:09.014Z"
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "897100fbf7f43868093ea292ebba7ce9771762a0",
+        "lastSeen": "2025-08-06T14:07:36+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "w",
+      "id": "wwhite1852",
+      "platform": "kick",
+      "canonicalId": "wwhite1852",
+      "key": "kick|wwhite1852",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 v2 及 v1 頻道 API 均回覆 404，此舊入口目前無法使用。",
+      "publicPage": "https://kick.com/wwhite1852",
+      "evidence": [
+        {
+          "url": "https://kick.com/api/v2/channels/wwhite1852",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:09.070Z"
+        },
+        {
+          "url": "https://kick.com/api/v1/channels/wwhite1852",
+          "httpStatus": 404,
+          "checkedAt": "2026-10-13T22:19:09.300Z"
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "2f95eebfeea5915fae396351d015d18bad201cc9",
+        "lastSeen": "2025-10-23T20:26:15+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "g",
+      "id": "https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+      "platform": "m3u8",
+      "canonicalId": "https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+      "key": "m3u8|https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "直播清單持續推進，清單及 MPEG-TS 片段均回覆 200，並允許本站 Origin。廣州電視的串流，與雞舍台 G 是不同項目。",
+      "publicPage": "https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+      "evidence": [
+        {
+          "url": "https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:20:38.220Z"
+        },
+        {
+          "url": "https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:01.338Z"
+        },
+        {
+          "url": "https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:25:27.495Z",
+          "accessControlAllowOrigin": "https://chicktv.github.io"
+        },
+        {
+          "url": "https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:28:12.316Z",
+          "testedOrigin": "https://umininn-gh.github.io",
+          "accessControlAllowOrigin": "https://umininn-gh.github.io"
+        },
+        {
+          "url": "https://tencentplaybusiness.gztv.com/live/zonghes-1791025445.ts",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:28:13.495Z",
+          "testedOrigin": "https://umininn-gh.github.io",
+          "accessControlAllowOrigin": "https://umininn-gh.github.io"
+        }
+      ],
+      "playback": {
+        "manifestHttpStatus": 200,
+        "contentType": "application/vnd.apple.mpegurl",
+        "noEndList": true,
+        "earlierMediaSequence": "1791025332",
+        "laterMediaSequence": "1791025445",
+        "segmentHttpStatus": 200,
+        "segmentContentType": "video/MP2T",
+        "mpegTsSyncByte": 71,
+        "mpegTsSyncByteAt188": 71,
+        "testedOrigin": "https://umininn-gh.github.io",
+        "allowOrigin": "https://umininn-gh.github.io",
+        "segmentTestedOrigin": "https://umininn-gh.github.io",
+        "segmentAllowOrigin": "https://umininn-gh.github.io"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "f25ff00a4b68b2ed6bcf4b8aaa7041f91323bd5d",
+        "lastSeen": "2026-04-15T10:56:59+08:00"
+      },
+      "action": "add",
+      "listName": "g（廣州電視）"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "QT",
+      "id": "3849262800563",
+      "platform": "ok",
+      "canonicalId": "3849262800563",
+      "key": "ok|3849262800563",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方嵌入頁明確顯示作者不存在或已被封鎖，沒有可播放播放器。",
+      "publicPage": "https://ok.ru/videoembed/3849262800563",
+      "evidence": [
+        {
+          "url": "https://ok.ru/videoembed/3849262800563",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:00.635Z"
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "0ab3190deece9648f9f98b0149c6172bead4f10c",
+        "lastSeen": "2025-09-27T11:30:47+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "翼",
+      "id": "9013975129715",
+      "platform": "ok",
+      "canonicalId": "9013975129715",
+      "key": "ok|9013975129715",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方嵌入頁明確顯示 Video not found。",
+      "publicPage": "https://ok.ru/videoembed/9013975129715",
+      "evidence": [
+        {
+          "url": "https://ok.ru/videoembed/9013975129715",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:01.703Z"
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "c5d43a3cf2b97f74afc32dd4085582efe5407833",
+        "lastSeen": "2025-04-07T09:40:49+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "翼",
+      "id": "9770604043891",
+      "platform": "ok",
+      "canonicalId": "9770604043891",
+      "key": "ok|9770604043891",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方嵌入頁明確顯示 Video not found。",
+      "publicPage": "https://ok.ru/videoembed/9770604043891",
+      "evidence": [
+        {
+          "url": "https://ok.ru/videoembed/9770604043891",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:02.651Z"
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "0bb36b4f8e3097f6cc8e5c6b4798fda223d4d20d",
+        "lastSeen": "2025-04-15T10:44:35+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "翼",
+      "id": "9784642182771",
+      "platform": "ok",
+      "canonicalId": "9784642182771",
+      "key": "ok|9784642182771",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方嵌入頁明確顯示 Video not found。",
+      "publicPage": "https://ok.ru/videoembed/9784642182771",
+      "evidence": [
+        {
+          "url": "https://ok.ru/videoembed/9784642182771",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:03.592Z"
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "1a95dabd291ee9b18a5d37d55fa3eb5cbeaf8911",
+        "lastSeen": "2025-09-23T22:05:01+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "1",
+      "id": "1",
+      "platform": "twitch",
+      "canonicalId": "1",
+      "key": "twitch|1",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 Helix 個別查詢回覆 200，但使用者列表為空；官方 GraphQL 同時回傳 user=null。此名稱目前無法解析，不能區分改名、停權或刪除。",
+      "publicPage": "https://www.twitch.tv/1",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=1",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=1",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.395Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "source": {
+        "file": "ch1.txt",
+        "commit": "7fd2cbc9b721b9ef49a2f377e80e2580cbc7befd",
+        "lastSeen": "2026-04-28T17:07:12+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "測試台",
+      "id": "12345",
+      "platform": "twitch",
+      "canonicalId": "12345",
+      "key": "twitch|12345",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/12345",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=12345",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=12345",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.287Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "133079362",
+        "login": "12345",
+        "displayName": "12345"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "af5dceeef89b145d4082ad179569130d339c01a2",
+        "lastSeen": "2026-04-29T10:26:05+08:00"
+      },
+      "action": "add",
+      "listName": "12345"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "A",
+      "id": "alancml",
+      "platform": "twitch",
+      "canonicalId": "alancml",
+      "key": "twitch|alancml",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 Helix 個別查詢回覆 200，但使用者列表為空；官方 GraphQL 同時回傳 user=null。此名稱目前無法解析，不能區分改名、停權或刪除。",
+      "publicPage": "https://www.twitch.tv/alancml",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=alancml",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=alancml",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.286Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "dae9d7d3ccb78a43b4c856287f943165aff43a9d",
+        "lastSeen": "2025-12-14T16:23:06+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "A",
+      "id": "alancml01",
+      "platform": "twitch",
+      "canonicalId": "alancml01",
+      "key": "twitch|alancml01",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/alancml01",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=alancml01",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=alancml01",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.479Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "547763563",
+        "login": "alancml01",
+        "displayName": "alancml01"
+      },
+      "source": {
+        "file": "channels.txt",
+        "commit": "e046b8e040bb57f384b13fe40733226c3c3cc472",
+        "lastSeen": "2025-12-14T19:16:18+08:00"
+      },
+      "action": "add",
+      "listName": "A"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "朗子",
+      "id": "arlongjaijai2025",
+      "platform": "twitch",
+      "canonicalId": "arlongjaijai2025",
+      "key": "twitch|arlongjaijai2025",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/arlongjaijai2025",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=arlongjaijai2025",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=arlongjaijai2025",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.478Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "1224189910",
+        "login": "arlongjaijai2025",
+        "displayName": "_牙朗_"
+      },
+      "source": {
+        "file": "ch.txt",
+        "commit": "fa8f74a4acb12f6d1e25df227ff8ca326771abdc",
+        "lastSeen": "2026-06-14T14:47:38+08:00"
+      },
+      "action": "add",
+      "listName": "朗子"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "大波",
+      "id": "dindinxd19",
+      "platform": "twitch",
+      "canonicalId": "dindinxd19",
+      "key": "twitch|dindinxd19",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/dindinxd19",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=dindinxd19",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=dindinxd19",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.578Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "102377278",
+        "login": "dindinxd19",
+        "displayName": "肥癲"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "1323f17185ab23cae98404e2248b025917bcc140",
+        "lastSeen": "2026-09-12T22:33:28+08:00"
+      },
+      "action": "add",
+      "listName": "大波"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "哥",
+      "id": "godzilla_2025",
+      "platform": "twitch",
+      "canonicalId": "godzilla_2025",
+      "key": "twitch|godzilla_2025",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 Helix 個別查詢回覆 200，但使用者列表為空；官方 GraphQL 同時回傳 user=null。此名稱目前無法解析，不能區分改名、停權或刪除。",
+      "publicPage": "https://www.twitch.tv/godzilla_2025",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=godzilla_2025",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=godzilla_2025",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.581Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "23ac9462671abc9766f5acd72b01c297190b5a89",
+        "lastSeen": "2025-12-14T23:31:26+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "朗子",
+      "id": "https://www.twitch.tv/arlongjaijai2025",
+      "platform": "twitch",
+      "canonicalId": "arlongjaijai2025",
+      "key": "twitch|arlongjaijai2025",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/arlongjaijai2025",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=arlongjaijai2025",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=arlongjaijai2025",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.478Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "1224189910",
+        "login": "arlongjaijai2025",
+        "displayName": "_牙朗_"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "7d4d2b806d3b8e9e054d959db8202beb055f7fdc",
+        "lastSeen": "2026-05-01T17:32:18+08:00"
+      },
+      "action": "deduplicate",
+      "duplicateOf": "twitch|arlongjaijai2025"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "洗衫",
+      "id": "laundrytoday",
+      "platform": "twitch",
+      "canonicalId": "laundrytoday",
+      "key": "twitch|laundrytoday",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/laundrytoday",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=laundrytoday",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=laundrytoday",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.679Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "874085831",
+        "login": "laundrytoday",
+        "displayName": "laundrytoday"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "4104087bc3e12ad53c0b2f466fa682ec3fe2d30e",
+        "lastSeen": "2026-06-09T19:32:13+08:00"
+      },
+      "action": "add",
+      "listName": "洗衫"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "大波",
+      "id": "loui5ng",
+      "platform": "twitch",
+      "canonicalId": "loui5ng",
+      "key": "twitch|loui5ng",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/loui5ng",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=loui5ng",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=loui5ng",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.677Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "28351364",
+        "login": "loui5ng",
+        "displayName": "Loui5Ng"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "ac29f5be37b71ab710142f5730d59aaa3b67f835",
+        "lastSeen": "2026-09-12T22:32:15+08:00"
+      },
+      "action": "add",
+      "listName": "大波"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "朗",
+      "id": "mingpig930_2",
+      "platform": "twitch",
+      "canonicalId": "mingpig930_2",
+      "key": "twitch|mingpig930_2",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 Helix 個別查詢回覆 200，但使用者列表為空；官方 GraphQL 同時回傳 user=null。此名稱目前無法解析，不能區分改名、停權或刪除。",
+      "publicPage": "https://www.twitch.tv/mingpig930_2",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=mingpig930_2",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=mingpig930_2",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.766Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "dae9d7d3ccb78a43b4c856287f943165aff43a9d",
+        "lastSeen": "2025-12-14T16:23:06+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "987",
+      "id": "ppkkkp",
+      "platform": "twitch",
+      "canonicalId": "ppkkkp",
+      "key": "twitch|ppkkkp",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/ppkkkp",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=ppkkkp",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=ppkkkp",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.769Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "16988942",
+        "login": "ppkkkp",
+        "displayName": "ppkkkp"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "ef96bda7fe386a996eff1e2769a1e29a090ecf67",
+        "lastSeen": "2026-04-29T10:22:51+08:00"
+      },
+      "action": "add",
+      "listName": "987"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "w",
+      "id": "wing36747",
+      "platform": "twitch",
+      "canonicalId": "wing36747",
+      "key": "twitch|wing36747",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 Helix 個別查詢回覆 200，但使用者列表為空；官方 GraphQL 同時回傳 user=null。此名稱目前無法解析，不能區分改名、停權或刪除。",
+      "publicPage": "https://www.twitch.tv/wing36747",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=wing36747",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=wing36747",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.863Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "08b99d89749dba03baf03186c77e6ff18c2277d1",
+        "lastSeen": "2025-09-27T12:58:42+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "WJ",
+      "id": "woojungx4",
+      "platform": "twitch",
+      "canonicalId": "woojungx4",
+      "key": "twitch|woojungx4",
+      "status": "valid-live",
+      "liveNow": true,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/woojungx4",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=woojungx4",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=woojungx4",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.876Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "account": {
+        "id": "139417491",
+        "login": "woojungx4",
+        "displayName": "우정우정우정우정"
+      },
+      "source": {
+        "file": "ch.txt",
+        "commit": "8793ef1f4b6249d46f99d3ec9d1c1c1c1b429e8d",
+        "lastSeen": "2026-09-13T10:22:26+08:00"
+      },
+      "action": "add",
+      "listName": "WJ"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "翼",
+      "id": "ww291603",
+      "platform": "twitch",
+      "canonicalId": "ww291603",
+      "key": "twitch|ww291603",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 Helix 個別查詢回覆 200，但使用者列表為空；官方 GraphQL 同時回傳 user=null。此名稱目前無法解析，不能區分改名、停權或刪除。",
+      "publicPage": "https://www.twitch.tv/ww291603",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=ww291603",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=ww291603",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.947Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "00020921474a3fd41c362b9b7b91054a1837e747",
+        "lastSeen": "2025-03-31T14:30:19+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "友",
+      "id": "yaubotai2",
+      "platform": "twitch",
+      "canonicalId": "yaubotai2",
+      "key": "twitch|yaubotai2",
+      "status": "unavailable",
+      "liveNow": null,
+      "reason": "官方 Helix 個別查詢回覆 200，但使用者列表為空；官方 GraphQL 同時回傳 user=null。此名稱目前無法解析，不能區分改名、停權或刪除。",
+      "publicPage": "https://www.twitch.tv/yaubotai2",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=yaubotai2",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://gql.twitch.tv/gql",
+          "httpStatus": 200,
+          "operation": "user(login)"
+        },
+        {
+          "url": "https://api.twitch.tv/helix/users?login=yaubotai2",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:23:03.954Z",
+          "individuallyRequested": true,
+          "error": null
+        }
+      ],
+      "source": {
+        "file": "channels.txt",
+        "commit": "c2a5e168a1091763f1eb528a13ceadce2d21dc77",
+        "lastSeen": "2025-04-20T21:46:09+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "金剛",
+      "id": "kingkong_tv",
+      "platform": "vaughn",
+      "canonicalId": "kingkong_tv",
+      "key": "vaughn|kingkong_tv",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳非空追蹤數、瀏覽數及過去直播時間；不存在帳戶的對照回傳空值。帳戶有效，當時離線。",
+      "publicPage": "https://vaughn.live/kingkong_tv",
+      "evidence": [
+        {
+          "url": "https://api.vaughnsoft.net/v1/stream/vl/kingkong_tv",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:04.525Z"
+        }
+      ],
+      "account": {
+        "live": false,
+        "followers": 261,
+        "pageviews": 53054,
+        "lastLiveAt": "2026-09-20T23:57:53.000Z",
+        "lastOfflineAt": "2026-09-20T23:58:01.000Z",
+        "url": "https://vaughn.live/kingkong_tv"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "d91ac4eb9728f8b6ca0870874a04c43fe10d9a47",
+        "lastSeen": "2026-09-22T18:42:04+08:00"
+      },
+      "action": "add",
+      "listName": "金剛"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "美2",
+      "id": "meidingdang",
+      "platform": "vaughn",
+      "canonicalId": "meidingdang",
+      "key": "vaughn|meidingdang",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳非空追蹤數、瀏覽數及過去直播時間；不存在帳戶的對照回傳空值。帳戶有效，當時離線。",
+      "publicPage": "https://vaughn.live/meidingdang",
+      "evidence": [
+        {
+          "url": "https://api.vaughnsoft.net/v1/stream/vl/meidingdang",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:10.489Z"
+        }
+      ],
+      "account": {
+        "live": false,
+        "followers": 176,
+        "pageviews": 16310,
+        "lastLiveAt": "2026-09-20T13:33:55.000Z",
+        "lastOfflineAt": "2026-09-21T12:13:33.000Z",
+        "url": "https://vaughn.live/meidingdang"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "37280d24ae28e98bf7651d3b5610460af22cdffd",
+        "lastSeen": "2026-09-22T13:46:05+08:00"
+      },
+      "action": "add",
+      "listName": "美2"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "美1",
+      "id": "triplestarhunters",
+      "platform": "vaughn",
+      "canonicalId": "triplestarhunters",
+      "key": "vaughn|triplestarhunters",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳非空追蹤數、瀏覽數及過去直播時間；不存在帳戶的對照回傳空值。帳戶有效，當時離線。",
+      "publicPage": "https://vaughn.live/triplestarhunters",
+      "evidence": [
+        {
+          "url": "https://api.vaughnsoft.net/v1/stream/vl/triplestarhunters",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:11.674Z"
+        }
+      ],
+      "account": {
+        "live": false,
+        "followers": 431,
+        "pageviews": 788993,
+        "lastLiveAt": "2026-09-20T13:35:21.000Z",
+        "lastOfflineAt": "2026-09-21T12:00:46.000Z",
+        "url": "https://vaughn.live/triplestarhunters"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "a47d83c137275a08823fe3dfff1b1de846066f99",
+        "lastSeen": "2026-09-22T14:25:26+08:00"
+      },
+      "action": "add",
+      "listName": "美1"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "t",
+      "id": "zard46",
+      "platform": "vaughn",
+      "canonicalId": "zard46",
+      "key": "vaughn|zard46",
+      "status": "valid-offline",
+      "liveNow": false,
+      "reason": "官方 API 回傳非空追蹤數、瀏覽數及過去直播時間；不存在帳戶的對照回傳空值。帳戶有效，當時離線。",
+      "publicPage": "https://vaughn.live/zard46",
+      "evidence": [
+        {
+          "url": "https://api.vaughnsoft.net/v1/stream/vl/zard46",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:11.684Z"
+        }
+      ],
+      "account": {
+        "live": false,
+        "followers": 100,
+        "pageviews": 4602,
+        "lastLiveAt": "2026-09-18T12:21:32.000Z",
+        "lastOfflineAt": "2026-09-18T16:05:30.000Z",
+        "url": "https://vaughn.live/zard46"
+      },
+      "source": {
+        "file": "ch1.txt",
+        "commit": "989f45a09026fbf8020b17140f34b603e78cf27d",
+        "lastSeen": "2026-09-18T23:30:29+08:00"
+      },
+      "action": "add",
+      "listName": "t"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "施政",
+      "id": "https://www.youtube.com/watch?v=UL8iGQiTrlA",
+      "platform": "youtube",
+      "canonicalId": "UL8iGQiTrlA",
+      "key": "youtube|UL8iGQiTrlA",
+      "status": "ended-archive",
+      "liveNow": null,
+      "reason": "官方資料顯示為 2026-09-16 已結束活動的可播放存檔，保留核查記錄，不放入直播清單。",
+      "publicPage": "https://www.youtube.com/watch?v=UL8iGQiTrlA",
+      "evidence": [
+        {
+          "url": "https://www.youtube.com/watch?v=UL8iGQiTrlA",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:11.921Z"
+        },
+        {
+          "url": "https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DUL8iGQiTrlA&format=json",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:11.953Z"
+        }
+      ],
+      "source": {
+        "file": "ch1.txt",
+        "commit": "278a87a75d5416d0e03618730191f546cb105d83",
+        "lastSeen": "2026-09-16T11:15:25+08:00"
+      },
+      "action": "exclude"
+    },
+    {
+      "bucket": "historicalOnly",
+      "name": "施政",
+      "id": "UL8iGQiTrlA",
+      "platform": "youtube",
+      "canonicalId": "UL8iGQiTrlA",
+      "key": "youtube|UL8iGQiTrlA",
+      "status": "ended-archive",
+      "liveNow": null,
+      "reason": "官方資料顯示為 2026-09-16 已結束活動的可播放存檔，保留核查記錄，不放入直播清單。",
+      "publicPage": "https://www.youtube.com/watch?v=UL8iGQiTrlA",
+      "evidence": [
+        {
+          "url": "https://www.youtube.com/watch?v=UL8iGQiTrlA",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:11.921Z"
+        },
+        {
+          "url": "https://www.youtube.com/oembed?url=https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DUL8iGQiTrlA&format=json",
+          "httpStatus": 200,
+          "checkedAt": "2026-10-13T22:19:11.953Z"
+        }
+      ],
+      "source": {
+        "file": "ch.txt",
+        "commit": "a0c7e3c90768c556b36073876b2326bf3fbd99f6",
+        "lastSeen": "2026-09-16T14:06:18+08:00"
+      },
+      "action": "deduplicate",
+      "duplicateOf": "youtube|UL8iGQiTrlA"
+    },
+    {
+      "bucket": "namedMissing",
+      "name": "RachelW",
+      "id": "rachelw",
+      "platform": "twitch",
+      "canonicalId": "rachelw",
+      "key": "twitch|rachelw",
+      "status": "valid-account",
+      "liveNow": null,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。",
+      "publicPage": "https://www.twitch.tv/rachelw",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=rachelw",
+          "httpStatus": 200
+        }
+      ],
+      "account": {
+        "id": "139172683",
+        "login": "rachelw",
+        "displayName": "RachelW"
+      },
+      "sources": [
+        "user-explicitly-named"
+      ],
+      "action": "add",
+      "listName": "RachelW"
+    },
+    {
+      "bucket": "namedMissing",
+      "name": "G",
+      "id": "ourchickenlife",
+      "platform": "twitch",
+      "canonicalId": "ourchickenlife",
+      "key": "twitch|ourchickenlife",
+      "status": "valid-account",
+      "liveNow": null,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。 原程式使用的 whitewing918 清單把此台命名為 G；官方自介描述 15 個以上雞舍鏡頭及互動餵食，符合使用者描述。",
+      "publicPage": "https://www.twitch.tv/ourchickenlife",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?login=ourchickenlife",
+          "httpStatus": 200
+        },
+        {
+          "url": "https://live.sk-knower.com/skgamerversion_api.php?page=whitewing918",
+          "httpStatus": 200
+        }
+      ],
+      "account": {
+        "id": "269099597",
+        "login": "ourchickenlife",
+        "displayName": "OurChickenLife"
+      },
+      "sources": [
+        "original SKLive API page whitewing918 plus user-described chicken stream"
+      ],
+      "action": "add",
+      "listName": "G"
+    },
+    {
+      "bucket": "namedMissing",
+      "name": "TristaLiveTV",
+      "id": "tristalivetv",
+      "platform": "twitch",
+      "canonicalId": "tristalivetv",
+      "key": "twitch|tristalivetv",
+      "status": "valid-account",
+      "liveNow": null,
+      "reason": "官方 Twitch API 回傳有效帳戶 ID；離線不影響保留。 使用者已確認這是缺少的 Tri 字頭女直播主。",
+      "publicPage": "https://www.twitch.tv/tristalivetv",
+      "evidence": [
+        {
+          "url": "https://api.twitch.tv/helix/users?id=58543873&id=1102923180&id=265057359&id=496253856&id=27282319&id=36020819&id=1171379036&id=122347504&id=585118023",
+          "httpStatus": 200,
+          "operation": "GetUsers by verified account ID",
+          "returnedAccountId": "1171379036"
+        },
+        {
+          "url": "https://www.twitch.tv/tristalivetv"
+        }
+      ],
+      "account": {
+        "id": "1171379036",
+        "login": "tristalivetv",
+        "displayName": "TristaLiveTV"
+      },
+      "sources": [
+        "User confirmed Tri identity as TristaLiveTV; official Helix Search Channels and GetUsers evidence"
+      ],
+      "action": "add",
+      "listName": "TristaLiveTV"
+    }
+  ],
+  "browserVerification": {
+    "checkedOn": "2026-10-14",
+    "testPage": "Local page using the production homepage template and scripts",
+    "visibleChannelButtons": 51,
+    "verifiedNamedButtons": [
+      "twitch|rachelw",
+      "twitch|ourchickenlife",
+      "twitch|tristalivetv"
+    ],
+    "playing": [
+      {
+        "key": "at|mrrock",
+        "readyState": 4,
+        "paused": false,
+        "videoWidth": 1280,
+        "videoHeight": 720,
+        "currentTimeObserved": 68.124803
+      },
+      {
+        "key": "m3u8|https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+        "readyState": 4,
+        "paused": false,
+        "videoWidth": 1280,
+        "videoHeight": 720,
+        "currentTimeObserved": 52.786866
+      },
+      {
+        "key": "twitch|ourchickenlife",
+        "readyState": 4,
+        "paused": false,
+        "videoWidth": 1280,
+        "videoHeight": 720,
+        "currentTimeObserved": 64.452802
+      }
+    ],
+    "notes": [
+      "Native HLS and the official AngelThump and Twitch embeds played together. Twitch required an initial play click under the test browser autoplay policy."
+    ]
+  }
+}

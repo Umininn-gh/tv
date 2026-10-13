@@ -194,8 +194,9 @@ const PLATFORMS = {
         status: async (ch, signal) => {
             // ★ 透過代理池輪詢
             const resp = await fetchViaProxy(`https://api.vaughnsoft.net/v1/stream/vl/${ch.id}`, 'quest', signal);
-            if (!resp.ok) return 'not-live';
+            if (!resp.ok) throw new Error('Vaughn status unavailable');
             const data = await resp.json();
+            if (!data || typeof data.live !== 'boolean') throw new Error('Vaughn status unavailable');
             return data.live === true ? 'live' : 'not-live';
         },
         idPlaceholder: 'Vaughn 頻道 ID'

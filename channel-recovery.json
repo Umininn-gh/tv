@@ -3,19 +3,26 @@
   "github": "https://github.com/Umininn-gh/tv",
   "sklive": "https://skknower.com/user/ctvhiki49713",
   "counts": {
-    "restored": 35,
+    "restored": 51,
+    "initiallyRestored": 35,
     "latestSaved": 21,
     "retainedOlderAdditions": 8,
     "skliveVisible": 16,
     "skliveAdditions": 6,
-    "historicalOnly": 43
+    "historicalOnly": 43,
+    "restoredHistorical": 17,
+    "removedUnavailable": 4,
+    "addedNamed": 3
   },
+  "validationReport": "channel-validation.json",
   "notes": [
-    "使用現存 ch1.txt / ch.txt 的最新 21 台，合併 channels.txt 留下的 8 個不同台，再補入 SKLive 顯示的 6 個新台。",
-    "以平台和頻道 ID 去重；SKLive 的 Kick 與 Gosh 台轉換成網站支援的平台，Gosh 保存頻道 ID 而非臨時串流網址。",
-    "只有 Git 歷史曾出現、但現存清單已移除的項目保留於 historicalOnly，可供日後核對，沒有自動重新加入。",
-    "只保存台名、頻道 ID、平台和來源；沒有複製舊 master 清單內的驗證或 IP 欄位。",
-    "只存在瀏覽器 localStorage 的項目無法從 GitHub 找回；網站會合併此瀏覽器仍保存的新舊自訂清單。"
+    "原先 35 台已逐筆核查：保留 31 台，移除 4 個目前無法使用的舊入口。",
+    "43 筆 Git 歷史記錄逐一核查後，補回 17 台；2 筆重複、21 筆失效、1 個已結束活動的影片及 2 筆無法確認的入口保留於核查記錄。",
+    "原程式 whitewing918 公開清單補回 G／OurChickenLife；另外加入使用者指出並確認的 RachelW 及 TristaLiveTV。",
+    "51 個不同直播入口涵蓋 SKLive 當日顯示的全部 16 台；以平台和 canonical ID 去重，不合併同名的不同帳戶或平台。",
+    "有效離線帳戶保留；沒有複製舊清單的驗證、IP 欄位或臨時串流網址。",
+    "historicalOnly 保存原 43 筆核查來源，已加回的項目也不刪除這份證據。",
+    "只存在已清除的瀏覽器儲存且没有其他來源的項目，無法由 Git 歷史找回。"
   ],
   "restored": [
     {
@@ -26,6 +33,7 @@
         "github-current-public",
         "github-retained-old-default"
       ],
+      "validationKey": "at|ppkkkp",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -35,6 +43,7 @@
       "sources": [
         "github-current-public"
       ],
+      "validationKey": "twitch|justin_yu_1",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -44,6 +53,7 @@
       "sources": [
         "github-current-public"
       ],
+      "validationKey": "twitch|anonymouscxz",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -53,6 +63,7 @@
       "sources": [
         "github-current-public"
       ],
+      "validationKey": "kick|no25no2501",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -63,6 +74,7 @@
         "github-current-public",
         "sklive-visible"
       ],
+      "validationKey": "kick|yinlove",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -72,6 +84,7 @@
       "sources": [
         "github-current-public"
       ],
+      "validationKey": "kick|number8atctv",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -83,6 +96,7 @@
         "github-retained-old-default",
         "sklive-visible"
       ],
+      "validationKey": "kick|falconjurer",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -92,6 +106,7 @@
       "sources": [
         "github-current-public"
       ],
+      "validationKey": "kick|laundrytoday",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -101,6 +116,7 @@
       "sources": [
         "github-current-public"
       ],
+      "validationKey": "kick|yaubotaibackup",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -111,6 +127,7 @@
         "github-current-public",
         "sklive-visible"
       ],
+      "validationKey": "kick|baggio1967",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -120,6 +137,7 @@
       "sources": [
         "github-current-public"
       ],
+      "validationKey": "at|underwear",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -129,15 +147,7 @@
       "sources": [
         "github-current-public"
       ],
-      "githubLastSeen": "2026-09-24T23:57:05+08:00"
-    },
-    {
-      "name": "Wc",
-      "id": "no25no2501",
-      "platform": "twitch",
-      "sources": [
-        "github-current-public"
-      ],
+      "validationKey": "twitch|headjobdont",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -149,6 +159,7 @@
         "github-retained-old-default",
         "sklive-visible"
       ],
+      "validationKey": "kick|jeukpo",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -159,6 +170,7 @@
         "github-current-public",
         "sklive-visible"
       ],
+      "validationKey": "kick|whw9457",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -170,6 +182,7 @@
         "github-retained-old-default",
         "sklive-visible"
       ],
+      "validationKey": "kick|collartv",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -179,6 +192,7 @@
       "sources": [
         "github-current-public"
       ],
+      "validationKey": "twitch|step1h",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -189,6 +203,7 @@
         "github-current-public",
         "sklive-visible"
       ],
+      "validationKey": "gosh|meidingdang",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -199,6 +214,7 @@
         "github-current-public",
         "sklive-visible"
       ],
+      "validationKey": "gosh|meidingdang0",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -209,6 +225,7 @@
         "github-current-public",
         "sklive-visible"
       ],
+      "validationKey": "gosh|kingkong_tv",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
@@ -218,24 +235,17 @@
       "sources": [
         "github-current-public"
       ],
+      "validationKey": "gosh|meidingdang1",
       "githubLastSeen": "2026-09-24T23:57:05+08:00"
     },
     {
-      "name": "w",
-      "id": "wing36747",
-      "platform": "kick",
-      "sources": [
-        "github-retained-old-default"
-      ],
-      "githubLastSeen": "2026-03-26T20:29:03+08:00"
-    },
-    {
       "name": "N",
-      "id": "Eastsnake25",
+      "id": "eastsnake25",
       "platform": "kick",
       "sources": [
         "github-retained-old-default"
       ],
+      "validationKey": "kick|eastsnake25",
       "githubLastSeen": "2026-03-26T20:29:03+08:00"
     },
     {
@@ -246,24 +256,7 @@
         "github-retained-old-default",
         "sklive-visible"
       ],
-      "githubLastSeen": "2026-03-26T20:29:03+08:00"
-    },
-    {
-      "name": "wc",
-      "id": "no25no25",
-      "platform": "kick",
-      "sources": [
-        "github-retained-old-default"
-      ],
-      "githubLastSeen": "2026-04-15T11:28:11+08:00"
-    },
-    {
-      "name": "哥",
-      "id": "cobra-and-godzilla",
-      "platform": "kick",
-      "sources": [
-        "github-retained-old-default"
-      ],
+      "validationKey": "kick|nanase-maru525",
       "githubLastSeen": "2026-03-26T20:29:03+08:00"
     },
     {
@@ -273,6 +266,7 @@
       "sources": [
         "github-retained-old-default"
       ],
+      "validationKey": "twitch|muse_tw2",
       "githubLastSeen": "2026-05-30T17:55:07+08:00"
     },
     {
@@ -282,6 +276,7 @@
       "sources": [
         "github-retained-old-default"
       ],
+      "validationKey": "kick|yaubotai",
       "githubLastSeen": "2026-03-26T20:29:03+08:00"
     },
     {
@@ -291,6 +286,7 @@
       "sources": [
         "github-retained-old-default"
       ],
+      "validationKey": "ok|10268974521971",
       "githubLastSeen": "2026-03-26T20:29:03+08:00"
     },
     {
@@ -300,6 +296,7 @@
       "sources": [
         "sklive-visible"
       ],
+      "validationKey": "gosh|yaubotai01",
       "githubLastSeen": null
     },
     {
@@ -309,15 +306,17 @@
       "sources": [
         "sklive-visible"
       ],
+      "validationKey": "twitch|zero_cobra",
       "githubLastSeen": null
     },
     {
       "name": "哥2",
-      "id": "Godzilla_2027",
+      "id": "godzilla_2027",
       "platform": "gosh",
       "sources": [
         "sklive-visible"
       ],
+      "validationKey": "gosh|godzilla_2027",
       "githubLastSeen": null
     },
     {
@@ -327,6 +326,7 @@
       "sources": [
         "sklive-visible"
       ],
+      "validationKey": "gosh|no25no2501",
       "githubLastSeen": null
     },
     {
@@ -336,6 +336,7 @@
       "sources": [
         "sklive-visible"
       ],
+      "validationKey": "gosh|fish3345678",
       "githubLastSeen": null
     },
     {
@@ -345,7 +346,273 @@
       "sources": [
         "sklive-visible"
       ],
+      "validationKey": "gosh|kinganime",
       "githubLastSeen": null
+    },
+    {
+      "name": "k",
+      "id": "krichure",
+      "platform": "at",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "at|krichure",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "530c3dcd1e3d1fd0549b2e74e88d5115f57dff6e",
+        "lastSeen": "2026-04-30T22:33:41+08:00"
+      }
+    },
+    {
+      "name": "動",
+      "id": "mrrock",
+      "platform": "at",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "at|mrrock",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "d6a4e778b23e830e4108f64fca79481c40a8a7f3",
+        "lastSeen": "2026-08-25T16:35:21+08:00"
+      }
+    },
+    {
+      "name": "wc",
+      "id": "no25no2502",
+      "platform": "kick",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "kick|no25no2502",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "905954df4f8fc1fe90d491fce5472a76ed6dba15",
+        "lastSeen": "2026-06-04T12:32:08+08:00"
+      }
+    },
+    {
+      "name": "QT",
+      "id": "qt369",
+      "platform": "kick",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "kick|qt369",
+      "source": {
+        "file": "channels.txt",
+        "commit": "e212eee2d854cee242496bfe0917b777f7b7c9c8",
+        "lastSeen": "2025-12-15T20:40:27+08:00"
+      }
+    },
+    {
+      "name": "g（廣州電視）",
+      "id": "https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+      "platform": "m3u8",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "m3u8|https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "f25ff00a4b68b2ed6bcf4b8aaa7041f91323bd5d",
+        "lastSeen": "2026-04-15T10:56:59+08:00"
+      }
+    },
+    {
+      "name": "12345",
+      "id": "12345",
+      "platform": "twitch",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "twitch|12345",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "af5dceeef89b145d4082ad179569130d339c01a2",
+        "lastSeen": "2026-04-29T10:26:05+08:00"
+      }
+    },
+    {
+      "name": "A",
+      "id": "alancml01",
+      "platform": "twitch",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "twitch|alancml01",
+      "source": {
+        "file": "channels.txt",
+        "commit": "e046b8e040bb57f384b13fe40733226c3c3cc472",
+        "lastSeen": "2025-12-14T19:16:18+08:00"
+      }
+    },
+    {
+      "name": "朗子",
+      "id": "arlongjaijai2025",
+      "platform": "twitch",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "twitch|arlongjaijai2025",
+      "source": {
+        "file": "ch.txt",
+        "commit": "fa8f74a4acb12f6d1e25df227ff8ca326771abdc",
+        "lastSeen": "2026-06-14T14:47:38+08:00"
+      }
+    },
+    {
+      "name": "大波",
+      "id": "dindinxd19",
+      "platform": "twitch",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "twitch|dindinxd19",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "1323f17185ab23cae98404e2248b025917bcc140",
+        "lastSeen": "2026-09-12T22:33:28+08:00"
+      }
+    },
+    {
+      "name": "洗衫",
+      "id": "laundrytoday",
+      "platform": "twitch",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "twitch|laundrytoday",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "4104087bc3e12ad53c0b2f466fa682ec3fe2d30e",
+        "lastSeen": "2026-06-09T19:32:13+08:00"
+      }
+    },
+    {
+      "name": "大波",
+      "id": "loui5ng",
+      "platform": "twitch",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "twitch|loui5ng",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "ac29f5be37b71ab710142f5730d59aaa3b67f835",
+        "lastSeen": "2026-09-12T22:32:15+08:00"
+      }
+    },
+    {
+      "name": "987",
+      "id": "ppkkkp",
+      "platform": "twitch",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "twitch|ppkkkp",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "ef96bda7fe386a996eff1e2769a1e29a090ecf67",
+        "lastSeen": "2026-04-29T10:22:51+08:00"
+      }
+    },
+    {
+      "name": "WJ",
+      "id": "woojungx4",
+      "platform": "twitch",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "twitch|woojungx4",
+      "source": {
+        "file": "ch.txt",
+        "commit": "8793ef1f4b6249d46f99d3ec9d1c1c1c1b429e8d",
+        "lastSeen": "2026-09-13T10:22:26+08:00"
+      }
+    },
+    {
+      "name": "金剛",
+      "id": "kingkong_tv",
+      "platform": "vaughn",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "vaughn|kingkong_tv",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "d91ac4eb9728f8b6ca0870874a04c43fe10d9a47",
+        "lastSeen": "2026-09-22T18:42:04+08:00"
+      }
+    },
+    {
+      "name": "美2",
+      "id": "meidingdang",
+      "platform": "vaughn",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "vaughn|meidingdang",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "37280d24ae28e98bf7651d3b5610460af22cdffd",
+        "lastSeen": "2026-09-22T13:46:05+08:00"
+      }
+    },
+    {
+      "name": "美1",
+      "id": "triplestarhunters",
+      "platform": "vaughn",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "vaughn|triplestarhunters",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "a47d83c137275a08823fe3dfff1b1de846066f99",
+        "lastSeen": "2026-09-22T14:25:26+08:00"
+      }
+    },
+    {
+      "name": "t",
+      "id": "zard46",
+      "platform": "vaughn",
+      "sources": [
+        "github-history"
+      ],
+      "validationKey": "vaughn|zard46",
+      "source": {
+        "file": "ch1.txt",
+        "commit": "989f45a09026fbf8020b17140f34b603e78cf27d",
+        "lastSeen": "2026-09-18T23:30:29+08:00"
+      }
+    },
+    {
+      "name": "RachelW",
+      "id": "rachelw",
+      "platform": "twitch",
+      "sources": [
+        "user-explicitly-named"
+      ],
+      "validationKey": "twitch|rachelw"
+    },
+    {
+      "name": "G",
+      "id": "ourchickenlife",
+      "platform": "twitch",
+      "sources": [
+        "original SKLive API page whitewing918 plus user-described chicken stream"
+      ],
+      "validationKey": "twitch|ourchickenlife"
+    },
+    {
+      "name": "TristaLiveTV",
+      "id": "tristalivetv",
+      "platform": "twitch",
+      "sources": [
+        "User confirmed Tri identity as TristaLiveTV; official Helix Search Channels and GetUsers evidence"
+      ],
+      "validationKey": "twitch|tristalivetv"
     }
   ],
   "historicalOnly": [
@@ -357,6 +624,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "530c3dcd1e3d1fd0549b2e74e88d5115f57dff6e"
+      },
+      "validation": {
+        "key": "at|krichure",
+        "status": "valid-live",
+        "action": "add"
       }
     },
     {
@@ -367,6 +639,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "d6a4e778b23e830e4108f64fca79481c40a8a7f3"
+      },
+      "validation": {
+        "key": "at|mrrock",
+        "status": "valid-live",
+        "action": "add"
       }
     },
     {
@@ -377,6 +654,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "78148d34de508bd0f6af187bd7316be9621cde03"
+      },
+      "validation": {
+        "key": "at|ppkkkpp",
+        "status": "unverified",
+        "action": "defer"
       }
     },
     {
@@ -387,6 +669,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "777f001f76740d1e18793778596290806c8b71ba"
+      },
+      "validation": {
+        "key": "goodgame|219534",
+        "status": "unverified",
+        "action": "defer"
       }
     },
     {
@@ -397,6 +684,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "4470bbd51f9cd0caed41a0b6e5d0f05b5e273313"
+      },
+      "validation": {
+        "key": "kick|cobra2024",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -407,6 +699,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "baee449bfbad641b6a7f193d86713a1f56f33524"
+      },
+      "validation": {
+        "key": "kick|godzilla-cobra-2027",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -417,6 +714,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "e9f656b3a910b65a552fce853bbc89a299a4a248"
+      },
+      "validation": {
+        "key": "kick|godzilla-god-2077",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -427,6 +729,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "07463c8b5153e3802c6105ee0263938151202a16"
+      },
+      "validation": {
+        "key": "kick|kww291603",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -437,6 +744,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "905954df4f8fc1fe90d491fce5472a76ed6dba15"
+      },
+      "validation": {
+        "key": "kick|no25no2502",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -447,6 +759,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "4c4fc6e010f4a107444f7f6e9a22414df8e850c6"
+      },
+      "validation": {
+        "key": "kick|no52no52",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -457,6 +774,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "92031fecdd4845c22f074f93e2e4c50b5a33b958"
+      },
+      "validation": {
+        "key": "kick|peterpig8964",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -467,6 +789,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "e212eee2d854cee242496bfe0917b777f7b7c9c8"
+      },
+      "validation": {
+        "key": "kick|qt369",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -477,6 +804,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "ffc0875fbf6092b0207abddafc846bb9e0f38658"
+      },
+      "validation": {
+        "key": "kick|wing3674",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -487,6 +819,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "80d2c493899d30764791f01e82a2af0e186d1131"
+      },
+      "validation": {
+        "key": "kick|wingchihappy1",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -497,6 +834,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "897100fbf7f43868093ea292ebba7ce9771762a0"
+      },
+      "validation": {
+        "key": "kick|wingwhite383",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -507,6 +849,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "2f95eebfeea5915fae396351d015d18bad201cc9"
+      },
+      "validation": {
+        "key": "kick|wwhite1852",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -517,6 +864,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "f25ff00a4b68b2ed6bcf4b8aaa7041f91323bd5d"
+      },
+      "validation": {
+        "key": "m3u8|https://tencentplaybusiness.gztv.com/live/zonghes.m3u8",
+        "status": "valid-live",
+        "action": "add"
       }
     },
     {
@@ -527,6 +879,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "0ab3190deece9648f9f98b0149c6172bead4f10c"
+      },
+      "validation": {
+        "key": "ok|3849262800563",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -537,6 +894,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "c5d43a3cf2b97f74afc32dd4085582efe5407833"
+      },
+      "validation": {
+        "key": "ok|9013975129715",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -547,6 +909,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "0bb36b4f8e3097f6cc8e5c6b4798fda223d4d20d"
+      },
+      "validation": {
+        "key": "ok|9770604043891",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -557,6 +924,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "1a95dabd291ee9b18a5d37d55fa3eb5cbeaf8911"
+      },
+      "validation": {
+        "key": "ok|9784642182771",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -567,6 +939,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "7fd2cbc9b721b9ef49a2f377e80e2580cbc7befd"
+      },
+      "validation": {
+        "key": "twitch|1",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -577,6 +954,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "af5dceeef89b145d4082ad179569130d339c01a2"
+      },
+      "validation": {
+        "key": "twitch|12345",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -587,6 +969,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "dae9d7d3ccb78a43b4c856287f943165aff43a9d"
+      },
+      "validation": {
+        "key": "twitch|alancml",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -597,6 +984,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "e046b8e040bb57f384b13fe40733226c3c3cc472"
+      },
+      "validation": {
+        "key": "twitch|alancml01",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -607,6 +999,11 @@
       "source": {
         "file": "ch.txt",
         "commit": "fa8f74a4acb12f6d1e25df227ff8ca326771abdc"
+      },
+      "validation": {
+        "key": "twitch|arlongjaijai2025",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -617,6 +1014,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "1323f17185ab23cae98404e2248b025917bcc140"
+      },
+      "validation": {
+        "key": "twitch|dindinxd19",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -627,6 +1029,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "23ac9462671abc9766f5acd72b01c297190b5a89"
+      },
+      "validation": {
+        "key": "twitch|godzilla_2025",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -637,6 +1044,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "7d4d2b806d3b8e9e054d959db8202beb055f7fdc"
+      },
+      "validation": {
+        "key": "twitch|arlongjaijai2025",
+        "status": "valid-offline",
+        "action": "deduplicate"
       }
     },
     {
@@ -647,6 +1059,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "4104087bc3e12ad53c0b2f466fa682ec3fe2d30e"
+      },
+      "validation": {
+        "key": "twitch|laundrytoday",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -657,6 +1074,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "ac29f5be37b71ab710142f5730d59aaa3b67f835"
+      },
+      "validation": {
+        "key": "twitch|loui5ng",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -667,6 +1089,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "dae9d7d3ccb78a43b4c856287f943165aff43a9d"
+      },
+      "validation": {
+        "key": "twitch|mingpig930_2",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -677,6 +1104,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "ef96bda7fe386a996eff1e2769a1e29a090ecf67"
+      },
+      "validation": {
+        "key": "twitch|ppkkkp",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -687,6 +1119,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "08b99d89749dba03baf03186c77e6ff18c2277d1"
+      },
+      "validation": {
+        "key": "twitch|wing36747",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -697,6 +1134,11 @@
       "source": {
         "file": "ch.txt",
         "commit": "8793ef1f4b6249d46f99d3ec9d1c1c1c1b429e8d"
+      },
+      "validation": {
+        "key": "twitch|woojungx4",
+        "status": "valid-live",
+        "action": "add"
       }
     },
     {
@@ -707,6 +1149,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "00020921474a3fd41c362b9b7b91054a1837e747"
+      },
+      "validation": {
+        "key": "twitch|ww291603",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -717,6 +1164,11 @@
       "source": {
         "file": "channels.txt",
         "commit": "c2a5e168a1091763f1eb528a13ceadce2d21dc77"
+      },
+      "validation": {
+        "key": "twitch|yaubotai2",
+        "status": "unavailable",
+        "action": "exclude"
       }
     },
     {
@@ -727,6 +1179,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "d91ac4eb9728f8b6ca0870874a04c43fe10d9a47"
+      },
+      "validation": {
+        "key": "vaughn|kingkong_tv",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -737,6 +1194,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "37280d24ae28e98bf7651d3b5610460af22cdffd"
+      },
+      "validation": {
+        "key": "vaughn|meidingdang",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -747,6 +1209,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "a47d83c137275a08823fe3dfff1b1de846066f99"
+      },
+      "validation": {
+        "key": "vaughn|triplestarhunters",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -757,6 +1224,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "989f45a09026fbf8020b17140f34b603e78cf27d"
+      },
+      "validation": {
+        "key": "vaughn|zard46",
+        "status": "valid-offline",
+        "action": "add"
       }
     },
     {
@@ -767,6 +1239,11 @@
       "source": {
         "file": "ch1.txt",
         "commit": "278a87a75d5416d0e03618730191f546cb105d83"
+      },
+      "validation": {
+        "key": "youtube|UL8iGQiTrlA",
+        "status": "ended-archive",
+        "action": "exclude"
       }
     },
     {
@@ -777,6 +1254,11 @@
       "source": {
         "file": "ch.txt",
         "commit": "a0c7e3c90768c556b36073876b2326bf3fbd99f6"
+      },
+      "validation": {
+        "key": "youtube|UL8iGQiTrlA",
+        "status": "ended-archive",
+        "action": "deduplicate"
       }
     }
   ]

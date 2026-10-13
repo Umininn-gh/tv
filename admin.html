@@ -7,6 +7,7 @@
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
     <!-- HLS.js 播放 M3U8 串流 -->
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="./flv.min.js"></script>
     <script src="./channel-list.js"></script>
     <script src="./stream-performance.js"></script>
 		<script type="module" src="jquery-3.6.0.min.js"></script>
@@ -695,6 +696,7 @@ textarea:focus {
                     <option value="at">AngelThump</option>
                     <option value="m3u8">📺 M3U8 (HLS)</option>
                     <option value="gosh">Gosh</option>
+                    <option value="vaughn">Vaughn</option>
                     <option value="youtube">▶️ YouTube Live</option>
                 </select>
             </div>
@@ -736,6 +738,8 @@ textarea:focus {
         const adminPlayers = new Map();
         const adminStatusScheduler = StreamPerformance.createStatusScheduler({ maxConcurrent: 4, cacheMs: 30000 });
         const adminGoshRequests = StreamPerformance.createInFlightCoalescer();
+        const adminVaughnProxies = ['https://young-cloud-e59f.chicktv001.workers.dev', 'https://wispy-sound-ef1a.for-api.workers.dev'];
+        let adminVaughnProxyIndex = 0;
         let adminPlayersMounted = false;
         let adminEmptyMessage = null;
 
@@ -769,6 +773,13 @@ textarea:focus {
             player.hls = null;
             if (hls) {
                 try { hls.destroy(); } catch (error) { console.warn(error); }
+            }
+            const flv = player.flv;
+            player.flv = null;
+            if (flv) {
+                for (const method of ['pause', 'unload', 'detachMediaElement', 'destroy']) {
+                    try { flv[method](); } catch (error) {}
+                }
             }
             const video = player.video;
             player.video = null;
@@ -815,6 +826,29 @@ textarea:focus {
             }
         }
 
+        function attachFlvVideo(video, channel, player) {
+            if (player.disposed || player.failed || !video.isConnected) return;
+            try {
+                if (typeof flvjs === 'undefined' || !flvjs.isSupported()) throw new Error('FLV unavailable');
+                const originalUrl = 'https://stream-cdn-iad3.vaughnsoft.net/play/live_' + channel.id + '.flv';
+                const flv = flvjs.createPlayer({
+                    type: 'flv',
+                    url: 'https://cold-frost-3328.chicktv02.workers.dev/?url=' + encodeURIComponent(originalUrl),
+                    isLive: true,
+                    cors: true
+                });
+                player.flv = flv;
+                flv.on(flvjs.Events.ERROR, () => {
+                    if (player.flv === flv && !player.disposed) showAdminPlayerError(player);
+                });
+                flv.attachMediaElement(video);
+                flv.load();
+                if (!player.failed && !player.disposed) Promise.resolve(flv.play()).catch(() => {});
+            } catch (error) {
+                showAdminPlayerError(player);
+            }
+        }
+
         function disposeAdminPlayer(player) {
             if (!player || player.disposed) return;
             player.disposed = true;
@@ -833,8 +867,8 @@ textarea:focus {
 
         function createAdminPlayer(channel) {
             const element = document.createElement('div');
-            const player = { key: channelStatusKey(channel), channel, element, video: null, iframe: null, hls: null, disposed: false, failed: false };
-            if (channel.platform === 'm3u8' || channel.platform === 'gosh') {
+            const player = { key: channelStatusKey(channel), channel, element, video: null, iframe: null, hls: null, flv: null, disposed: false, failed: false };
+            if (channel.platform === 'm3u8' || channel.platform === 'gosh' || channel.platform === 'vaughn') {
                 const video = document.createElement('video');
                 video.className = 'hls-video-element';
                 video.controls = true;
@@ -846,7 +880,9 @@ textarea:focus {
                 video.addEventListener('error', () => showAdminPlayerError(player));
                 element.appendChild(video);
                 player.video = video;
-                player.start = () => { void attachHlsVideo(video, channel, player); };
+                player.start = channel.platform === 'vaughn'
+                    ? () => attachFlvVideo(video, channel, player)
+                    : () => { void attachHlsVideo(video, channel, player); };
             } else {
                 const iframe = document.createElement('iframe');
                 iframe.className = 'full-screen-video';
@@ -1029,6 +1065,7 @@ textarea:focus {
             else if (channel.platform === "at") platformIcon = "Ⓐ";
             else if (channel.platform === "m3u8") platformIcon = "📺";
             else if (channel.platform === "gosh") platformIcon = "Ⓖ";
+            else if (channel.platform === "vaughn") platformIcon = "ⓥ";
             else if (channel.platform === "youtube") platformIcon = "▶️";
             else if (channel.platform === "ok") platformIcon = "ⓞ";
             btn.innerText = `${platformIcon}${channel.name}`;
@@ -1133,6 +1170,7 @@ textarea:focus {
                     else if (channel.platform === "at") icon = "Ⓐ";
                     else if (channel.platform === "m3u8") icon = "📺";
                     else if (channel.platform === "gosh") icon = "Ⓖ";
+                    else if (channel.platform === "vaughn") icon = "ⓥ";
                     else if (channel.platform === "youtube") icon = "▶️";
                     textSpan.textContent = `${icon}${channel.name}`;
                     btn.appendChild(statusSpan);
@@ -1183,6 +1221,7 @@ textarea:focus {
                 else if (channel.platform === "at") icon = "Ⓐ";
                 else if (channel.platform === "m3u8") icon = "📺";
                 else if (channel.platform === "gosh") icon = "Ⓖ";
+                else if (channel.platform === "vaughn") icon = "ⓥ";
                 else if (channel.platform === "youtube") icon = "▶️";
                 label.textContent = `${icon}${channel.name}`;
                 wrapper.appendChild(cb);
@@ -1208,6 +1247,10 @@ textarea:focus {
                 return html.includes('status:"online"') || html.includes('"status":"online"') ? 'live' : 'not-live';
             }
             const data = await response.json();
+            if (channel.platform === 'vaughn') {
+                if (typeof data.live !== 'boolean') throw new Error('Invalid Vaughn status');
+                return data.live ? 'live' : 'not-live';
+            }
             const live = channel.platform === 'kick' ? data.livestream?.is_live === true : data.data?.length > 0;
             return live ? 'live' : 'not-live';
         }
@@ -1233,6 +1276,10 @@ textarea:focus {
             if (channel.platform === "kick") return `https://kick.com/api/v2/channels/${channel.id}`;
             if (channel.platform === "twitch") return `https://api.twitch.tv/helix/streams?user_login=${channel.id}`;
             if (channel.platform === "ok") return `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent('https://ok.ru/videoembed/' + channel.id)}`;
+            if (channel.platform === 'vaughn') {
+                const proxy = adminVaughnProxies[adminVaughnProxyIndex++ % adminVaughnProxies.length];
+                return proxy + '/?quest=' + encodeURIComponent('https://api.vaughnsoft.net/v1/stream/vl/' + channel.id);
+            }
             return "";
         }
 
