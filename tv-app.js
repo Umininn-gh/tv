@@ -1252,7 +1252,7 @@ function showPopup() {
             document.head.appendChild(styleEl);
         }
         styleEl.textContent = shouldHide
-            ? `.not-live { display: none !important; } .button-wrapper:has(.not-live) { display: none !important; }`
+            ? `.not-live { display: none !important; } .button-wrapper:has(.not-live), #channel-options > .channel-option-cell:has(.channel-option-label.not-live) { display: none !important; }`
             : '';
     }
     const saved = localStorage.getItem('hideNotLiveToggle');
