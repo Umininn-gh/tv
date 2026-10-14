@@ -102,7 +102,7 @@
             flex-shrink: 0; 
             z-index: 100;
         }
-        #chat-container { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; background: #0e0e10; scroll-behavior: auto; position: relative; word-wrap: break-word; overflow-wrap: break-word; }
+        #chat-container { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; background: #0e0e10; scroll-behavior: auto; overflow-anchor: none; position: relative; word-wrap: break-word; overflow-wrap: break-word; }
         
         .chat-line { 
             position: relative; 
@@ -1511,6 +1511,12 @@ let scrollRequestActive = false;
 let isInitialLoad = true; 
 let readingAnchor = null;
 let restoredScrollTop = null;
+let chatScrollLayout = null;
+let pendingUpScrollTop = null;
+let scrollbarScrollActive = false;
+let scrollbarScrollUntil = 0;
+let userScrollUntil = 0;
+let touchScrollY = null;
 const scrollToBottomBtn = document.getElementById('scrollToBottomBtn');
 let recentUsers = [];
 let seenUsersSet = new Set(); 
@@ -1653,6 +1659,33 @@ function addTimestampsToElements($elements) {
 }
 
 // ===================== 捲動相關 =====================
+function rememberChatScrollLayout(chat = document.getElementById('chat-container')) {
+    if (!chat) return;
+    chatScrollLayout = { top: chat.scrollTop, height: chat.scrollHeight, viewportHeight: chat.clientHeight, width: chat.clientWidth };
+}
+
+function pauseForUserScroll() {
+    const chat = document.getElementById('chat-container');
+    if (!chat || chat.scrollHeight - chat.clientHeight <= 2) return;
+    const top = chat.scrollTop;
+    pauseChatFollowing();
+    // A previously queued scroll event can still arrive at the bottom before
+    // the wheel/key/touch default action moves it. It must not undo the pause.
+    pendingUpScrollTop = top;
+}
+
+function noteDownwardScrollIntent() {
+    pendingUpScrollTop = null;
+    const chat = document.getElementById('chat-container');
+    // At the scroll limit a downward gesture may produce no scroll event.
+    // Reconcile following here, keeping the retained-history and unread state.
+    if (!autoScroll && chat && chat.scrollHeight - chat.clientHeight - chat.scrollTop <= 2) {
+        autoScroll = true;
+        readingAnchor = null;
+        forceScrollToBottom();
+    }
+}
+
 function updateUnreadCounter() {
     const badge = document.getElementById('unreadCount');
     if (badge) { badge.textContent = String(unreadMessageCount); badge.hidden = unreadMessageCount === 0; }
@@ -1715,6 +1748,7 @@ function restoreChatViewport(anchor) {
         chat.scrollTop += difference;
         restoredScrollTop = chat.scrollTop;
     }
+    rememberChatScrollLayout(chat);
     readingAnchor = captureChatViewport();
     if (scrollToBottomBtn) scrollToBottomBtn.style.display = 'flex';
 }
@@ -1723,8 +1757,10 @@ function pauseChatFollowing() {
     autoScroll = false;
     markRetentionPaused();
     restoredScrollTop = null;
+    pendingUpScrollTop = null;
     isInitialLoad = false;
     readingAnchor = captureChatViewport();
+    rememberChatScrollLayout();
     if (scrollToBottomBtn) scrollToBottomBtn.style.display = 'flex';
     showPausedRetentionStatus();
     updateHistoryButton();
@@ -1738,6 +1774,9 @@ function forceScrollToBottom(force = false) {
         unreadResetVersion++;
         updateUnreadCounter();
         readingAnchor = null;
+        pendingUpScrollTop = null;
+        scrollbarScrollUntil = 0;
+        userScrollUntil = 0;
         flushMessageBuffer();
         limitMessages(null);
         trimSeenMessageIds();
@@ -1749,7 +1788,9 @@ function forceScrollToBottom(force = false) {
     const chat = document.getElementById('chat-container');
     if (!chat) return;
     restoredScrollTop = null;
+    readingAnchor = null;
     chat.scrollTop = chat.scrollHeight;
+    rememberChatScrollLayout(chat);
     if(scrollToBottomBtn) scrollToBottomBtn.style.display = retentionPaused ? 'flex' : 'none';
     if (scrollRequestActive) return;
     scrollRequestActive = true;
@@ -1757,6 +1798,7 @@ function forceScrollToBottom(force = false) {
         scrollRequestActive = false;
         if (!autoScroll) return;
         chat.scrollTop = chat.scrollHeight;
+        rememberChatScrollLayout(chat);
         if(scrollToBottomBtn) scrollToBottomBtn.style.display = retentionPaused ? 'flex' : 'none';
     });
 }
@@ -1869,15 +1911,37 @@ document.addEventListener('visibilitychange', () => {
     });
 });
 
-function checkScrollPosition() {
+function checkScrollPosition(event) {
     const chat = document.getElementById('chat-container');
+    if (!chat) return;
     if (restoredScrollTop !== null && Math.abs(chat.scrollTop - restoredScrollTop) < 1) {
         restoredScrollTop = null;
         readingAnchor = captureChatViewport();
+        rememberChatScrollLayout(chat);
         return;
     }
     restoredScrollTop = null;
     const isAtBottom = chat.scrollHeight - chat.clientHeight - chat.scrollTop <= 2;
+    const layoutChanged = chatScrollLayout && (chat.scrollHeight !== chatScrollLayout.height || chat.clientHeight !== chatScrollLayout.viewportHeight || chat.clientWidth !== chatScrollLayout.width);
+    const movedUp = chatScrollLayout && chat.scrollTop < chatScrollLayout.top - 0.5;
+    const scrollbarScrolling = scrollbarScrollActive || performance.now() < scrollbarScrollUntil;
+    const userScrolling = scrollbarScrolling || performance.now() < userScrollUntil;
+    if (event && autoScroll && !isAtBottom && (!movedUp || (layoutChanged && !scrollbarScrolling))) {
+        // Content growth and viewport resize are not a request to read upward.
+        // Keep following even when their native scroll event precedes ResizeObserver.
+        forceScrollToBottom();
+        return;
+    }
+    if (event && !autoScroll && pendingUpScrollTop !== null && (isAtBottom || Math.abs(chat.scrollTop - pendingUpScrollTop) <= 0.5)) {
+        rememberChatScrollLayout(chat);
+        return;
+    }
+    pendingUpScrollTop = null;
+    if (event && !autoScroll && layoutChanged && !userScrolling) {
+        restoreChatViewport(readingAnchor);
+        rememberChatScrollLayout(chat);
+        return;
+    }
     autoScroll = isAtBottom;
     if (!autoScroll) {
         isInitialLoad = false;
@@ -1888,16 +1952,54 @@ function checkScrollPosition() {
         }
     }
     readingAnchor = captureChatViewport();
+    rememberChatScrollLayout(chat);
     if(scrollToBottomBtn) scrollToBottomBtn.style.display = autoScroll && !retentionPaused ? 'none' : 'flex';
 }
 
 function setupScrollListener() {
     const chat = document.getElementById('chat-container');
+    rememberChatScrollLayout(chat);
     chat.addEventListener('scroll', checkScrollPosition, { passive: true });
-    chat.addEventListener('wheel', event => { if (event.deltaY < 0) pauseChatFollowing(); }, { passive: true });
-    chat.addEventListener('touchmove', pauseChatFollowing, { passive: true });
-    chat.addEventListener('keydown', event => {
-        if (['ArrowUp', 'PageUp', 'Home'].includes(event.key)) pauseChatFollowing();
+    chat.addEventListener('wheel', event => {
+        userScrollUntil = performance.now() + 300;
+        if (event.deltaY < 0) pauseForUserScroll();
+        else if (event.deltaY > 0) noteDownwardScrollIntent();
+    }, { passive: true });
+    chat.addEventListener('touchstart', event => { touchScrollY = event.touches[0]?.clientY ?? null; }, { passive: true });
+    chat.addEventListener('touchmove', event => {
+        const y = event.touches[0]?.clientY;
+        if (y === undefined || touchScrollY === null) return;
+        userScrollUntil = performance.now() + 300;
+        if (y > touchScrollY) pauseForUserScroll();
+        else if (y < touchScrollY) noteDownwardScrollIntent();
+        touchScrollY = y;
+    }, { passive: true });
+    chat.addEventListener('touchend', () => { touchScrollY = null; }, { passive: true });
+    chat.addEventListener('touchcancel', () => { touchScrollY = null; }, { passive: true });
+    chat.addEventListener('pointerdown', event => {
+        const rect = chat.getBoundingClientRect();
+        const gutter = Math.max(chat.offsetWidth - chat.clientWidth, 12);
+        if (event.pointerType !== 'touch' && event.target === chat && event.clientX >= rect.right - gutter) {
+            scrollbarScrollActive = true;
+            pendingUpScrollTop = null;
+        }
+        if (event.button === 1) pauseForUserScroll();
+    }, { passive: true });
+    const finishScrollbarScroll = () => {
+        if (scrollbarScrollActive) scrollbarScrollUntil = performance.now() + 300;
+        scrollbarScrollActive = false;
+    };
+    window.addEventListener('pointerup', finishScrollbarScroll, { passive: true });
+    window.addEventListener('pointercancel', finishScrollbarScroll, { passive: true });
+    document.addEventListener('keydown', event => {
+        const target = event.target;
+        if (target?.closest?.('input, textarea, select, button, a, video, audio, [contenteditable="true"]')) return;
+        if (target !== document.body && target !== document.documentElement && !chat.contains(target)) return;
+        if (['ArrowUp', 'PageUp', 'Home', 'ArrowDown', 'PageDown', 'End', ' '].includes(event.key)) {
+            userScrollUntil = performance.now() + 300;
+            if (['ArrowUp', 'PageUp', 'Home'].includes(event.key) || (event.key === ' ' && event.shiftKey)) pauseForUserScroll();
+            else noteDownwardScrollIntent();
+        }
     });
 }
 
@@ -3204,6 +3306,8 @@ async function initApp() {
             else restoreChatViewport(readingAnchor);
         });
         resizeObserver.observe(messagesContainer);
+        const chatContainer = document.getElementById('chat-container');
+        if (chatContainer) resizeObserver.observe(chatContainer);
     }
     document.getElementById('msginput').addEventListener('keydown', (e) => {
         if(e.key === 'Enter' && !e.shiftKey){ e.preventDefault(); sendMessage(); }
