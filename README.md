@@ -86,7 +86,11 @@ node set-login-password.cjs --generate
 
 首頁開始同時觀看至少兩台後，在「看更台」按「調整播放器位置」，即可拖曳到另一格或點選兩格交換位置。方向鍵也可搬位，按「完成搬位」或 Esc 恢復播放器操作。交換只修改 CSS 排列，不搬移或重建播放器，保留音量、靜音與暫停狀態；排列記錄在目前瀏覽器，重新選台及重新載入後仍會沿用。操作層只在搬位模式中監察尺寸，會跟隨手機影片／聊天分隔條調整。
 
-M3U8／Gosh 使用 HLS.js 的 `capLevelToPlayerSize: true`，已有持續按影片元素尺寸限制自動畫質的功能；只有來源提供多種畫質時才可降低解像度。它也會考慮螢幕像素比例及網絡頻寬。原生 HLS 由瀏覽器處理；Twitch、YouTube 等 iframe 由各平台控制畫質，本站沒有統一按實際顯示大小強制調整；Vaughn FLV 是單一來源。尺寸變更時的偵測通常開銷很小，降低小窗畫質可減少下載與解碼負擔；反覆強制切換畫質或重建播放器則可能增加緩衝。本次保留原有 HLS 設定，不增加重複畫質偵測。參考 [HLS.js 設定文件](https://github.com/video-dev/hls.js/blob/v1.7.3/docs/API.md#capleveltoplayersize)。
+主頁 M3U8／Gosh 使用 HLS.js 的 `capLevelToPlayerSize: true`，已有持續按影片元素尺寸限制自動畫質的功能；只有來源提供多種畫質時才可降低解像度。它也會考慮螢幕像素比例及網絡頻寬。原生 HLS 由瀏覽器處理；YouTube 等 iframe 由各平台控制畫質，Vaughn FLV 是單一來源。尺寸變更時的偵測通常開銷很小，降低小窗畫質可減少下載與解碼負擔；反覆強制切換畫質或重建播放器則可能增加緩衝。參考 [HLS.js 設定文件](https://github.com/video-dev/hls.js/blob/v1.7.3/docs/API.md#capleveltoplayersize)。
+
+主頁及管理頁的 Twitch 使用官方互動播放器。多台同播時，按可見影片的 CSS 尺寸選擇最低足夠解像度，同解像度優先較低幀率，避免高 DPI 螢幕令小窗仍載入高畫質。尺寸變更會防抖，只有需要的畫質改變時才送出指令；搬位不會重建播放器。單台及全螢幕恢復 Twitch Auto。固定畫質會取代平台按網速選擇的 Auto，因此只在多台固定畫質期間每 5 秒檢查播放器已提供的緩衝統計；持續緩衝不足便退回 Auto，直至尺寸或觀看模式明顯變更。這項檢查不輪詢播放器尺寸，也不另行查詢 Twitch API。只有來源畫質或無法讀取畫質清單時保留 Auto，SDK 載入失敗則回退原 iframe。參考 [Twitch 官方播放器 API](https://dev.twitch.tv/docs/embed/video-and-clips/)。
+
+Kick 的官方 iframe 只有播放、靜音及全螢幕參數，沒有公開的外部畫質控制接口。目前保留原有放大再縮回的方式：直接按小窗尺寸嵌入會轉用缺少音量控制的手機介面，跨越尺寸界線也可能改變靜音狀態。本站因此不強制調整 Kick 解像度，由平台自動畫質處理。參考 [Kick 官方嵌入說明](https://help.kick.com/en/articles/8010826-how-to-embed-your-kick-livestream)。
 
 ## 之後搬到 Cloudflare Pages
 

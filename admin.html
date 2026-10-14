@@ -10,6 +10,7 @@
     <script src="./flv.min.js"></script>
     <script src="./channel-list.js"></script>
     <script src="./stream-performance.js"></script>
+    <script src="./stream-quality.js"></script>
 		<script type="module" src="jquery-3.6.0.min.js"></script>
     <style>
         * {
@@ -230,6 +231,9 @@
             height: 100%;
             border: none;
         }
+
+        .twitch-wrapper { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+        .twitch-wrapper iframe { display: block; width: 100%; height: 100%; border: 0; }
 
         #multi-stream-container {
             display: flex;
@@ -852,6 +856,7 @@ textarea:focus {
         function disposeAdminPlayer(player) {
             if (!player || player.disposed) return;
             player.disposed = true;
+            try { player.twitch?.dispose(); } catch (error) {}
             releaseAdminMedia(player);
             if (player.iframe) {
                 try { player.iframe.src = 'about:blank'; } catch (error) {}
@@ -867,7 +872,7 @@ textarea:focus {
 
         function createAdminPlayer(channel) {
             const element = document.createElement('div');
-            const player = { key: channelStatusKey(channel), channel, element, video: null, iframe: null, hls: null, flv: null, disposed: false, failed: false };
+            const player = { key: channelStatusKey(channel), channel, element, video: null, iframe: null, hls: null, flv: null, twitch: null, disposed: false, failed: false };
             if (channel.platform === 'm3u8' || channel.platform === 'gosh' || channel.platform === 'vaughn') {
                 const video = document.createElement('video');
                 video.className = 'hls-video-element';
@@ -883,6 +888,13 @@ textarea:focus {
                 player.start = channel.platform === 'vaughn'
                     ? () => attachFlvVideo(video, channel, player)
                     : () => { void attachHlsVideo(video, channel, player); };
+            } else if (channel.platform === 'twitch' && typeof StreamQuality !== 'undefined') {
+                player.twitch = StreamQuality.createTwitchPlayer(element, {
+                    channel: channel.id, parent: location.hostname || 'localhost', muted: false,
+                    isMultiView: () => adminPlayers.size > 1,
+                    fallbackUrl: getStreamUrl(channel)
+                });
+                player.start = () => player.twitch.start();
             } else {
                 const iframe = document.createElement('iframe');
                 iframe.className = 'full-screen-video';
@@ -945,12 +957,13 @@ textarea:focus {
                     if (player.start) player.start();
                 }
                 player.channel = channel;
-                player.element.className = isOnlyOne ? 'full-screen-video' : 'video';
+                player.element.className = (isOnlyOne ? 'full-screen-video' : 'video') + (player.twitch ? ' twitch-wrapper' : '');
                 player.element.style.width = isOnlyOne ? '100%' : '48%';
                 player.element.style.height = isOnlyOne ? '100%' : '48%';
                 // CSS order updates do not detach iframe browsing contexts.
                 player.element.style.order = String(index);
             });
+            adminPlayers.forEach(player => player.twitch?.refresh());
         }
 
         // ======================== 單一頻道播放（主畫面）================

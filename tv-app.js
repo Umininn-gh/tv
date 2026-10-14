@@ -80,7 +80,7 @@ const PLATFORMS = {
     twitch: {
         label: 'Twitch',
         icon: 'Ⓣ',
-        type: 'iframe',
+        type: 'twitch',
         buildUrl: (ch, muted) =>
             `https://player.twitch.tv/?channel=${ch.id}&parent=${encodeURIComponent(parent)}&muted=${muted}`,
         status: async (ch, signal) => {
@@ -264,6 +264,23 @@ const PLATFORMS = {
    播放器渲染器 (依 type 分派)
    ------------------------------------------------------------------------------------- */
 const RENDERERS = {
+    twitch(channel, p, muted, wrapperClass) {
+        if (typeof StreamQuality === 'undefined') return RENDERERS.iframe(channel, p, muted, wrapperClass);
+        const wrapper = document.createElement('div');
+        wrapper.className = `${wrapperClass} twitch-wrapper`;
+        const twitch = StreamQuality.createTwitchPlayer(wrapper, {
+            channel: channel.id, parent, muted,
+            isMultiView: () => activePlayers.size > 1,
+            fallbackUrl: p.buildUrl(channel, muted)
+        });
+        const resource = { element: wrapper, video: null, disposed: false, failed: false, hls: null, flv: null, twitch };
+        playerResources.set(wrapper, resource);
+        queueMicrotask(() => {
+            if (!resource.disposed && wrapper.isConnected) twitch.start();
+        });
+        return wrapper;
+    },
+
     iframe(channel, p, muted, wrapperClass) {
         const iframe = document.createElement('iframe');
         iframe.className = wrapperClass;
@@ -475,7 +492,8 @@ function disposePlayer(entry) {
     const element = resource ? resource.element : entry.element;
     if (resource) {
         resource.disposed = true;
-        try { resource.video.pause(); } catch (error) {}
+        try { resource.twitch?.dispose(); } catch (error) {}
+        if (resource.video) { try { resource.video.pause(); } catch (error) {} }
         if (resource.hls) {
             const hls = resource.hls;
             resource.hls = null;
@@ -490,7 +508,7 @@ function disposePlayer(entry) {
             }
             currentFLVInstances = currentFLVInstances.filter(instance => instance !== flv);
         }
-        try { resource.video.removeAttribute('src'); resource.video.load(); } catch (error) {}
+        if (resource.video) { try { resource.video.removeAttribute('src'); resource.video.load(); } catch (error) {} }
     }
     element.remove();
 }
@@ -581,7 +599,10 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
             container.appendChild(rendered);
         } else {
             // Preserve manual mute, volume and pause changes within the same mode.
-            if (entry.resource && entry.muted !== muted) entry.resource.video.muted = muted;
+            if (entry.resource && entry.muted !== muted) {
+                if (entry.resource.video) entry.resource.video.muted = muted;
+                else entry.resource.twitch?.setMuted(muted);
+            }
             entry.muted = muted;
             entry.channel = channel;
         }
@@ -591,6 +612,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
         // Moving an iframe in the DOM can restart it; CSS order keeps it connected.
         visible.style.order = String(index);
     });
+    activePlayers.forEach(entry => entry.resource?.twitch?.refresh());
     playerPositionEditor?.refresh();
 }
 
