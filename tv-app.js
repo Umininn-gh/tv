@@ -555,6 +555,17 @@ function swapPlayerPositions(sourceKey, targetKey) {
     return true;
 }
 
+function resetPlayerPositions() {
+    preferredPlayerOrder = [];
+    try { localStorage.removeItem(PLAYER_POSITION_STORAGE_KEY); } catch (_) {}
+    const defaultRanks = new Map(channels.map((channel, index) => [ChannelList.channelKey(channel), index]));
+    const keys = getPlayerPositionKeys();
+    keys.sort((a, b) => (defaultRanks.get(a) ?? Infinity) - (defaultRanks.get(b) ?? Infinity));
+    // Keep each live player connected, including players showing a playback error.
+    keys.forEach((key, index) => { getPlayerElement(activePlayers.get(key)).style.order = String(index); });
+    playerPositionEditor?.refresh();
+}
+
 function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     const container = document.getElementById("multi-stream-container");
     if (!container) return;
@@ -619,7 +630,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
 function pruneActivePlayers() {
     if (!activePlayers.size) return;
     const available = new Map(channels.map(channel => [ChannelList.channelKey(channel), channel]));
-    const remaining = Array.from(activePlayers, ([key, entry]) => available.get(key)).filter(Boolean);
+    const remaining = getPlayerPositionKeys().map(key => available.get(key)).filter(Boolean);
     if (remaining.length !== activePlayers.size) syncActivePlayers(remaining);
 }
 
@@ -884,6 +895,7 @@ function toggleChannelSelection() {
     const pane = document.getElementById('multi-stream-container');
     const wrapper = document.getElementById('multi-stream-container-wrapper');
     const startButton = document.getElementById('adjust-player-positions');
+    const resetButton = document.getElementById('reset-player-positions');
     if (!pane || !wrapper || !startButton) return;
     try {
         const saved = JSON.parse(localStorage.getItem(PLAYER_POSITION_STORAGE_KEY));
@@ -895,12 +907,14 @@ function toggleChannelSelection() {
     layer.hidden = true;
     layer.innerHTML = `<div class="player-position-cells"></div>
         <div class="player-position-toolbar"><span>拖曳或點選兩格交換；方向鍵搬位，Esc 完成</span>
-        <button type="button">✅ 完成搬位</button></div>
+        <button class="player-position-reset" type="button">↺ 重設播放器位置</button>
+        <button class="player-position-done" type="button">✅ 完成搬位</button></div>
         <p class="player-position-announcement" role="status" aria-live="polite"></p>`;
     // A sibling overlay leaves every iframe/video connected in its original parent.
     wrapper.appendChild(layer);
     const cells = layer.querySelector('.player-position-cells');
-    const doneButton = layer.querySelector('.player-position-toolbar button');
+    const doneButton = layer.querySelector('.player-position-done');
+    const editorResetButton = layer.querySelector('.player-position-reset');
     const announcement = layer.querySelector('[role="status"]');
     let opened = false;
     let pickedKey = null;
@@ -1018,6 +1032,12 @@ function toggleChannelSelection() {
         window.addEventListener('resize', scheduleLayout);
         buttons.values().next().value?.focus({ preventScroll: true });
     });
+    function resetPositions() {
+        resetPlayerPositions();
+        announcement.textContent = '已重設至頻道列表的預設次序';
+    }
+    resetButton?.addEventListener('click', resetPositions);
+    editorResetButton.addEventListener('click', resetPositions);
     doneButton.addEventListener('click', () => close());
     document.addEventListener('keydown', event => {
         if (opened && event.key === 'Escape') { event.preventDefault(); close(); }

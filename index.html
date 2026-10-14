@@ -419,6 +419,7 @@
             left: 8px;
             z-index: 2;
             display: flex;
+            flex-wrap: wrap;
             align-items: center;
             justify-content: space-between;
             gap: 8px;
@@ -429,7 +430,11 @@
             font-size: .72rem;
             pointer-events: none;
         }
+        .player-position-toolbar span { flex: 1 1 200px; }
         .player-position-toolbar button { flex-shrink: 0; pointer-events: auto; }
+        @media (max-width: 600px) {
+            .player-position-toolbar span { flex-basis: 100%; }
+        }
         #adjust-player-positions:disabled { opacity: .45; cursor: default; }
         .player-position-hint { margin: 8px 0 0; color: var(--label-2); font-size: .72rem; }
         .player-position-announcement {
@@ -1218,6 +1223,7 @@
         <button onclick="checkAllLiveChannels()" style="background: var(--green); color: #000; font-weight: 600;">所有在線頻道</button>
         <button onclick="clearAllChannelSelection()" style="background: var(--bg-2); color: var(--label);">全選</button>
         <button id="adjust-player-positions" type="button" disabled>↔️ 調整播放器位置</button>
+        <button id="reset-player-positions" type="button">↺ 重設播放器位置</button>
         <p class="player-position-hint">開始觀看至少兩台後，可以拖曳或點選兩格交換位置。</p>
     </div>
 
