@@ -66,8 +66,8 @@
             z-index: 100;
             display: flex;
             align-items: center;
-            min-height: 60px;
-            padding: .6em 1em;
+            min-height: 30px;
+            padding: .3em 1em;
             background: rgba(20, 20, 22, .78);
             -webkit-backdrop-filter: saturate(180%) blur(24px);
             backdrop-filter: blur(24px);
@@ -96,7 +96,7 @@
             overflow-x: auto;
             overflow-y: hidden;
             white-space: nowrap;
-            padding: .35em 0 .5em;
+            padding: 0;
             cursor: grab;
             scrollbar-width: thin;
             scrollbar-color: rgba(235, 235, 245, .22) transparent;
@@ -104,7 +104,7 @@
         }
         #lists:active { cursor: grabbing; }
 
-        #lists::-webkit-scrollbar { height: 6px; background: transparent; }
+        #lists::-webkit-scrollbar { height: 3px; background: transparent; }
         #lists::-webkit-scrollbar-track { background: transparent; }
         #lists::-webkit-scrollbar-thumb {
             background: rgba(235, 235, 245, .22);
@@ -241,6 +241,24 @@
             margin-left: auto;
             padding-left: .5em;
         }
+
+        /* 頂部選台及操作區：高度減半，保留文字大小。 */
+        #top-bar button,
+        #top-bar .toggle-switch {
+            height: 18px;
+            min-height: 18px;
+            border-radius: 5px;
+            line-height: 1;
+        }
+        #top-bar button { padding-top: 0; padding-bottom: 0; }
+        #top-bar .toggle-switch .slider { width: 25.5px; height: 15.5px; }
+        #top-bar .toggle-switch .slider::before {
+            width: 13.5px;
+            height: 13.5px;
+            left: 1px;
+            top: 1px;
+        }
+        #top-bar .toggle-switch input:checked + .slider::before { transform: translateX(10px); }
 
         /* ---------------- 表單元素 ---------------- */
         input, select {
@@ -675,7 +693,7 @@
         #channel-selection {
             display: none;
             position: fixed;
-            top: 72px;
+            top: 36px;
             right: 18px;
             z-index: 1000;
             width: 320px;
@@ -833,7 +851,7 @@
             #input-container {
                 flex-wrap: nowrap;
                 overflow-x: auto;
-                padding-bottom: .3em;
+                padding-bottom: .15em;
                 margin-top: 0;
                 width: 100%;
                 justify-content: flex-start;
@@ -843,7 +861,7 @@
 
             #mobile-menu-btn { display: inline-flex; }
             .top-container { flex-direction: column; align-items: stretch; gap: .5em; }
-            #top-bar { padding: .5em; min-height: auto; }
+            #top-bar { padding: .25em .5em; min-height: auto; }
 
             .modal-panel { padding: 1.2rem 1rem; width: 100%; }
             .delete-channel-list { max-height: 50vh; }
