@@ -8,6 +8,10 @@
     const METADATA_RETRIES_MS = [500, 1500, 3500];
     const HEALTH_INTERVAL_MS = 5000;
     const STARTUP_GRACE_MS = 15000;
+    const CONTEXT_SETTLE_MS = 2000;
+    // Twitch initializes embed visibility through a delayed observer. READY can
+    // precede that observation, and a play command sent earlier is discarded.
+    const STARTUP_PLAY_DELAY_MS = 2000;
     let sdkRequest = null;
     let nextPlayerId = 0;
 
@@ -101,14 +105,27 @@
         let hasPlayed = false;
         let playbackPaused = false;
         let playbackStartedAt = 0;
-        let forceQualityRequest = false;
         let ownQualitySwitch = false;
         let qualitySwitchTimer = null;
         let autoGroupSeen = false;
+        let contextSuspended = false;
+        let contextSettling = false;
+        let contextTimer = null;
+        let resumeEligible = false;
+        let contextPauseObserved = false;
+        let automaticResumeAttempted = false;
+        let playbackBlocked = false;
+        let recoveryAuto = false;
+        let recoveryAutoSize = null;
+        let recoveryAutoMulti = null;
+        let verifyAfterContext = false;
+        let startupPlayAttempted = false;
+        let startupTimer = null;
         const subscriptions = [];
         const doc = wrapper.ownerDocument || root.document;
         wrapper.dataset.streamQualityMode = 'loading';
         wrapper.dataset.streamQuality = 'auto';
+        wrapper.dataset.streamPlaybackBlocked = 'false';
 
         function isMultiView() {
             try { return Boolean(options.isMultiView && options.isMultiView()); }
@@ -149,13 +166,144 @@
             catch (_) { return undefined; }
         }
 
+        function contextUnavailable(size = lastSize) {
+            if (doc.hidden === true || doc.visibilityState === 'hidden') return true;
+            const fullscreen = doc.fullscreenElement || doc.webkitFullscreenElement;
+            if (fullscreen && fullscreen !== wrapper && !wrapper.contains(fullscreen) && !(typeof fullscreen.contains === 'function' && fullscreen.contains(wrapper))) return true;
+            return Boolean(size && !(size.width > 0 && size.height > 0));
+        }
+
+        function readPlayerSize() {
+            const iframe = wrapper.querySelector('iframe');
+            if (iframe && typeof iframe.getBoundingClientRect === 'function') {
+                try {
+                    const rect = iframe.getBoundingClientRect();
+                    if (rect && Number.isFinite(rect.width) && Number.isFinite(rect.height) && rect.width >= 0 && rect.height >= 0) return { width: rect.width, height: rect.height };
+                } catch (_) {}
+            }
+            const rect = wrapper.getBoundingClientRect();
+            return { width: rect.width, height: rect.height };
+        }
+
+        function setMode(mode) {
+            wrapper.dataset.streamQualityMode = playbackBlocked ? 'playback-blocked' : mode;
+            wrapper.dataset.streamPlaybackBlocked = String(playbackBlocked);
+        }
+
+        function cancelResize() {
+            if (resizeTimer !== null) root.clearTimeout(resizeTimer);
+            resizeTimer = null;
+        }
+
+        function cancelStartup() {
+            if (startupTimer !== null) root.clearTimeout(startupTimer);
+            startupTimer = null;
+        }
+
+        function scheduleStartupPlayback() {
+            if (disposed || !ready || hasPlayed || playbackPaused || playbackBlocked || startupPlayAttempted || startupTimer !== null || contextSuspended || contextSettling || contextUnavailable()) return;
+            startupTimer = root.setTimeout(() => {
+                startupTimer = null;
+                if (disposed || !ready || hasPlayed || playbackPaused || playbackBlocked || startupPlayAttempted || !wrapper.isConnected || contextUnavailable() || contextSuspended || contextSettling) return;
+                startupPlayAttempted = true;
+                requestPlay();
+            }, STARTUP_PLAY_DELAY_MS);
+        }
+
+        function suspendContext() {
+            if (!contextSuspended) {
+                // A user PAUSE can arrive during our quality-switch guard. Consult
+                // the current public state too; unknown/paused is not resume consent.
+                resumeEligible = hasPlayed && !playbackPaused && !playbackBlocked && publicCall('isPaused') === false;
+                contextPauseObserved = false;
+                automaticResumeAttempted = false;
+            }
+            contextSuspended = true;
+            contextSettling = false;
+            if (contextTimer !== null) root.clearTimeout(contextTimer);
+            contextTimer = null;
+            cancelResize();
+            cancelStartup();
+            clearRetries();
+            stopHealthChecks();
+            finishQualitySwitch();
+            setMode('paused-context');
+        }
+
+        function markPlaybackBlocked() {
+            if (disposed) return;
+            playbackBlocked = true;
+            cancelStartup();
+            automaticResumeAttempted = true;
+            resumeEligible = false;
+            stopHealthChecks();
+            setMode('playback-blocked');
+        }
+
+        function requestPlay() {
+            if (!player || typeof player.play !== 'function') return false;
+            try {
+                const result = player.play();
+                if (result && typeof result.catch === 'function') result.catch(markPlaybackBlocked);
+                return true;
+            } catch (_) { markPlaybackBlocked(); return false; }
+        }
+
+        function settleContext() {
+            if (contextSettling || disposed) return;
+            contextSettling = true;
+            setMode('recovering');
+            contextTimer = root.setTimeout(() => {
+                contextTimer = null;
+                if (disposed || !wrapper.isConnected) return;
+                lastSize = readPlayerSize();
+                if (contextUnavailable(lastSize)) { suspendContext(); return; }
+                contextSettling = false;
+                emptyBufferSamples = 0;
+                fixedSince = Date.now();
+                playbackStartedAt = Date.now();
+                const actuallyPaused = publicCall('isPaused') === true;
+                if (resumeEligible && contextPauseObserved && !playbackPaused && !playbackBlocked && !automaticResumeAttempted && actuallyPaused) {
+                    automaticResumeAttempted = true;
+                    requestPlay();
+                }
+                resumeEligible = false;
+                contextPauseObserved = false;
+                verifyAfterContext = !playbackPaused && !recoveryAuto && !networkAuto;
+                refreshMetadata();
+                scheduleStartupPlayback();
+            }, CONTEXT_SETTLE_MS);
+        }
+
+        function updateContext(size) {
+            if (disposed) return true;
+            if (size) lastSize = size;
+            if (contextUnavailable(size || lastSize)) { suspendContext(); return true; }
+            if (contextSuspended) {
+                contextSuspended = false;
+                settleContext();
+            }
+            return contextSettling;
+        }
+
+        function contextChanged() {
+            if (disposed || !wrapper.isConnected) return;
+            if (!updateContext(readPlayerSize())) scheduleResize();
+        }
+
         function checkHealth() {
             healthTimer = null;
+            if (disposed) return;
+            if (contextUnavailable()) { suspendContext(); return; }
+            if (contextSuspended || contextSettling) return;
             if (disposed || !ready || !hasPlayed || playbackPaused || !wrapper.isConnected || !isMultiView() || isFullscreen() || networkAuto || !lastRequested || lastRequested === 'auto') return;
             const stats = publicCall('getPlaybackStats');
             const buffer = stats && stats.bufferSize;
             const paused = publicCall('isPaused');
             const ended = publicCall('getEnded');
+            const knownCurrentRendition = normalizeTwitchQualities(publicCall('getQualities')).find(quality => quality.group === lastRequested && quality.width > 0 && quality.height > 0);
+            const nativeResolution = stats && typeof stats.videoResolution === 'string' ? /^(\d+)x(\d+)$/.exec(stats.videoResolution) : null;
+            const normalRendition = knownCurrentRendition && publicCall('getQuality') === lastRequested && nativeResolution && Number(nativeResolution[1]) === Math.round(knownCurrentRendition.width) && Number(nativeResolution[2]) === Math.round(knownCurrentRendition.height);
             const fps = stats && stats.fps;
             const rate = stats && stats.playbackRate;
             const validFps = typeof fps === 'number' && Number.isFinite(fps) && fps >= 0;
@@ -164,7 +312,7 @@
             const stalledPlayback = !healthyPlayback && (validFps && fps === 0 || validRate && rate === 0);
             // Low-latency playback can report an empty buffer while decoding normally.
             // A waiting autoplay prompt also has zeroed stats, so require PLAYING first.
-            if (paused || ended || !stalledPlayback || Date.now() - Math.max(fixedSince, playbackStartedAt) < STARTUP_GRACE_MS || typeof buffer !== 'number' || !Number.isFinite(buffer) || buffer < 0) emptyBufferSamples = 0;
+            if (paused || ended || !normalRendition || !stalledPlayback || Date.now() - Math.max(fixedSince, playbackStartedAt) < STARTUP_GRACE_MS || typeof buffer !== 'number' || !Number.isFinite(buffer) || buffer < 0) emptyBufferSamples = 0;
             else emptyBufferSamples = buffer <= 0.01 ? emptyBufferSamples + 1 : 0;
             if (emptyBufferSamples >= 3) {
                 networkAuto = true;
@@ -176,7 +324,7 @@
         }
 
         function ensureHealthChecks() {
-            if (hasPlayed && !playbackPaused && healthTimer === null) healthTimer = root.setTimeout(checkHealth, HEALTH_INTERVAL_MS);
+            if (!contextSuspended && !contextSettling && !contextUnavailable() && !playbackBlocked && hasPlayed && !playbackPaused && healthTimer === null) healthTimer = root.setTimeout(checkHealth, HEALTH_INTERVAL_MS);
         }
 
         function meaningfulSizeChange(a, b) {
@@ -187,14 +335,18 @@
             if (disposed || !ready || !player || !wrapper.isConnected) return false;
             const multi = isMultiView();
             const fullscreen = isFullscreen();
-            const rect = wrapper.getBoundingClientRect();
-            const size = { width: rect.width, height: rect.height };
+            const size = readPlayerSize();
+            if (updateContext(size)) return false;
             if (lastMulti !== null && multi !== lastMulti || networkAuto && meaningfulSizeChange(recoverySize, size)) {
                 networkAuto = false;
                 recoverySize = null;
             }
             lastMulti = multi;
             lastSize = size;
+            if (recoveryAuto && (multi !== recoveryAutoMulti || meaningfulSizeChange(recoveryAutoSize, size))) {
+                recoveryAuto = false;
+                recoveryAutoSize = null;
+            }
             const qualities = publicCall('getQualities');
             const normalized = normalizeTwitchQualities(qualities);
             const hasAuto = normalized.some(quality => quality.group === 'auto');
@@ -202,18 +354,35 @@
             // The cached rendition list can disappear during a reconnect. Auto remains
             // a supported group once the player has advertised it, so it is safe to retreat.
             const selectable = autoGroupSeen && !hasAuto ? (Array.isArray(qualities) ? qualities : []).concat('auto') : qualities;
-            const wanted = multi && !fullscreen && !networkAuto
+            const hasVideoMetadata = normalized.some(quality => quality.group !== 'auto' && quality.group !== 'audio_only' && quality.height > 0);
+            if (!hasPlayed && !recoveryAuto) {
+                // Let Twitch's own autoplay/ad initialization finish before any
+                // rendition change. READY is API readiness, not video playback.
+                setMode('starting');
+                wrapper.dataset.streamQualityTarget = String(Math.round(Math.min(size.height, size.width * 9 / 16)));
+                return true;
+            }
+            if (verifyAfterContext && hasVideoMetadata && !playbackPaused && publicCall('isPaused') === false && !recoveryAuto && !networkAuto) {
+                const current = publicCall('getQuality');
+                if (current === 'auto' || normalized.some(quality => quality.group === current && quality.height > 0)) {
+                    // The hidden Twitch player may reset to Auto. Reconcile once
+                    // after settling; ordinary PLAYING/ONLINE cannot repeat this.
+                    verifyAfterContext = false;
+                    lastRequested = null;
+                }
+            }
+            const pendingMetadata = multi && !fullscreen && !networkAuto && !recoveryAuto && !hasVideoMetadata && lastRequested && lastRequested !== 'auto';
+            const wanted = pendingMetadata ? lastRequested : multi && !fullscreen && !networkAuto && !recoveryAuto
                 ? autoGroupSeen ? chooseTwitchQuality(selectable, size.width, size.height) || 'auto' : null
                 : autoGroupSeen ? 'auto' : null;
-            wrapper.dataset.streamQualityMode = networkAuto && multi && !fullscreen ? 'network-auto' : wanted && wanted !== 'auto' ? 'size' : 'auto';
+            setMode(recoveryAuto ? 'recovery-auto' : networkAuto && multi && !fullscreen ? 'network-auto' : pendingMetadata ? 'waiting-quality' : wanted && wanted !== 'auto' ? 'size' : 'auto');
             wrapper.dataset.streamQualityTarget = String(Math.round(Math.min(size.height, size.width * 9 / 16)));
             if (wanted && wanted !== lastRequested) {
                 const current = publicCall('getQuality');
-                const sendRequest = forceQualityRequest || current !== wanted;
+                const sendRequest = current !== wanted;
                 // Commit the request cache before calling into the SDK: public event
                 // callbacks can run synchronously from setQuality in some players.
                 lastRequested = wanted;
-                forceQualityRequest = false;
                 fixedSince = Date.now();
                 emptyBufferSamples = 0;
                 try {
@@ -225,29 +394,32 @@
                     }
                 } catch (_) {
                     lastRequested = null;
-                    forceQualityRequest = true;
                     finishQualitySwitch();
                     stopHealthChecks();
                     return false;
                 }
             }
             wrapper.dataset.streamQuality = wanted || publicCall('getQuality') || 'auto';
-            if (wanted && wanted !== 'auto' && multi && !fullscreen && !networkAuto) ensureHealthChecks();
+            if (!pendingMetadata && wanted && wanted !== 'auto' && multi && !fullscreen && !networkAuto && !recoveryAuto) ensureHealthChecks();
             else stopHealthChecks();
             // READY can expose only Auto before the stream's rendition list arrives.
-            return normalized.some(quality => quality.group !== 'auto' && quality.group !== 'audio_only' && quality.height > 0);
+            return hasVideoMetadata;
         }
 
         function scheduleResize() {
             if (disposed) return;
+            if (contextUnavailable()) { suspendContext(); return; }
+            if (contextSuspended || contextSettling) return;
             if (resizeTimer !== null) root.clearTimeout(resizeTimer);
             resizeTimer = root.setTimeout(() => { resizeTimer = null; evaluate(); }, RESIZE_DELAY_MS);
         }
 
         function refreshMetadata() {
             if (disposed || !ready) return;
+            if (contextUnavailable()) { suspendContext(); return; }
+            if (contextSuspended || contextSettling) return;
             clearRetries();
-            if (evaluate()) return;
+            if (evaluate() || contextSuspended || contextSettling) return;
             retries = METADATA_RETRIES_MS.map(delay => root.setTimeout(() => {
                 if (!disposed && evaluate()) clearRetries();
             }, delay));
@@ -304,69 +476,76 @@
                     ready = true;
                     if (mutedDirty) { publicCall('setMuted', desiredMuted); mutedDirty = false; }
                     refreshMetadata();
+                    scheduleStartupPlayback();
                 };
                 const onOnline = () => {
                     if (disposed) return;
-                    // A fresh broadcast can reset Twitch to Auto without changing its size.
-                    lastRequested = null;
+                    if (contextUnavailable()) { suspendContext(); return; }
+                    if (contextSuspended || contextSettling) return;
+                    // ONLINE is not a reason to repeatedly resend the same fixed
+                    // rendition, or to erase the user's existing pause intent.
                     emptyBufferSamples = 0;
                     fixedSince = Date.now();
-                    hasPlayed = false;
-                    playbackPaused = false;
                     playbackStartedAt = 0;
-                    forceQualityRequest = true;
                     stopHealthChecks();
                     refreshMetadata();
+                    scheduleStartupPlayback();
                 };
                 const onPlaying = () => {
                     if (disposed) return;
-                    if (ownQualitySwitch) {
-                        // A quality request made while genuinely paused may have no
-                        // PLAYING completion. If the user's resume resets Twitch to
-                        // Auto, this is that resume rather than our switch completing.
-                        const resumedFromAuto = playbackPaused && lastRequested && lastRequested !== 'auto' && publicCall('getQuality') === 'auto';
-                        finishQualitySwitch();
-                        if (!resumedFromAuto) {
-                            if (!playbackPaused && !hasPlayed) {
-                                hasPlayed = true;
-                                playbackStartedAt = Date.now();
-                            }
-                            if (!playbackPaused && lastRequested && lastRequested !== 'auto' && isMultiView() && !isFullscreen() && !networkAuto) ensureHealthChecks();
-                            return;
-                        }
-                    }
-                    if (playbackPaused) {
+                    cancelStartup();
+                    if (contextUnavailable()) { suspendContext(); return; }
+                    if (contextSuspended || contextSettling) {
                         hasPlayed = true;
                         playbackPaused = false;
-                        playbackStartedAt = Date.now();
-                        lastRequested = null;
-                        // The SDK's cached getQuality may lag its PLAYING event.
-                        forceQualityRequest = true;
-                    } else if (!hasPlayed) {
-                        hasPlayed = true;
-                        playbackStartedAt = Date.now();
-                        lastRequested = null;
+                        resumeEligible = false;
+                        playbackBlocked = false;
+                        wrapper.dataset.streamPlaybackBlocked = 'false';
+                        return;
                     }
+                    if (ownQualitySwitch) {
+                        finishQualitySwitch();
+                        if (!playbackPaused && !hasPlayed) {
+                            hasPlayed = true;
+                            playbackStartedAt = Date.now();
+                        }
+                        if (!playbackPaused && lastRequested && lastRequested !== 'auto' && isMultiView() && !isFullscreen() && !networkAuto && !recoveryAuto) ensureHealthChecks();
+                        return;
+                    }
+                    if (!hasPlayed || playbackPaused) playbackStartedAt = Date.now();
+                    hasPlayed = true;
+                    playbackPaused = false;
+                    playbackBlocked = false;
+                    wrapper.dataset.streamPlaybackBlocked = 'false';
                     refreshMetadata();
                 };
                 const onPause = () => {
-                    if (disposed || ownQualitySwitch) return;
+                    if (disposed) return;
+                    if (contextUnavailable()) {
+                        suspendContext();
+                        contextPauseObserved = true;
+                        return;
+                    }
+                    if (ownQualitySwitch) return;
                     playbackPaused = true;
+                    resumeEligible = false;
+                    cancelStartup();
                     stopHealthChecks();
                 };
-                for (const [event, callback] of [[sdk.Player.READY, onReady], [sdk.Player.PLAYING, onPlaying], [sdk.Player.ONLINE, onOnline], [sdk.Player.PAUSE, onPause]]) {
+                for (const [event, callback] of [[sdk.Player.READY, onReady], [sdk.Player.PLAYING, onPlaying], [sdk.Player.ONLINE, onOnline], [sdk.Player.PAUSE, onPause], [sdk.Player.PLAYBACK_BLOCKED, markPlaybackBlocked]]) {
                     if (event && typeof player.addEventListener === 'function') {
                         player.addEventListener(event, callback);
                         subscriptions.push([event, callback]);
                     }
                 }
                 if (typeof root.ResizeObserver === 'function') {
-                    observer = new root.ResizeObserver(scheduleResize);
+                    observer = new root.ResizeObserver(contextChanged);
                     observer.observe(wrapper);
                 }
-                root.addEventListener('resize', scheduleResize);
-                doc.addEventListener('fullscreenchange', scheduleResize);
-                doc.addEventListener('webkitfullscreenchange', scheduleResize);
+                root.addEventListener('resize', contextChanged);
+                doc.addEventListener('fullscreenchange', contextChanged);
+                doc.addEventListener('webkitfullscreenchange', contextChanged);
+                doc.addEventListener('visibilitychange', contextChanged);
             } catch (_) {
                 releaseSdk();
                 mountFallback();
@@ -382,15 +561,55 @@
             if (fallback) fallback.src = fallbackUrl();
         }
 
+        function recover() {
+            if (disposed || !ready || !player || fallback || !wrapper.isConnected || typeof player.play !== 'function') return false;
+            const size = readPlayerSize();
+            if (contextUnavailable(size)) return false;
+            if (contextTimer !== null) root.clearTimeout(contextTimer);
+            contextTimer = null;
+            contextSuspended = false;
+            contextSettling = false;
+            cancelResize();
+            clearRetries();
+            cancelStartup();
+            stopHealthChecks();
+            finishQualitySwitch();
+            recoveryAuto = true;
+            verifyAfterContext = false;
+            recoveryAutoSize = size;
+            recoveryAutoMulti = isMultiView();
+            lastSize = size;
+            networkAuto = false;
+            playbackPaused = false;
+            playbackBlocked = false;
+            resumeEligible = false;
+            automaticResumeAttempted = true;
+            emptyBufferSamples = 0;
+            if (autoGroupSeen) {
+                const current = publicCall('getQuality');
+                lastRequested = 'auto';
+                wrapper.dataset.streamQuality = 'auto';
+                if (current !== 'auto' && typeof player.setQuality === 'function') {
+                    try { beginQualitySwitch(); player.setQuality('auto'); }
+                    catch (_) { finishQualitySwitch(); }
+                }
+            }
+            setMode('recovery-auto');
+            return requestPlay();
+        }
+
         function releaseSdk() {
             if (observer) observer.disconnect();
             observer = null;
-            root.removeEventListener('resize', scheduleResize);
-            doc.removeEventListener('fullscreenchange', scheduleResize);
-            doc.removeEventListener('webkitfullscreenchange', scheduleResize);
-            if (resizeTimer !== null) root.clearTimeout(resizeTimer);
-            resizeTimer = null;
+            root.removeEventListener('resize', contextChanged);
+            doc.removeEventListener('fullscreenchange', contextChanged);
+            doc.removeEventListener('webkitfullscreenchange', contextChanged);
+            doc.removeEventListener('visibilitychange', contextChanged);
+            cancelResize();
+            if (contextTimer !== null) root.clearTimeout(contextTimer);
+            contextTimer = null;
             clearRetries();
+            cancelStartup();
             finishQualitySwitch();
             stopHealthChecks();
             for (const [event, callback] of subscriptions) publicCall('removeEventListener', event, callback);
@@ -409,7 +628,7 @@
             fallback = null;
         }
 
-        return { start, setMuted, refresh: scheduleResize, dispose };
+        return { start, setMuted, refresh: contextChanged, recover, dispose };
     }
 
     const api = { createTwitchPlayer, chooseTwitchQuality, normalizeTwitchQualities };

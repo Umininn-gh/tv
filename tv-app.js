@@ -275,8 +275,20 @@ const RENDERERS = {
         });
         const resource = { element: wrapper, video: null, disposed: false, failed: false, hls: null, flv: null, twitch };
         playerResources.set(wrapper, resource);
-        queueMicrotask(() => {
-            if (!resource.disposed && wrapper.isConnected) twitch.start();
+        queueMicrotask(async () => {
+            if (resource.disposed || !wrapper.isConnected) return;
+            await twitch.start();
+            if (resource.disposed || !wrapper.isConnected || typeof twitch.recover !== 'function' || wrapper.dataset.streamQualityMode === 'platform-auto') return;
+            const recoverButton = document.createElement('button');
+            recoverButton.type = 'button';
+            recoverButton.className = 'twitch-recover-button';
+            recoverButton.textContent = '↻ 恢復播放';
+            recoverButton.title = '改回自動畫質並嘗試恢復 Twitch 播放';
+            recoverButton.addEventListener('click', () => {
+                recoverButton.textContent = twitch.recover() ? '↻ 恢復播放' : '稍後再試';
+            });
+            wrapper.appendChild(recoverButton);
+            twitch.refresh();
         });
         return wrapper;
     },
