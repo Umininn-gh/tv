@@ -127,6 +127,14 @@
        .mention-self-tag { background-color: #9147ff; color: #ffffff !important; padding: 2px 6px; border-radius: 4px; font-weight: bold; display: inline-block; margin-bottom: 2px; }
         .audio-player { margin-top: 10px; display: block; max-width: 300px; }
         .alt-emoji { max-width: 150px !important; max-height: 150px !important; vertical-align: top; margin: 2px; }
+        .chat-image { display: inline; }
+        .chat-image-media { display: block; max-width: 100%; }
+        .chat-image img[hidden], .chat-image-fallback[hidden] { display: none !important; }
+        .chat-image-fallback { position: relative; z-index: 11; display: inline-flex; align-items: center; flex-wrap: wrap; gap: 3px 8px; max-width: 100%; padding: 3px 6px; margin: 2px 0; border: 1px solid #555; border-radius: 5px; font-size: 0.8em; color: #adadb8; }
+        .chat-image-fallback button, .chat-image-fallback a { font: inherit; color: #bf94ff; white-space: nowrap; }
+        .chat-image-fallback button { background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
+        .chat-image-fallback button:disabled { opacity: 0.6; cursor: wait; }
+        .chat-image-fallback button:focus-visible, .chat-image-fallback a:focus-visible { outline: 2px solid #bf94ff; outline-offset: 2px; }
         .badge { width: 18px; height: 18px; vertical-align: middle; margin-right: 4px; display: inline-block; }
        .btn-danger:hover { background: var(--danger); color: white; }
        .btn-primary {
@@ -1758,6 +1766,46 @@ function onMediaLoaded() {
     else restoreChatViewport(readingAnchor);
 }
 
+function onChatImageLoaded(image) {
+    const container = image.closest('.chat-image');
+    if (!container?.isConnected) return;
+    image.hidden = false;
+    container.dataset.state = 'loaded';
+    container.querySelector('.chat-image-fallback').hidden = true;
+    container.querySelector('button').disabled = false;
+    onMediaLoaded();
+}
+
+function onChatImageError(image) {
+    const container = image.closest('.chat-image');
+    if (!container?.isConnected) return;
+    image.hidden = true;
+    container.dataset.state = 'failed';
+    const fallback = container.querySelector('.chat-image-fallback');
+    fallback.hidden = false;
+    fallback.querySelector('.chat-image-status').textContent = image.classList.contains('alt-emoji') ? '貼圖未能載入' : '圖片未能載入';
+    fallback.querySelector('button').disabled = false;
+    onMediaLoaded();
+}
+
+function retryChatImage(button, event) {
+    event?.preventDefault();
+    event?.stopPropagation();
+    const container = button.closest('.chat-image');
+    const image = container?.querySelector('img');
+    if (!image || button.disabled) return;
+    const viewport = captureChatViewport();
+    button.disabled = true;
+    container.dataset.state = 'retrying';
+    container.querySelector('.chat-image-status').textContent = '正在重試…';
+    // Keep the original URL, including signed queries. A fresh image makes one
+    // user-requested attempt without a timer, proxy or cache-busting query.
+    const replacement = image.cloneNode(false);
+    replacement.loading = 'eager';
+    image.replaceWith(replacement);
+    restoreChatViewport(viewport);
+}
+
 function appendMessageWithScroll(html, key = null) {
     if (document.hidden) {
         const timestamp = Number(html.match(/data-msg-ts="(\d+)"/)?.[1]) || Date.now();
@@ -1898,6 +1946,33 @@ function generateWaveformSvg(url) {
     return `<svg viewBox="0 0 ${viewBoxWidth} 26" preserveAspectRatio="none" class="wave-svg">${rects}</svg>`;
 }
 
+function decodeChatImageAttribute(value) {
+    const entities = { '&amp;': '&', '&quot;': '"', '&#39;': "'", '&lt;': '<', '&gt;': '>' };
+    return String(value).replace(/&(?:amp|quot|#39|lt|gt);/g, entity => entities[entity]);
+}
+
+function normalizeChatImageUrl(value) {
+    const source = String(value || '').trim();
+    try {
+        const url = new URL(source, document.baseURI);
+        if (!source || !['https:', 'http:'].includes(url.protocol)) return null;
+        if (url.hostname.toLowerCase() === 'i.imgur.com' && /\.gifv$/i.test(url.pathname)) {
+            return source.replace(/\.gifv(?=$|[?#])/i, '.gif');
+        }
+        return source;
+    } catch (_) { return null; }
+}
+
+function buildChatImageHtml(value, { emote = false, label = '', escapedSource = false } = {}) {
+    const source = normalizeChatImageUrl(escapedSource ? decodeChatImageAttribute(value) : value);
+    if (!source) return escapeChatText(label || '圖片網址無效');
+    const escapedUrl = escapeChatText(source);
+    const alt = escapeChatText(label || (emote ? '貼圖' : '圖片'));
+    const image = `<img src="${escapedUrl}" alt="${alt}" class="${emote ? 'alt-emoji' : 'media-preview'}" referrerpolicy="no-referrer" onload="onChatImageLoaded(this)" onerror="onChatImageError(this)" loading="lazy" decoding="async">`;
+    const preview = emote ? image : `<a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${image}</a>`;
+    return `<span class="chat-image${emote ? '' : ' chat-image-media'}" data-state="loading">${preview}<span class="chat-image-fallback" hidden role="status"><span class="chat-image-status">${emote ? '貼圖未能載入' : '圖片未能載入'}</span><button type="button" onclick="retryChatImage(this,event)">重試</button><a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" onclick="event.stopPropagation()">原圖</a></span></span>`;
+}
+
 function parseContent(str, escapedInput = false) {
     str = escapedInput ? String(str || '') : escapeChatText(str || '');
     try {
@@ -1905,7 +1980,7 @@ function parseContent(str, escapedInput = false) {
         if (!str.includes('[') && !str.includes('http')) {
             const plain = str.split(' ').map(w => {
                 let src = altMap[w.toLowerCase()];
-                return src ? `<img src="${escapeChatText(src)}" class="alt-emoji" loading="lazy" decoding="async">` : w;
+                return src ? buildChatImageHtml(src, { emote: true, label: decodeChatImageAttribute(w) }) : w;
             }).join(' ');
             return escapedInput ? restoreChatHtml(plain) : plain;
         }
@@ -1914,7 +1989,7 @@ function parseContent(str, escapedInput = false) {
         a = a.replace(RE_S_TAG, (m, b) => {
             b = b.replace(/[\r\n]/g, "").replace(/ /g, '').replace('[S]', '').replace('[', '');
             let id = `${mediaPrefix}${placeholders.length}__`;
-            placeholders.push(`<a class="media-preview" href="${b}" target="_blank"><img src="${b}" onload="onMediaLoaded()" onerror="onMediaLoaded()" loading="lazy" decoding="async"/></a>`);
+            placeholders.push(buildChatImageHtml(b, { escapedSource: true }));
             return id;
         });
         a = a.replace(RE_s_TAG, (m, content) => {
@@ -1936,7 +2011,7 @@ function parseContent(str, escapedInput = false) {
                 let appId = b.match("app/([0-9]+)");
                 e = appId ? `<iframe class="media-preview" src="https://store.steampowered.com/widget/${appId[1]}" frameborder="0" onload="onMediaLoaded()" loading="lazy"></iframe>` : b;
             } else {
-                e = `<a href="${b}" target="_blank"><img src="${b}" class="media-preview" onload="onMediaLoaded()" onerror="onMediaLoaded()" loading="lazy" decoding="async"/></a>`;
+                e = buildChatImageHtml(b, { escapedSource: true });
             }
             placeholders.push(e);
             return id;
@@ -1944,7 +2019,7 @@ function parseContent(str, escapedInput = false) {
         a = a.replace(RE_s_URL, (m, url) => {
             if (url.includes(mediaPrefix)) return m;
             let id = `${mediaPrefix}${placeholders.length}__`;
-            placeholders.push(`<a href="${url}" target="_blank"><img src="${url}" class="media-preview" onload="onMediaLoaded()" onerror="onMediaLoaded()" loading="lazy" decoding="async"/></a>`);
+            placeholders.push(buildChatImageHtml(url, { escapedSource: true }));
             return id;
         });
         a = a.replace(RE_y_TAG, (m, content) => {
@@ -2007,7 +2082,7 @@ function parseContent(str, escapedInput = false) {
         a = words.map(w => {
             if (w.includes(mediaPrefix)) return w;
             let src = altMap[w.toLowerCase()];
-            return src ? `<img src="${escapeChatText(src)}" class="alt-emoji" loading="lazy" decoding="async">` : w;
+            return src ? buildChatImageHtml(src, { emote: true, label: decodeChatImageAttribute(w) }) : w;
         }).join(' ');
         placeholders.forEach((html, i) => { a = a.replace(`${mediaPrefix}${i}__`, () => html); });
         return escapedInput ? restoreChatHtml(a) : a;
