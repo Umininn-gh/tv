@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createReadinessPass } = require('../browser-extension/site-ui.js');
+const { createReadinessPass, isRecoveryReady } = require('../browser-extension/site-ui.js');
 const { createRecoveryFlow } = require('../browser-extension/shared/player-recovery.js');
 const flush = async () => { for (let i = 0; i < 45; i++) await Promise.resolve(); };
 const state = (extra = {}) => ({ available: true, readyState: 4, paused: true, ended: false,
@@ -51,6 +51,45 @@ test('readiness sampling admits a connected frame whose Play appears later witho
     await f.tick(1999); assert.deepEqual(f.queued, []);
     await f.tick(1); await pass.promise;
     assert.deepEqual(f.queued, [{ id: 0, at: 2000 }]);
+});
+
+test('a connected frame with an empty video waits for metadata rather than consuming recovery at 600 ms', async () => {
+    const frame = entry(0, 'frame', { available: true, readyState: 0, platformRecoverSupported: false });
+    const f = fixture([frame, entry(1)]);
+    const pass = f.start({ refresh(e, time) { if (e === frame && time >= 1800) e.result.state.readyState = 1; } });
+    await f.tick(600);
+    assert.deepEqual(f.queued, [{ id: 1, at: 600 }]);
+    await f.tick(1799);
+    assert.deepEqual(f.queued, [{ id: 1, at: 600 }]);
+    await f.tick(1); await pass.promise;
+    assert.deepEqual(f.queued, [{ id: 1, at: 600 }, { id: 0, at: 2400 }]);
+});
+
+test('actual scheduler and coordinator wait for late Twitch Play even when its empty video already exists', async () => {
+    const frame = entry(0, 'frame', { available: true, readyState: 0, platformRecoverSupported: false });
+    const f = fixture([frame]), calls = [];
+    const flow = createRecoveryFlow({ clock: f.clock,
+        getEntries: () => f.entries,
+        isCurrent: (e, generation) => e.current && e.generation === generation,
+        prepare(context) { return f.start({ context,
+            refresh(e, time) { if (time >= 1400) e.result.state.platformRecoverSupported = true; }
+        }).promise; },
+        refresh: async e => { calls.push({ type: 'refresh', at: f.clock.now }); return e.result; },
+        isReady: isRecoveryReady,
+        recover: async e => {
+            calls.push({ type: 'recover', at: f.clock.now });
+            assert.equal(e.result.state.platformRecoverSupported, true);
+            return { ok: true, code: 'OK', state: state({ paused: false, playbackStatus: 'playing' }) };
+        }
+    });
+    const run = flow.run();
+    await f.tick(600); assert.deepEqual(calls, []);
+    await f.tick(1399); assert.deepEqual(calls, []);
+    await f.tick(1); const summary = await run;
+    assert.deepEqual(calls, [{ type: 'refresh', at: 2000 }, { type: 'recover', at: 2000 }]);
+    assert.equal(summary.recovered, 1); assert.equal(summary.attempted, 1);
+    await f.tick(30000); assert.equal(calls.length, 2);
+    flow.dispose(); assert.equal(f.clock.timers.size, 0);
 });
 
 test('late iframe in a tracked wrapper gets its own stability period without replaying an early entry', async () => {
@@ -108,22 +147,29 @@ test('removing the last unready player stops waiting rather than waiting until t
     assert.deepEqual(f.queued, [{ id: 0, at: 600 }]); assert.equal(f.clock.now, 1000);
 });
 
-test('actual readiness scheduler and coordinator recover Twitch before the 30 second deadline and never replay it', async () => {
-    const f = fixture([entry(0, 'frame', { available: false, platformRecoverSupported: true }), entry(1, 'native', { readyState: 0 })]);
+test('actual readiness scheduler and coordinator recover ready Twitch once and report unready media at the 30 second deadline', async () => {
+    const f = fixture([entry(0, 'frame', { available: false, platformRecoverSupported: true }),
+        entry(1, 'native', { readyState: 0 }), entry(2, 'frame', { readyState: 0, platformRecoverSupported: false })]);
     const calls = [];
     const flow = createRecoveryFlow({ clock: f.clock,
         getEntries: () => f.entries,
         isCurrent: (e, generation) => e.current && e.generation === generation,
         prepare(context) { return f.start({ context }).promise; },
         refresh: async e => { calls.push({ type: 'refresh', id: e.id, at: f.clock.now }); return e.result; },
+        isReady: isRecoveryReady,
         recover: async e => { calls.push({ type: 'recover', id: e.id, at: f.clock.now }); return { ok: true, code: 'OK', state: state({ paused: false, playbackStatus: 'playing' }) }; }
     });
     const run = flow.run(); await f.tick(600);
     assert.deepEqual(calls, [{ type: 'refresh', id: 0, at: 600 }, { type: 'recover', id: 0, at: 600 }]);
     assert.equal(flow.isRunning(), true);
     await f.tick(29400); const summary = await run;
-    assert.equal(summary.total, 2); assert.equal(summary.recovered, 2);
+    assert.equal(summary.total, 3); assert.equal(summary.recovered, 1); assert.equal(summary.attempted, 1);
+    assert.equal(summary.skipped.unknown, 2);
+    assert.deepEqual(summary.results.find(result => result.id === 1), { index: 1, id: 1, outcome: 'unknown', code: 'NOT_READY' });
     assert.equal(calls.filter(c => c.type === 'recover' && c.id === 0).length, 1);
     assert.equal(calls.find(c => c.id === 1).at, 30000);
+    assert.equal(calls.find(c => c.id === 2).at, 30000);
+    assert.equal(calls.filter(c => c.type === 'recover' && c.id === 1).length, 0);
+    assert.equal(calls.filter(c => c.type === 'recover' && c.id === 2).length, 0);
     flow.dispose(); assert.equal(f.clock.timers.size, 0);
 });

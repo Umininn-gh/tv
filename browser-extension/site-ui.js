@@ -41,14 +41,16 @@
             /^\s*watchSelectedChannels\s*\(\s*\)\s*;?\s*$/.test(button.getAttribute('onclick') || ''));
     }
 
-    function isRecoveryReady(entry) {
+    function isRecoveryReady(entry, result = entry.result) {
         if (entry.kind === 'unsupported') return true;
-        const state = entry.result?.state;
+        const state = result?.state;
         if (!state) return false;
         if (state.disposed || state.errorCode || state.playbackStatus === 'error') return true;
-        if (entry.kind === 'frame') return Boolean(entry.target &&
-            (state.available || state.platformRecoverSupported));
-        return Boolean(state.available && (state.readyState >= 1 || state.paused === false || state.ended));
+        const mediaReady = state.available && (state.readyState >= 1 || state.paused === false || state.ended);
+        // A connected frame can expose an empty <video> before Twitch has
+        // initialized it. Wait for metadata or a trustworthy platform Play.
+        if (entry.kind === 'frame') return Boolean(entry.target && (mediaReady || state.platformRecoverSupported));
+        return Boolean(mediaReady);
     }
 
     // A slow/absent player must not hold back other ready players in this pass.
@@ -527,6 +529,7 @@
                     prepare: prepareRecovery,
                     getEntries: () => currentEntries().filter(entry => preparedCohort.has(entry.element)),
                     refresh: entry => execute(entry, { action: 'getState' }),
+                    isReady: isRecoveryReady,
                     recover: entry => execute(entry, { action: 'recover' }),
                     isCurrent, onStatus: showRecoveryStatus
                 });

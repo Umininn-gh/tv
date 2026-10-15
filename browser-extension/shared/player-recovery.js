@@ -127,6 +127,16 @@
             if (!platform && state.paused !== true && state.ended !== true && !['paused', 'ended', 'blocked', 'error'].includes(state.playbackStatus)) {
                 record(pass, item, 'unknown', 'UNKNOWN_STATE'); return true;
             }
+            // Discovery can reach its deadline, or a ready player can lose its
+            // metadata/Play while queued. Use the fresh state before recovery.
+            let ready = true;
+            if (typeof options.isReady === 'function') {
+                try { ready = options.isReady(entry, result) === true; }
+                catch (_) { ready = false; }
+            }
+            if (!ready) {
+                record(pass, item, 'unknown', 'NOT_READY'); return true;
+            }
             const recovery = await operate(pass, entry, generation, 'recover', options.recover);
             if (disposed || pass.cancelled) return false;
             if (!current(pass, entry, generation)) { record(pass, item, 'stale', 'STALE'); return true; }

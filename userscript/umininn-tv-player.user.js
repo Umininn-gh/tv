@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.0
+// @version      1.0.1
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @match        https://umininn-gh.github.io/tv/
@@ -27,7 +27,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.0",
+        userscriptVersion: "1.0.1",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -525,6 +525,16 @@
             if (!platform && state.paused !== true && state.ended !== true && !['paused', 'ended', 'blocked', 'error'].includes(state.playbackStatus)) {
                 record(pass, item, 'unknown', 'UNKNOWN_STATE'); return true;
             }
+            // Discovery can reach its deadline, or a ready player can lose its
+            // metadata/Play while queued. Use the fresh state before recovery.
+            let ready = true;
+            if (typeof options.isReady === 'function') {
+                try { ready = options.isReady(entry, result) === true; }
+                catch (_) { ready = false; }
+            }
+            if (!ready) {
+                record(pass, item, 'unknown', 'NOT_READY'); return true;
+            }
             const recovery = await operate(pass, entry, generation, 'recover', options.recover);
             if (disposed || pass.cancelled) return false;
             if (!current(pass, entry, generation)) { record(pass, item, 'stale', 'STALE'); return true; }
@@ -955,14 +965,16 @@
             /^\s*watchSelectedChannels\s*\(\s*\)\s*;?\s*$/.test(button.getAttribute('onclick') || ''));
     }
 
-    function isRecoveryReady(entry) {
+    function isRecoveryReady(entry, result = entry.result) {
         if (entry.kind === 'unsupported') return true;
-        const state = entry.result?.state;
+        const state = result?.state;
         if (!state) return false;
         if (state.disposed || state.errorCode || state.playbackStatus === 'error') return true;
-        if (entry.kind === 'frame') return Boolean(entry.target &&
-            (state.available || state.platformRecoverSupported));
-        return Boolean(state.available && (state.readyState >= 1 || state.paused === false || state.ended));
+        const mediaReady = state.available && (state.readyState >= 1 || state.paused === false || state.ended);
+        // A connected frame can expose an empty <video> before Twitch has
+        // initialized it. Wait for metadata or a trustworthy platform Play.
+        if (entry.kind === 'frame') return Boolean(entry.target && (mediaReady || state.platformRecoverSupported));
+        return Boolean(mediaReady);
     }
 
     // A slow/absent player must not hold back other ready players in this pass.
@@ -1441,6 +1453,7 @@
                     prepare: prepareRecovery,
                     getEntries: () => currentEntries().filter(entry => preparedCohort.has(entry.element)),
                     refresh: entry => execute(entry, { action: 'getState' }),
+                    isReady: isRecoveryReady,
                     recover: entry => execute(entry, { action: 'recover' }),
                     isCurrent, onStatus: showRecoveryStatus
                 });

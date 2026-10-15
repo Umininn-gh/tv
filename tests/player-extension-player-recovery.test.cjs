@@ -55,6 +55,39 @@ test('fresh state overrides stale announcements before deciding what needs recov
     assert.equal(summary.recovered, 1); assert.equal(summary.skipped.playing, 1); f.flow.dispose();
 });
 
+test('optional readiness uses fresh state before recovery while playing, busy and unsupported keep precedence', async () => {
+    const readinessChecks = [];
+    const f = fixture(5, { isReady(entry, fresh) {
+        readinessChecks.push({ id: entry.id, fresh });
+        return fresh.state.readyState >= 1;
+    } });
+    // A previously ready player can be replaced by an empty video while queued.
+    f.entries[0].fresh = result(paused({ readyState: 0 }));
+    f.entries[1].result = result(paused({ readyState: 0 })); f.entries[1].fresh = result();
+    f.entries[2].fresh = result(paused({ paused: false, readyState: 0, playbackStatus: 'waiting' }));
+    f.entries[3].fresh = result(paused({ recovering: true, readyState: 0 }));
+    f.entries[4].fresh = result(paused({ recoverSupported: false, readyState: 0 }));
+    const summary = await f.flow.run();
+    assert.deepEqual(readinessChecks.map(check => check.id), [0, 1]);
+    assert.equal(readinessChecks[0].fresh, f.entries[0].fresh);
+    assert.equal(readinessChecks[1].fresh, f.entries[1].fresh);
+    assert.deepEqual(f.calls.filter(call => call.type === 'recover').map(call => call.id), [1]);
+    assert.equal(summary.attempted, 1); assert.equal(summary.recovered, 1);
+    assert.deepEqual(summary.results[0], { index: 0, id: 0, outcome: 'unknown', code: 'NOT_READY' });
+    assert.equal(summary.skipped.playing, 1); assert.equal(summary.skipped.busy, 1); assert.equal(summary.skipped.unsupported, 1);
+    assert.equal(summary.skipped.unknown, 1); assert.equal(summary.code, 'PARTIAL');
+    assert.equal(f.clock.timers.size, 0); f.flow.dispose();
+});
+
+test('a readiness check that throws fails closed without sending a recovery', async () => {
+    const f = fixture(1, { isReady() { throw new Error('Readiness unavailable'); } });
+    const summary = await f.flow.run();
+    assert.deepEqual(f.calls.map(call => call.type), ['refresh']);
+    assert.equal(summary.attempted, 0); assert.equal(summary.skipped.unknown, 1);
+    assert.equal(summary.results[0].code, 'NOT_READY'); assert.equal(summary.code, 'PARTIAL');
+    assert.equal(f.clock.timers.size, 0); f.flow.dispose();
+});
+
 test('unpaused buffering/playing players are checked and skipped; busy and unsupported entries are not contacted', async () => {
     const f = fixture(6);
     f.entries[0].fresh = playing();

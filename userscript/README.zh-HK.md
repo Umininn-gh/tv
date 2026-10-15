@@ -1,6 +1,14 @@
 # Umininn TV 播放器控制 Userscript
 
-版本：1.0.0。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+版本：1.0.1。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+
+## 1.0.1 載入等待修正
+
+修正已連線的 Twitch iframe 建立空 `<video>`（`readyState=0`）後被過早視為就緒的問題。自動偵測現在要等影片 metadata 載入，或明確可用的 Twitch Play 按鈕出現，再穩定 600ms 才加入恢復佇列；尚未就緒的台不再提前消耗一次恢復，其他已就緒的台仍先處理。整輪仍以 30 秒為限，沒有背景持續重試。
+
+送出恢復指令前會再用最新狀態核對一次；排隊期間失去就緒狀態，或 30 秒到期仍未就緒的台，會列為未就緒，不會強行送出恢復。
+
+這項修正不代表所有 Firefox 暫停問題都已確認原因。如果 Firefox 拒絕腳本啟動播放，仍需在原播放器按播放，或在 Firefox 為該網站調整自動播放權限。[Mozilla 自動播放說明](https://support.mozilla.org/zh-TW/kb/block-autoplay)
 
 ## 安裝
 
@@ -51,6 +59,8 @@ node --test "tests/player-userscript-*.test.cjs" "tests/player-extension-*.test.
 
 建置把 `browser-extension/shared/` 的媒體、Twitch 及恢復流程和控制介面，與 `userscript/transport.js`、`bootstrap.js` 合成單一檔案。不要手動修改產出的 `.user.js`；修改來源後重新建置。輸出是本資料夾的發行檔，以及 `outputs/player-userscript/` 的相同副本與 `.meta.js`。
 
-瀏覽器整合測試可選用 `UMININN_BROWSER_TESTS=1` 執行，需可用的 Playwright 與 Edge。測試把實際腳本注入網站／跨來源播放器模型，驗證真實 `postMessage` 及 HTML 媒體控制；這不等於已在 Tampermonkey／Violentmonkey 或三款瀏覽器實際安裝，也不代表所有外站直播已驗證。
+瀏覽器整合測試可選用 `UMININN_BROWSER_TESTS=1` 執行，需可用的 Playwright 與相應瀏覽器引擎。預設 Chromium／Edge；設定 `UMININN_BROWSER_ENGINE=firefox` 可測 Firefox。測試把實際腳本注入網站／跨來源播放器模型，驗證真實 `postMessage` 及 HTML 媒體控制；這不等於已在 Tampermonkey／Violentmonkey 或三款瀏覽器實際安裝，也不代表所有外站直播已驗證。
 
-2026-10-16 驗證：Userscript 的封裝及通訊測試 28 項通過，1 項符號連結測試因 Windows 權限略過；最終安裝檔的無頭 Edge 瀏覽器模型測試 4／4 通過，包括實際 HTML 媒體音量、靜音、恢復播放、跨來源訊息、移除／重新建立播放器、錯誤來源拒絕、重複安裝防護及登入後掛載。共享播放器功能的既有回歸測試亦通過。
+2026-10-16，1.0.0 驗證：Userscript 的封裝及通訊測試 28 項通過，1 項符號連結測試因 Windows 權限略過；無頭 Edge 瀏覽器模型測試 4／4 通過，包括實際 HTML 媒體音量、靜音、恢復播放、跨來源訊息、移除／重新建立播放器、錯誤來源拒絕、重複安裝防護及登入後掛載。
+
+2026-10-16，1.0.1 驗證：共享播放器、就緒排程、封裝及通訊等回歸測試 170 項通過，7 項因選用瀏覽器測試／Windows 符號連結權限略過。Firefox 153 引擎的 6／6 模型測試通過；Chromium 155 的 5／5 共用模型測試通過，另略過 Firefox 專屬自動播放政策測試。空影片會等待遲來的 Play，播放後不再重複點擊；Firefox 嚴格封鎖自動播放時會如實回報拒絕或尚未確認，不會當作恢復成功，親自在 iframe 按 Play 則能播放。這些仍屬本地模型，未驗證 Firefox Tampermonkey 與真實 Twitch 的組合。

@@ -13,26 +13,36 @@ const root = path.resolve(__dirname, '..');
 const siteOrigin = 'https://umininn-gh.github.io';
 const siteUrl = siteOrigin + '/tv/';
 const playerUrl = 'https://player.kick.com/qa-player';
+const twitchUrl = 'https://player.twitch.tv/?channel=qa-player&parent=umininn-gh.github.io';
 const unknownUrl = 'https://unapproved.invalid/player';
 const channel = 'umininn-tv-userscript';
 const panel = '#umininn-player-panel-host';
-let browser, unavailable, script;
+const engine = process.env.UMININN_BROWSER_ENGINE || 'chromium';
+const executablePath = process.env.UMININN_BROWSER_EXECUTABLE;
+let browser, unavailable, script, playwright, launchOptions;
 
 test.before(async () => {
     if (!enabled) return;
-    let playwright;
     try { playwright = require('playwright'); }
     catch (_) {
         try { playwright = require(path.join(os.homedir(), '.cache', 'codex-runtimes', 'codex-primary-runtime', 'dependencies', 'node', 'node_modules', 'playwright')); }
         catch (_) { unavailable = 'Playwright is unavailable; install it to run the optional browser tests.'; return; }
     }
-    for (const options of [{ headless: true }, { channel: 'msedge', headless: true }]) {
+    assert.ok(['chromium', 'firefox'].includes(engine), 'UMININN_BROWSER_ENGINE must be chromium or firefox.');
+    const candidates = engine === 'firefox' || executablePath
+        ? [{ headless: true, ...(executablePath ? { executablePath } : {}) }]
+        : [{ headless: true }, { channel: 'msedge', headless: true }];
+    for (const options of candidates) {
         try {
-            browser = await playwright.chromium.launch({ ...options, args: ['--autoplay-policy=no-user-gesture-required'] });
+            launchOptions = engine === 'firefox'
+                ? { ...options, firefoxUserPrefs: { 'media.autoplay.default': 0 } }
+                : { ...options, args: ['--autoplay-policy=no-user-gesture-required'] };
+            browser = await playwright[engine].launch(launchOptions);
             break;
         } catch (_) { /* Try the installed Edge if bundled Chromium is absent. */ }
     }
-    if (!browser) { unavailable = 'Could not launch Chromium/Edge; check the browser installation and local process permissions.'; return; }
+    if (!browser) { unavailable = `Could not launch ${engine}; check the browser installation and local process permissions.`; return; }
+    console.log(`Userscript fixture browser: ${engine} ${browser.version()} (no userscript manager or live platform).`);
     const filename = path.join(root, 'userscript', 'umininn-tv-player.user.js');
     assert.ok(fs.existsSync(filename), 'Build the userscript with node tools/build-player-userscript.cjs first.');
     script = fs.readFileSync(filename, 'utf8');
@@ -63,8 +73,8 @@ function optional(t) {
     return true;
 }
 
-async function fixture(html = siteHtml, initialUrl = siteUrl) {
-    const context = await browser.newContext({ serviceWorkers: 'block' });
+async function fixture(html = siteHtml, initialUrl = siteUrl, options = {}) {
+    const context = await (options.browser || browser).newContext({ serviceWorkers: 'block' });
     const navigationRequests = new Map();
     const blocked = [];
     await context.route('**/*', route => {
@@ -73,8 +83,9 @@ async function fixture(html = siteHtml, initialUrl = siteUrl) {
             navigationRequests.set(request.url(), (navigationRequests.get(request.url()) || 0) + 1);
             if (request.url() === initialUrl) return route.fulfill({ contentType: 'text/html', body: html });
             if (request.url() === playerUrl || request.url() === unknownUrl) return route.fulfill({ contentType: 'text/html', body: playerHtml });
+            if (request.url() === twitchUrl && options.twitchHtml) return route.fulfill({ contentType: 'text/html', body: options.twitchHtml });
         }
-        if (url.pathname === '/silent.wav' && [siteOrigin, new URL(playerUrl).origin, new URL(unknownUrl).origin].includes(url.origin)) {
+        if (url.pathname === '/silent.wav' && [siteOrigin, new URL(playerUrl).origin, new URL(unknownUrl).origin, new URL(twitchUrl).origin].includes(url.origin)) {
             return route.fulfill({ contentType: 'audio/wav', body: wav, headers: { 'Accept-Ranges': 'bytes' } });
         }
         blocked.push(request.url());
@@ -147,6 +158,104 @@ async function untilMedia(frame, selector, expected) {
             ? Math.abs(video[key] - value) < 0.001 : video[key] === value);
     }, { selector, expected });
 }
+
+// A connected Twitch frame can contain an empty video well before its genuine
+// Play control is mounted. The button invokes the real HTMLMediaElement.play(),
+// while counters expose whether recovery fired too early or clicked twice.
+function twitchFixture({ loaded = false, muted = true } = {}) {
+    return `<!doctype html><html><body style="margin:0">
+<video id="fixture-video" ${muted ? 'muted' : ''} loop preload="auto" ${loaded ? 'src="/silent.wav"' : ''} style="display:block;width:280px;height:160px"></video>
+<script>
+window.fixtureActions = { nativePlay: 0, platformClicks: 0, trustedClicks: [], playError: null };
+const video = document.getElementById('fixture-video');
+video.volume = 0.35;
+const realPlay = video.play.bind(video);
+video.play = function () { fixtureActions.nativePlay++; return realPlay(); };
+window.fixtureInstallPlay = function () {
+    const button = document.createElement('button');
+    button.setAttribute('data-a-target', 'player-overlay-play-button');
+    button.setAttribute('aria-label', 'Play');
+    button.style.cssText = 'display:block;width:100px;height:40px';
+    button.textContent = 'Play';
+    button.addEventListener('click', event => {
+        fixtureActions.platformClicks++;
+        fixtureActions.trustedClicks.push(event.isTrusted);
+        if (!video.getAttribute('src')) video.src = '/silent.wav';
+        video.play().catch(error => { fixtureActions.playError = error.name; });
+    });
+    document.body.appendChild(button);
+};
+<\/script></body></html>`;
+}
+
+async function addTwitch(page) {
+    await page.evaluate(url => {
+        const frame = document.createElement('iframe');
+        frame.id = 'twitch-player'; frame.src = url; frame.allow = 'autoplay';
+        frame.style.cssText = 'display:block;width:300px;height:220px';
+        document.getElementById('multi-stream-container').appendChild(frame);
+    }, twitchUrl);
+    const frame = await frameAt(page, twitchUrl);
+    await frame.waitForSelector('video');
+    await page.waitForFunction(() => fixtureMessages.some(message => message.type === 'frame:ready' && message.origin === 'https://player.twitch.tv'));
+    await page.locator('#umininn-player-control-host #toggle').click();
+    return frame;
+}
+
+test('batch recovery waits for a slow Twitch Play control instead of consuming its attempt on an empty video', { skip: !enabled, timeout: 30000 }, async t => {
+    if (!optional(t)) return;
+    const { context, page, navigationRequests } = await fixture(siteHtml, siteUrl, { twitchHtml: twitchFixture() });
+    try {
+        const frame = await addTwitch(page);
+        assert.equal(await frame.locator('video').evaluate(video => video.readyState), 0);
+        const initialNavigations = new Map(navigationRequests);
+        await page.locator('#umininn-player-control-host #quick-recover').click();
+        // Beyond the 600 ms readiness stability period: the old connected-only
+        // predicate would already have called native play on this empty video.
+        await page.waitForTimeout(1200);
+        assert.deepEqual(await frame.evaluate(() => fixtureActions), { nativePlay: 0, platformClicks: 0, trustedClicks: [], playError: null });
+        assert.match(await page.locator(panel + ' #recovery-status').textContent(), /仍等待 1 台就緒/);
+        await frame.evaluate(() => fixtureInstallPlay());
+        await untilMedia(frame, 'video', { paused: false, volume: 0.35, muted: true });
+        await page.waitForFunction(() => document.getElementById('umininn-player-panel-host').shadowRoot.getElementById('recovery-status').textContent.includes('1 台已恢復'));
+        assert.deepEqual(await frame.evaluate(() => fixtureActions), { nativePlay: 1, platformClicks: 1, trustedClicks: [false], playError: null });
+        assert.deepEqual(navigationRequests, initialNavigations, 'Waiting and recovery do not reload the Twitch frame.');
+        // A second pass sees real playback and does not click a Play/Pause toggle.
+        await page.locator('#umininn-player-control-host #quick-recover').click();
+        await page.waitForFunction(() => document.getElementById('umininn-player-panel-host').shadowRoot.getElementById('recovery-status').textContent.includes('1 台已在播放或緩衝'));
+        assert.equal(await frame.evaluate(() => fixtureActions.platformClicks), 1);
+    } finally { await context.close(); }
+});
+
+test('Firefox strict autoplay refusal is reported without claiming recovery; a genuine in-frame Play click can start playback', { skip: !enabled || engine !== 'firefox', timeout: 30000 }, async t => {
+    if (!optional(t)) return;
+    // Firefox's configured "block all" policy is intentional here. Chromium's
+    // parent-gesture policy differs and is not a model of Firefox permissions.
+    const strictOptions = { ...launchOptions, firefoxUserPrefs: { 'media.autoplay.default': 5, 'media.autoplay.blocking_policy': 2 } };
+    const strictBrowser = await playwright[engine].launch(strictOptions);
+    const { context, page } = await fixture(siteHtml, siteUrl, { browser: strictBrowser, twitchHtml: twitchFixture({ loaded: true, muted: false }) });
+    try {
+        const frame = await addTwitch(page);
+        await frame.waitForFunction(() => document.querySelector('video').readyState >= 2);
+        const row = page.locator(panel + ' .player').first();
+        await row.getByRole('button', { name: '恢復播放', exact: true }).click();
+        await page.waitForFunction(() => fixtureMessages.some(message => message.type === 'userscript:result' && message.result?.code === 'PLAY_BLOCKED'));
+        assert.equal((await mediaState(frame, 'video')).paused, true);
+        await page.waitForTimeout(500);
+        assert.match(await row.textContent(), /瀏覽器拒絕播放，請在播放器內親自按播放/);
+        await frame.evaluate(() => fixtureInstallPlay());
+        await row.getByRole('button', { name: '恢復播放', exact: true }).click();
+        await page.waitForFunction(() => fixtureMessages.some(message => message.type === 'userscript:result' && message.result?.code === 'PLAY_TIMEOUT'));
+        assert.equal((await mediaState(frame, 'video')).paused, true);
+        assert.equal(await frame.evaluate(() => fixtureActions.playError), 'NotAllowedError');
+        await page.waitForTimeout(500);
+        assert.match(await row.textContent(), /在播放器內親自按播放/);
+        assert.equal(await page.evaluate(() => fixtureMessages.some(message => message.type === 'userscript:result' && message.result?.ok === true && message.result?.state?.paused === false)), false);
+        await frame.getByRole('button', { name: 'Play', exact: true }).click();
+        await untilMedia(frame, 'video', { paused: false, volume: 0.35, muted: false });
+        assert.deepEqual(await frame.evaluate(() => fixtureActions.trustedClicks), [false, true]);
+    } finally { await context.close(); await strictBrowser.close(); }
+});
 
 test('standalone userscript controls native and cross-origin media, restores playback, and never reloads players', { skip: !enabled, timeout: 45000 }, async t => {
     if (!optional(t)) return;

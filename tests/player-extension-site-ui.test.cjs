@@ -63,7 +63,7 @@ test('only the actual selection Start Watching handler triggers the automatic pa
     assert.equal(isWatchStartTarget(null), false);
 });
 
-test('native startup waits for metadata while a Twitch cover can be ready without video', () => {
+test('native and connected iframe startup wait for metadata while a Twitch cover can be ready without video', () => {
     const entry = { kind: 'native', result: { state: { available: true, paused: true, readyState: 0 } } };
     assert.equal(isRecoveryReady(entry), false);
     entry.result.state.readyState = 1;
@@ -76,6 +76,14 @@ test('native startup waits for metadata while a Twitch cover can be ready withou
     assert.equal(isRecoveryReady(frame), false);
     frame.target = { frameId: 4 }; frame.result.state.platformRecoverSupported = false;
     assert.equal(isRecoveryReady(frame), false);
+    Object.assign(frame.result.state, { available: true, paused: true, readyState: 0 });
+    assert.equal(isRecoveryReady(frame), false, 'a connected empty Twitch video is not initialized');
+    frame.result.state.readyState = 1;
+    assert.equal(isRecoveryReady(frame), true);
+    frame.result.state.readyState = 0; frame.result.state.paused = false;
+    assert.equal(isRecoveryReady(frame), true, 'an already-starting player can be skipped without waiting for metadata');
+    frame.result.state.paused = true; frame.result.state.ended = true;
+    assert.equal(isRecoveryReady(frame), true);
 });
 
 test('unavailable players and terminal media errors do not hold the whole startup indefinitely', () => {
@@ -83,4 +91,14 @@ test('unavailable players and terminal media errors do not hold the whole startu
     assert.equal(isRecoveryReady({ kind: 'native', result: { state: { errorCode: 3, readyState: 0 } } }), true);
     assert.equal(isRecoveryReady({ kind: 'native', result: { state: { disposed: true } } }), true);
     assert.equal(isRecoveryReady({ kind: 'frame', result: null }), false);
+});
+
+test('the final recovery readiness check uses fresh state instead of an older ready announcement', () => {
+    const entry = { kind: 'frame', target: { frameId: 4 }, result: { state: {
+        available: true, paused: true, readyState: 4, platformRecoverSupported: true
+    } } };
+    const fresh = { state: { available: true, paused: true, readyState: 0, platformRecoverSupported: false } };
+    assert.equal(isRecoveryReady(entry), true);
+    assert.equal(isRecoveryReady(entry, fresh), false);
+    assert.equal(entry.result.state.readyState, 4);
 });
