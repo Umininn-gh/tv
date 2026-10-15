@@ -1408,7 +1408,7 @@ function showChannelManager(section = '') {
         if (isAltChat) {
             iframe.src = `https://www.twitch.tv/embed/whitewing940920/chat?darkpopout&parent=${encodeURIComponent(parent)}`;
         } else {
-            iframe.src = './test3.html?v=20261016-chat-reliability';
+            iframe.src = './test3.html?v=20261016-chat-bottom-arrow';
         }
     }
     const savedState = localStorage.getItem('chatToggleState');
