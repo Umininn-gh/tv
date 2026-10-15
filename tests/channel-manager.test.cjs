@@ -76,14 +76,16 @@ function fixture(options = {}) {
         compare(existing, candidates) { comparisons.push({ existing, candidates }); return compareChannels(existing, candidates); }
     };
     const fetcher = async () => ({ ok: true, text: async () => options.raw || initialRaw });
+    const health = { options: null, refreshes: 0, cancellations: 0 };
     const context = vm.createContext({ document, localStorage: storage, ChannelList: shared, ChannelSync: { createClient: () => client }, TV_CHANNEL_SYNC_CONFIG: { owner: 'Umininn-gh', repo: 'tv' },
+        ...(options.health ? { ChannelHealth: {}, ChannelHealthUI: { createUI(settings) { health.options = settings; return { refresh() { health.refreshes++; }, cancel() { health.cancellations++; } }; } } } : {}),
         SKLiveImport: importer, fetch: fetcher, location: { hash: options.hash || '' }, URL,
         setInterval(callback, delay) { intervals.push({ callback, delay }); },
         window: { confirm: () => options.confirm !== false, addEventListener(name, listener) { (windowListeners[name] ||= []).push(listener); } }
     });
     vm.runInContext(source, context);
     const ready = async () => { await tick(); await tick(); };
-    return { nodes, current, reads, saves, batchAdds, sourceLoads, comparisons, fetcher, writes, data, storage, publications, windowListeners, document, intervals, ready,
+    return { nodes, current, reads, saves, batchAdds, sourceLoads, comparisons, fetcher, writes, data, storage, publications, windowListeners, document, intervals, ready, health,
         async connect(token = 'github_test_secret') { nodes['github-token'].value = token; await nodes['connection-form'].dispatch('submit'); },
         async submit(values) { for (const [name, value] of Object.entries(values)) nodes[name].value = value; await nodes['channel-form'].dispatch('submit'); },
         async windowEvent(name, event = {}) { await Promise.all((windowListeners[name] || []).map(listener => listener(event))); await ready(); }
@@ -91,6 +93,90 @@ function fixture(options = {}) {
 }
 
 function button(row, label) { return row.querySelectorAll('button').find(element => element.textContent === label); }
+
+test('health scan always loads a fresh snapshot; readonly results have no write authority and pagehide cancels', async () => {
+    const f = fixture({ health: true }); await f.ready();
+    const h = f.health.options;
+    assert.ok(h);
+    assert.equal(h.canWrite(), false);
+    assert.equal((await h.runAction({ action: 'delete', previous: h.getSnapshot().channels[0] })).ok, false);
+    assert.equal(f.saves.length, 0);
+    f.current.remote = snapshot('Fresh,latest,twitch\n', 'fresh-sha');
+    const fresh = await h.loadSnapshot();
+    assert.equal(fresh.sha, 'fresh-sha');
+    assert.equal(f.nodes['channel-list'].children.length, 1);
+    fresh.channels[0].name = 'mutated caller copy';
+    assert.equal(h.getSnapshot().channels[0].name, 'Fresh');
+    assert.equal(f.saves.length, 0);
+    await f.windowEvent('pagehide');
+    assert.equal(f.health.cancellations, 1);
+});
+
+test('health edit opens a repair draft without writing and refuses stale original records', async () => {
+    const f = fixture({ health: true }); await f.ready(); await f.connect();
+    const h = f.health.options;
+    const previous = h.getSnapshot().channels[0];
+    const opened = await h.runAction({ action: 'edit', previous, channel: { id: 'repaired-entry', platform: 'kick' } });
+    assert.equal(opened.opened, true);
+    assert.equal(f.nodes['channel-id'].value, 'repaired-entry');
+    assert.equal(f.nodes['channel-platform'].value, 'kick');
+    assert.equal(f.nodes['channel-name'].value, previous.name);
+    assert.equal(f.saves.length, 0);
+    f.current.remote = snapshot('New name,meidingdang,gosh\n大波,dindinxd19,twitch\n', 'changed');
+    await h.loadSnapshot();
+    assert.equal((await h.runAction({ action: 'delete', previous })).ok, false);
+    assert.match(f.nodes['manager-status'].textContent, /已被修改或移除/);
+    assert.equal(f.saves.length, 0);
+});
+
+test('health fresh-list read holds the shared mutation lock and does not restore a disconnected session', async () => {
+    let release;
+    const f = fixture({ health: true }); await f.ready(); await f.connect();
+    const h = f.health.options;
+    f.current.remote = new Promise(resolve => { release = resolve; });
+    const pending = h.loadSnapshot();
+    await tick();
+    assert.equal(h.isBusy(), true);
+    await f.submit({ 'channel-name': 'Blocked', 'channel-id': 'blocked', 'channel-platform': 'twitch' });
+    assert.equal(f.saves.length, 0);
+    await f.windowEvent('pagehide');
+    release(snapshot('Too late,late,twitch\n', 'late'));
+    await assert.rejects(pending);
+    assert.equal(h.getSnapshot().channels[0].name, '美1');
+    assert.equal(h.canWrite(), false);
+    assert.equal(h.isBusy(), false);
+});
+
+test('health fresh-list auth failure revokes an expired GitHub token while preserving prior rows', async () => {
+    let fail = false;
+    const f = fixture({ health: true, read: async (_token, current) => {
+        if (fail) throw Object.assign(new Error('private details'), { status: 401 });
+        return current.remote;
+    } });
+    await f.ready(); await f.connect();
+    fail = true;
+    await assert.rejects(f.health.options.loadSnapshot());
+    assert.equal(f.health.options.canWrite(), false);
+    assert.equal(f.health.options.getSnapshot().channels.length, 2);
+    assert.equal(f.nodes['connection-badge'].textContent, '唯讀');
+});
+
+test('health deletion reports success only after explicit confirmation and a confirmed shared save', async () => {
+    const cancelled = fixture({ health: true, confirm: false }); await cancelled.ready(); await cancelled.connect();
+    assert.equal((await cancelled.health.options.runAction({ action: 'delete', previous: cancelled.health.options.getSnapshot().channels[0] })).ok, false);
+    assert.equal(cancelled.saves.length, 0);
+    const success = fixture({ health: true }); await success.ready(); await success.connect();
+    const previous = success.health.options.getSnapshot().channels[0];
+    assert.equal((await success.health.options.runAction({ action: 'delete', previous })).ok, true);
+    assert.equal(success.saves.length, 1);
+    assert.equal(success.saves[0].change.previous.id, previous.id);
+    assert.equal(success.health.options.getSnapshot().channels.length, 1);
+    const failed = fixture({ health: true, save: async () => { throw Object.assign(new Error('private server body'), { code: 'write_conflict' }); } });
+    await failed.ready(); await failed.connect();
+    assert.equal((await failed.health.options.runAction({ action: 'delete', previous: failed.health.options.getSnapshot().channels[0] })).ok, false);
+    assert.equal(failed.health.options.getSnapshot().channels.length, 2);
+    assert.equal(failed.publications.length, 0);
+});
 
 test('public browsing is read-only; tokens stay in memory and are cleared on disconnect and pagehide', async () => {
     const f = fixture({ hash: '#new' }); await f.ready();
