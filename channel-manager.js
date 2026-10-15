@@ -17,6 +17,9 @@
     const ids = ['connection-form', 'github-token', 'connect-button', 'disconnect-button', 'connection-state', 'connection-badge', 'repository-owner', 'repository-name', 'manager-status', 'new', 'channel-form', 'channel-fields', 'editor-heading', 'cancel-edit', 'channel-name', 'channel-platform', 'channel-id', 'channel-id-label', 'channel-id-help', 'goodgame-fields', 'channel-gg-username', 'save-channel', 'save-hint', 'refresh-channels', 'channel-count', 'channel-search', 'channel-list', 'empty-list', 'legacy-channels', 'legacy-summary', 'legacy-list', 'sync-sklive', 'sklive-hint', 'sklive-result', 'sklive-summary', 'sklive-additions'];
     const ui = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
     const state = { snapshot: null, token: '', busy: false, previous: null, readonlyFallback: false, client: null, localRaw: null, localSyncQueued: false, localSyncing: false, authGeneration: 0 };
+    let healthUI = null;
+    let healthScanner = null;
+    let healthScannerPromise = null;
     const config = globalThis.TV_CHANNEL_SYNC_CONFIG || {};
     if (config.owner) ui['repository-owner'].textContent = String(config.owner);
     if (config.repo) ui['repository-name'].textContent = String(config.repo);
@@ -71,6 +74,7 @@
         ui['connect-button'].textContent = state.token ? '更換連線' : '連線';
         ui['connection-state'].textContent = state.token ? '已連線 GitHub，變更會儲存到共用頻道清單。' : '可先查看頻道；輸入此程式庫的 GitHub 存取權杖後便可儲存。';
         document.body.setAttribute('aria-busy', String(busy));
+        if (healthUI) healthUI.refresh();
     }
 
     function make(tag, className, text) {
@@ -178,6 +182,7 @@
         state.snapshot = snapshot;
         state.readonlyFallback = fallback;
         render();
+        if (healthUI) healthUI.refresh();
     }
 
     async function readLocal() {
@@ -269,7 +274,7 @@
     }
 
     async function save(change, clearEditor = true) {
-        if (state.busy || !canSave()) return;
+        if (state.busy || !canSave()) return false;
         const before = state.snapshot;
         lock(true);
         message('正在儲存共用清單…');
@@ -280,8 +285,60 @@
             try { published = ChannelList.publishSharedSnapshot(localStorage, saved.raw, before.raw, [saved.baseRaw]) !== false; } catch (_) { published = false; }
             if (clearEditor || (change.action === 'delete' && state.previous && ChannelList.channelKey(state.previous) === ChannelList.channelKey(change.previous))) resetEditor();
             message(published ? '已儲存，共用頻道清單已更新。' : 'GitHub 已儲存。這個瀏覽器暫時未能同步預覽；網站部署後會更新。', published ? 'success' : 'warning');
-        } catch (error) { revokeIfUnauthorized(error); message(failure(error, 'save'), 'error'); }
+            return true;
+        } catch (error) { revokeIfUnauthorized(error); message(failure(error, 'save'), 'error'); return false; }
         finally { finishOperation(); }
+    }
+
+    function sameHealthRecord(left, right) {
+        return Boolean(left && right && ['name', 'id', 'platform', 'ggUsername'].every(field => (left[field] || '') === (right[field] || '')));
+    }
+
+    async function getHealthScanner() {
+        if (!healthScannerPromise) healthScannerPromise = (async () => {
+            let seed = null;
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 6000);
+            try {
+                const response = await fetch('./channel-validation.json', { signal: controller.signal, cache: 'no-store', credentials: 'omit' });
+                if (response.ok) seed = await response.json();
+            } catch (_) { /* Fresh checks still work without the older account-ID snapshot. */ }
+            finally { clearTimeout(timer); }
+            let storage;
+            try { storage = localStorage; } catch (_) { /* In-memory results remain available. */ }
+            healthScanner = ChannelHealth.createScanner({ fetcher: fetch, storage, seed });
+            return healthScanner;
+        })();
+        return healthScannerPromise;
+    }
+
+    function healthSnapshot() {
+        return state.snapshot ? { ...state.snapshot, channels: state.snapshot.channels.map(channel => ({ ...channel })) } : null;
+    }
+
+    async function runHealthAction(change) {
+        if (state.busy || !canSave() || !change || !['edit', 'delete'].includes(change.action)) return { ok: false };
+        const key = ChannelList.channelKey(change.previous);
+        const current = state.snapshot.channels.find(channel => ChannelList.channelKey(channel) === key);
+        if (!sameHealthRecord(current, change.previous)) {
+            message('這個頻道已被修改或移除，請重查後再決定。', 'warning');
+            return { ok: false };
+        }
+        if (change.action === 'edit') {
+            edit(current);
+            if (change.channel) {
+                const proposed = ChannelList.normalizeChannel({ ...current, id: change.channel.id || current.id, platform: change.channel.platform || current.platform });
+                if (proposed) {
+                    ui['channel-id'].value = proposed.id;
+                    ui['channel-platform'].value = proposed.platform;
+                    platformFields();
+                }
+            }
+            message('已開啟入口編輯；檢查資料後按儲存才會更新共用清單。');
+            return { ok: true, opened: true };
+        }
+        if (!window.confirm('確認刪除「' + current.name + '」的 ' + (PLATFORMS[current.platform]?.label || current.platform) + ' 入口？\n\n核查結果只是線索。刪除會更新所有人的共用清單，Git 歷史仍可復原。')) return { ok: false };
+        return { ok: await save({ action: 'delete', previous: current }, false) };
     }
 
     function showSKLiveResult(report, additions, saved) {
@@ -346,6 +403,30 @@
     });
     resetEditor();
     try { state.client = ChannelSync.createClient(config); } catch (_) { /* The fallback remains readable. */ }
+    if (typeof ChannelHealthUI !== 'undefined' && typeof ChannelHealth !== 'undefined') {
+        healthUI = ChannelHealthUI.createUI({ document, getSnapshot: healthSnapshot, canWrite: canSave, isBusy: () => state.busy, runAction: runHealthAction, onMessage: message,
+            loadSnapshot: async () => {
+                if (state.busy || !state.client) throw new Error('Shared list busy');
+                const generation = state.authGeneration;
+                lock(true);
+                try {
+                    const snapshot = await state.client.read(state.token);
+                    if (generation !== state.authGeneration) throw new Error('Shared list changed');
+                    accept(snapshot);
+                    return healthSnapshot();
+                } catch (error) {
+                    if (generation === state.authGeneration) revokeIfUnauthorized(error);
+                    throw error;
+                } finally { finishOperation(); }
+            },
+            scanner: {
+                scan: async (...args) => (await getHealthScanner()).scan(...args),
+                check: async (...args) => (await getHealthScanner()).check(...args),
+                history: channel => healthScanner ? healthScanner.history(channel) : [],
+                recordDecision: async (...args) => (await getHealthScanner()).recordDecision(...args)
+            }
+        });
+    }
     ui['channel-platform'].addEventListener('change', platformFields);
     ui['cancel-edit'].addEventListener('click', resetEditor);
     ui['channel-search'].addEventListener('input', render);
@@ -390,7 +471,7 @@
         lock(false);
         message('已中斷連線；仍可查看共用頻道。');
     });
-    window.addEventListener('pagehide', () => { state.authGeneration++; state.token = ''; ui['github-token'].value = ''; message('連線已中斷；如需儲存，請重新輸入權杖。'); });
+    window.addEventListener('pagehide', () => { if (healthUI) healthUI.cancel(); state.authGeneration++; state.token = ''; ui['github-token'].value = ''; message('連線已中斷；如需儲存，請重新輸入權杖。'); });
     window.addEventListener('pageshow', event => { if (event.persisted) lock(state.busy); });
     window.addEventListener('hashchange', () => { if (location.hash === '#new') { resetEditor(); focusEditor(); } });
     window.addEventListener('focus', syncLocal);

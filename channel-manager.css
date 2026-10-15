@@ -47,6 +47,26 @@ summary { cursor: pointer; font-weight: 600; }
 .sklive-result { margin-top: 15px; padding-top: 13px; border-top: 1px solid #edf0e9; }
 .sklive-additions { margin: 8px 0 0; padding-left: 20px; font-size: 13px; color: #54634f; overflow-wrap: anywhere; }
 .sklive-additions:empty { display: none; }
+.health-card { scroll-margin-top: 18px; }
+.health-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 15px; }
+.health-toolbar select { width: auto; max-width: 100%; margin-left: auto; }
+.health-results { margin: 12px 0 0; padding: 0; list-style: none; }
+.health-row { padding: 15px 0; border-top: 1px solid #e6ebe3; }
+.health-row-header, .health-row-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.health-row-header { justify-content: space-between; }
+.health-name { font-size: 15px; overflow-wrap: anywhere; min-width: 0; }
+.health-row p { margin-top: 6px; overflow-wrap: anywhere; }
+.health-row .row-actions { flex-wrap: wrap; margin-top: 10px; }
+.health-row .row-actions button { padding: 7px 10px; font-size: 12px; }
+.health-row details { margin-top: 10px; font-size: 12px; }
+.health-row details > div, .health-row details > ul { margin-top: 8px; }
+.health-row ul { padding-left: 20px; overflow-wrap: anywhere; }
+.health-row li + li { margin-top: 7px; }
+.health-live, .health-offline, .health-exists { color: #267644; background: #e6f5e9; }
+.health-suspect, .health-repair, .health-ended { color: #93601f; background: #fff1d8; }
+.health-unknown, .health-pending { color: #68746a; background: #eef1ec; }
+.health-evidence-summary, .health-history, .health-checked-at { font-size: 12px; color: #65735f; }
+.health-stale { color: #a06b26; font-size: 12px; }
 fieldset { padding: 0; margin: 0; border: 0; min-width: 0; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .wide { grid-column: 1 / -1; }

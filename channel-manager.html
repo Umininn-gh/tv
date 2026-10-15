@@ -4,14 +4,17 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="referrer" content="no-referrer">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://api.github.com https://young-cloud-e59f.chicktv001.workers.dev https://wispy-sound-ef1a.for-api.workers.dev; img-src 'self' data:; form-action 'none'; base-uri 'self'; object-src 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://api.github.com https://api.twitch.tv https://gosh.chicktv02.workers.dev https://tencentplaybusiness.gztv.com https://young-cloud-e59f.chicktv001.workers.dev https://wispy-sound-ef1a.for-api.workers.dev; img-src 'self' data:; form-action 'none'; base-uri 'self'; object-src 'none'">
     <title>共用頻道管理</title>
-    <link rel="stylesheet" href="./channel-manager.css">
+    <link rel="stylesheet" href="./channel-manager.css?v=20261016-health-review">
     <script src="./channel-list.js" defer></script>
     <script src="./channel-sync-config.js" defer></script>
     <script src="./channel-sync.js?v=20261016-sklive-add-only" defer></script>
     <script src="./sklive-import.js?v=20261016-sklive-add-only" defer></script>
-    <script src="./channel-manager.js?v=20261016-sklive-add-only" defer></script>
+    <script src="./channel-health-platforms.js?v=20261016-health-review" defer></script>
+    <script src="./channel-health.js?v=20261016-health-review" defer></script>
+    <script src="./channel-health-ui.js?v=20261016-health-review" defer></script>
+    <script src="./channel-manager.js?v=20261016-health-review" defer></script>
 </head>
 <body>
     <header class="page-header">
@@ -45,6 +48,22 @@
         </section>
 
         <p id="manager-status" class="status" role="status" aria-live="polite">正在載入共用頻道…</p>
+
+        <section id="health" class="card health-card" aria-labelledby="health-heading">
+            <div class="section-heading"><h2 id="health-heading">疑似失效台檢查</h2><span class="badge muted-badge">人工審核</span></div>
+            <p class="secondary">掃描全部現有台，分開核對帳戶、入口和直播狀態，列出證據與原因。沒有任何自動刪台；查詢失敗及離線會另外標示。</p>
+            <div class="health-toolbar">
+                <button id="health-start" class="primary" type="button">掃描全部現有台</button>
+                <button id="health-cancel" class="subtle" type="button" hidden>停止掃描</button>
+                <label class="sr-only" for="health-filter">篩選檢查結果</label>
+                <select id="health-filter" aria-label="篩選檢查結果"><option value="all">全部結果</option><option value="attention">需要審核</option><option value="normal">有效／離線</option><option value="unknown">資料不足</option></select>
+            </div>
+            <p id="health-progress" class="status" role="status" aria-live="polite">可先掃描；連線 GitHub 後才可儲存入口修改或刪除。</p>
+            <p id="health-summary" class="secondary"></p>
+            <p class="hint">可直接掃描、保留標記及重查；要修改入口或刪除，請先在上方連線 GitHub。</p>
+            <ul id="health-results" class="health-results" aria-label="頻道核查結果"></ul>
+            <p class="hint">「保留」只記錄審核決定，下一次仍會檢查。歷次核查及審核標記保存在這個瀏覽器；修改與確認刪除才會更新共用清單。</p>
+        </section>
 
         <section id="sklive" class="card sklive-card" aria-labelledby="sklive-heading">
             <div class="section-heading"><h2 id="sklive-heading">從 SKLive 補台</h2><span class="badge connected-badge">只補漏台</span></div>
