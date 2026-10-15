@@ -37,7 +37,7 @@ g（廣州電視）,https://tencentplaybusiness.gztv.com/live/zonghes.m3u8,m3u8
 12345,12345,twitch
 A,alancml01,twitch
 朗子,arlongjaijai2025,twitch
-大波,dindinxd19,twitch
+肥癲,dindinxd19,twitch
 洗衫,laundrytoday,twitch
 伍公子,loui5ng,twitch
 987,ppkkkp,twitch
