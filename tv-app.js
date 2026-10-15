@@ -1565,8 +1565,16 @@ function updateIdPlaceholder() {
     idInput.placeholder = (p && p.idPlaceholder) ? p.idPlaceholder : '頻道ID / 影片ID / M3U8網址 / 完整Embed網址';
 }
 
-document.getElementById('addChannelBtn').onclick = () =>
-    showChannelManager('new');
+(function initChannelActions() {
+    const menu = document.getElementById('channel-actions');
+    if (!menu) return;
+    menu.addEventListener('change', () => {
+        const action = menu.value;
+        menu.value = '';
+        if (action === 'manage') showPopup();
+        else if (action === 'new' || action === 'channels') showChannelManager(action);
+    });
+})();
 
 document.getElementById('confirmAddChannel').onclick = async () => {
     const name = document.getElementById('modal-channel-name').value.trim();
@@ -1602,7 +1610,6 @@ document.getElementById('addChannelModal').addEventListener('click', (e) => {
     if (e.target.classList.contains('modal-mask')) document.getElementById('addChannelModal').classList.remove('active');
 });
 
-document.getElementById('delChannelBtn').onclick = () => showChannelManager('channels');
 document.getElementById('confirmDeleteChannels').onclick = confirmDeleteChannels;
 document.getElementById('cancelDeleteModal').onclick = closeDeleteModal;
 document.getElementById('deleteChannelModal')?.addEventListener('click', (e) => {

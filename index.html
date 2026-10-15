@@ -251,6 +251,19 @@
             line-height: 1;
         }
         #top-bar button { padding-top: 0; padding-bottom: 0; }
+        #channel-actions {
+            flex: 0 0 auto;
+            width: auto;
+            height: 18px;
+            min-height: 18px;
+            border-radius: 5px;
+            padding: 0 23px 0 10px;
+            font-size: .82rem;
+            line-height: 1;
+            background-color: var(--bg-1);
+            background-position: right 7px center;
+            background-size: 9px;
+        }
         #global-audio-feedback { max-width: 13em; overflow: hidden; text-overflow: ellipsis; font-size: 10px; }
         #global-audio-feedback[hidden] { display: none; }
         #top-bar .toggle-switch .slider { width: 25.5px; height: 15.5px; }
@@ -1180,9 +1193,12 @@
                     <span class="slider"></span>
                     <span class="toggle-label">隱藏離線</span>
                 </label>
-                <button onclick="showPopup()">🐓掛台</button>
-                <button id="addChannelBtn">➕ 加台</button>
-                <button id="delChannelBtn">🗑 del台</button>
+                <select id="channel-actions" aria-label="台務">
+                    <option value="" selected disabled hidden>台務</option>
+                    <option value="manage">掛台</option>
+                    <option value="new">加台</option>
+                    <option value="channels">del台</option>
+                </select>
                 <button id="logout-btn" type="button">登出</button>
                 <button id="more-channels-btn" onclick="toggleChannelSelection()">📺 看更台</button>
                 <button id="toggle-all-audio" type="button" aria-pressed="false" onclick="toggleAllAudio()" title="同步支援的播放器聲音；部分外站播放器會重新載入">🔇 全部靜音</button>
