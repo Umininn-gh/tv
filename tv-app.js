@@ -857,15 +857,30 @@ function pollCh1TxtForUpdates() {
     const scrollbar = document.getElementById('channel-scrollbar');
     if (!list || !scrollbar) return;
     let pending = false;
+    let drag = null;
+
+    function metrics() {
+        const width = list.clientWidth;
+        const maximum = Math.max(0, list.scrollWidth - width);
+        const thumb = Math.min(width, Math.max(24, width * width / Math.max(width, list.scrollWidth, 1)));
+        return { width, maximum, thumb };
+    }
+
+    function endDrag(event) {
+        if (!drag || event && event.pointerId !== drag.id) return;
+        const id = drag.id;
+        drag = null;
+        try { scrollbar.releasePointerCapture(id); } catch (_) {}
+    }
 
     function update() {
         pending = false;
-        const width = list.clientWidth;
-        const maximum = Math.max(0, list.scrollWidth - width);
+        const { width, maximum, thumb } = metrics();
+        if (drag && (width !== drag.width || maximum !== drag.maximum)) endDrag();
         scrollbar.max = String(maximum);
         scrollbar.value = String(Math.max(0, Math.min(maximum, list.scrollLeft)));
         scrollbar.disabled = width <= 0 || maximum <= 0;
-        scrollbar.style.setProperty('--channel-scroll-thumb', `${Math.min(width, Math.max(24, width * width / Math.max(width, list.scrollWidth, 1)))}px`);
+        scrollbar.style.setProperty('--channel-scroll-thumb', `${thumb}px`);
     }
 
     function schedule() {
@@ -874,6 +889,36 @@ function pollCh1TxtForUpdates() {
         requestAnimationFrame(update);
     }
 
+    // Treat the entire track as a relative drag surface. Cancel the native
+    // range press, which would otherwise jump the thumb to the pointer first.
+    scrollbar.addEventListener('pointerdown', event => {
+        if (scrollbar.disabled || event.button !== 0) return;
+        event.preventDefault();
+        if (drag || event.isPrimary === false) return;
+        const { width, maximum, thumb } = metrics();
+        if (width <= 0 || maximum <= 0) { schedule(); return; }
+        drag = { id: event.pointerId, x: event.clientX, width, maximum,
+            travel: Math.max(1, scrollbar.getBoundingClientRect().width - thumb) };
+        scrollbar.focus({ preventScroll: true });
+        try { scrollbar.setPointerCapture(event.pointerId); } catch (_) {}
+    });
+    document.addEventListener('pointermove', event => {
+        if (!drag || event.pointerId !== drag.id) return;
+        if (event.pointerType === 'mouse' && !(event.buttons & 1)) { endDrag(); return; }
+        const { width, maximum } = metrics();
+        if (width !== drag.width || maximum !== drag.maximum || scrollbar.disabled) { endDrag(); schedule(); return; }
+        event.preventDefault();
+        const delta = event.clientX - drag.x;
+        drag.x = event.clientX;
+        list.scrollLeft = Math.max(0, Math.min(maximum, list.scrollLeft + delta * maximum / drag.travel));
+        scrollbar.value = String(list.scrollLeft);
+    });
+    document.addEventListener('pointerup', endDrag);
+    document.addEventListener('pointercancel', endDrag);
+    scrollbar.addEventListener('lostpointercapture', endDrag);
+    window.addEventListener('blur', () => endDrag());
+    scrollbar.addEventListener('click', event => event.preventDefault());
+    // Pointer defaults are replaced above; native range keyboard input remains.
     scrollbar.addEventListener('input', () => { list.scrollLeft = Number(scrollbar.value); });
     list.addEventListener('scroll', schedule, { passive: true });
     document.getElementById('toggleNotLive')?.addEventListener('change', schedule);
