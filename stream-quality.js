@@ -128,6 +128,11 @@
         wrapper.dataset.streamQualityMode = 'loading';
         wrapper.dataset.streamQuality = 'auto';
         wrapper.dataset.streamPlaybackBlocked = 'false';
+        wrapper.dataset.streamPlaybackState = 'loading';
+
+        function setPlaybackState(state) {
+            wrapper.dataset.streamPlaybackState = state;
+        }
 
         function isMultiView() {
             try { return Boolean(options.isMultiView && options.isMultiView()); }
@@ -277,6 +282,7 @@
 
         function markPlaybackBlocked() {
             if (disposed) return;
+            setPlaybackState('blocked');
             playbackBlocked = true;
             cancelStartup();
             automaticResumeAttempted = true;
@@ -499,6 +505,7 @@
             wrapper.appendChild(fallback);
             wrapper.dataset.streamQualityMode = 'platform-auto';
             wrapper.dataset.streamQuality = 'auto';
+            setPlaybackState('unknown');
         }
 
         async function start() {
@@ -538,6 +545,10 @@
                 };
                 const onPlaying = () => {
                     if (disposed) return;
+                    // Only PLAYING confirms video output; play()/READY/ONLINE do
+                    // not. Keep recovery visible if a quality callback arrives
+                    // after the public state has already paused or ended.
+                    setPlaybackState(publicCall('getEnded') === true ? 'ended' : publicCall('isPaused') === true ? 'paused' : 'playing');
                     cancelStartup();
                     if (contextUnavailable()) { suspendContext(); return; }
                     if (contextSuspended || contextSettling) {
@@ -566,6 +577,9 @@
                 };
                 const onPause = () => {
                     if (disposed) return;
+                    // UI state still changes when the quality/context guards
+                    // deliberately preserve the existing playback intent.
+                    setPlaybackState('paused');
                     if (contextUnavailable()) {
                         suspendContext();
                         contextPauseObserved = true;
@@ -577,7 +591,9 @@
                     cancelStartup();
                     stopHealthChecks();
                 };
-                for (const [event, callback] of [[sdk.Player.READY, onReady], [sdk.Player.PLAYING, onPlaying], [sdk.Player.ONLINE, onOnline], [sdk.Player.PAUSE, onPause], [sdk.Player.PLAYBACK_BLOCKED, markPlaybackBlocked]]) {
+                const onOffline = () => { if (!disposed) setPlaybackState('offline'); };
+                const onEnded = () => { if (!disposed) setPlaybackState('ended'); };
+                for (const [event, callback] of [[sdk.Player.READY, onReady], [sdk.Player.PLAYING, onPlaying], [sdk.Player.ONLINE, onOnline], [sdk.Player.PAUSE, onPause], [sdk.Player.PLAYBACK_BLOCKED, markPlaybackBlocked], [sdk.Player.OFFLINE, onOffline], [sdk.Player.ENDED, onEnded]]) {
                     if (event && typeof player.addEventListener === 'function') {
                         player.addEventListener(event, callback);
                         subscriptions.push([event, callback]);
@@ -610,6 +626,7 @@
             if (disposed || !ready || !player || fallback || !wrapper.isConnected || typeof player.play !== 'function') return false;
             const size = readPlayerSize();
             if (contextUnavailable(size)) return false;
+            setPlaybackState('recovering');
             if (contextTimer !== null) root.clearTimeout(contextTimer);
             contextTimer = null;
             contextSuspended = false;

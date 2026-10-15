@@ -406,6 +406,11 @@
             font-size: 11px;
             line-height: 1;
         }
+        .twitch-wrapper[data-stream-playback-state="playing"] .twitch-recover-button {
+            visibility: hidden;
+            pointer-events: none;
+            transition: none;
+        }
 
         /* 搬位操作層獨立於播放器，交換位置不會重載直播。 */
         #player-position-editor {

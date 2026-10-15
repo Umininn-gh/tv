@@ -264,6 +264,11 @@
             font-size: 11px;
             line-height: 1;
         }
+        .twitch-wrapper[data-stream-playback-state="playing"] .twitch-recover-button {
+            visibility: hidden;
+            pointer-events: none;
+            transition: none;
+        }
 
         #multi-stream-container {
             display: flex;
