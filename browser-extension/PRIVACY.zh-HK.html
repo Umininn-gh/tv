@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-HK">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>私隱政策 — Umininn TV 播放器控制</title>
+    <style>
+        :root { color-scheme: light dark; font-family: system-ui, sans-serif; line-height: 1.75; }
+        body { max-width: 48rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+        h1 { font-size: 1.6rem; line-height: 1.35; }
+        h2 { font-size: 1.15rem; margin-top: 1.8rem; }
+        .meta { opacity: .75; }
+        li { margin-block: .45rem; }
+        code { overflow-wrap: anywhere; }
+    </style>
+</head>
+<body>
+    <main>
+        <h1>Umininn TV 播放器控制：私隱政策</h1>
+        <p class="meta">適用版本：1.0.0<br>更新日期：2026 年 10 月 16 日</p>
+        <p>本政策只適用於「Umininn TV 播放器控制」瀏覽器擴充功能，說明它如何在本機處理播放控制所需資料。Umininn TV 網站及外部影片平台各自的資料處理，不屬於本政策範圍。</p>
+
+        <h2>用途及存取範圍</h2>
+        <p>擴充功能在獲授權的 Umininn TV 頁面加入音量、靜音及恢復播放控制，並顯示即時媒體狀態。正式版本只要求 Umininn TV 所在主機與指定 HTTPS 播放器主機的存取權，不要求所有網站的權限。</p>
+        <p>指定播放器主機包括 Twitch、Kick、OK.ru、YouTube／YouTube No-Cookie、AngelThump 及 GoodGame 的已列明來源。主機權限由瀏覽器授予；實際網站介面只在核准的 <code>/tv/</code>、<code>/tv/index.html</code> 及 <code>/tv/admin.html</code> 頁面啟動。</p>
+
+        <h2>在本機處理的資料</h2>
+        <ul>
+            <li>網站及播放器頁面 URL：短暫用於核對核准來源、目前分頁及播放器文件；從 iframe URL 取得平台／頻道標籤，供控制清單顯示。</li>
+            <li>媒體狀態：包括音量、靜音、暫停、播放、就緒及錯誤狀態，用於顯示及執行控制。</li>
+            <li>同一頁的全體靜音／開聲偏好：以布林值在網站與擴充功能介面之間同步，讓新增播放器沿用目前設定；只保留在記憶體。</li>
+            <li>瀏覽器分頁／框架識別碼及隨機控制令牌：用於將指令送到同一個核准網站分頁內的正確播放器，防止過期文件或其他來源控制播放器。</li>
+        </ul>
+        <p>這些資料及指令只在同一瀏覽器的擴充功能、網站介面與播放器框架之間短暫處理。它們不會傳送給開發者或外部資料接收服務，也不會寫入擴充功能儲存空間。重新載入網頁後，控制偏好需要重新調整。</p>
+
+        <h2>收集、儲存及對外傳送</h2>
+        <p>擴充功能沒有遙測、使用分析、廣告追蹤或外部資料接收服務，不向開發者或第三方傳送、出售或共享使用者資料，不持久保存上述資料。它不讀取登入密碼或 cookies，也不收集一般瀏覽紀錄。</p>
+        <p>所有程式碼及資源隨安裝包提供；擴充功能沒有自行向外傳送資料的網絡請求，不下載或執行遠端程式碼。Firefox 版本宣告不收集資料。</p>
+
+        <h2>網站與影片平台的連線</h2>
+        <p>開啟網站、登入網站、載入播放器及播放影片仍會產生網站與平台本身的網絡連線。按「恢復播放」亦可能令原播放器繼續載入媒體。這些服務可能按各自政策處理 IP 位址、cookies、帳戶及觀看資料；本擴充功能的本機處理聲明不代表這些服務沒有處理資料。</p>
+
+        <h2>你的控制</h2>
+        <p>你可以在瀏覽器的擴充功能管理頁撤回網站存取權、停用或移除擴充功能。撤回權限可能令控制列或個別播放器控制無法運作。擴充功能沒有伺服器帳戶或已儲存的個人資料可供匯出或刪除。</p>
+
+        <h2>更新與聯絡</h2>
+        <p>如果擴充功能的資料處理方式改變，維護者會隨版本更新本政策。對本擴充功能或本政策有疑問，可使用取得本擴充功能的商店頁面所列開發者聯絡方式；自行分發版本可向提供安裝包的維護者查詢。</p>
+    </main>
+</body>
+</html>

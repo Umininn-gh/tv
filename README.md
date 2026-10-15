@@ -2,6 +2,32 @@
 
 靜態 HTML / JavaScript 網站，可部署到 GitHub Pages 或 Cloudflare Pages。
 
+## 播放器控制 Userscript
+
+自用版改用單一可安裝腳本，Chrome、Edge、Firefox 共用 [umininn-tv-player.user.js](userscript/umininn-tv-player.user.js)。安裝 Tampermonkey 後新增腳本，貼入檔案完整內容並儲存，再重新整理網站。更新無須 Mozilla 簽署。安裝前停用舊的播放器控制擴充功能。
+
+首頁「台務 → userscript」會開啟簡單視窗，讀取這份腳本的完整內容，可按「複製」或在文字框內自行選取複製。
+
+保留全部／逐台音量、靜音、手動恢復，以及開始觀看後逐台偵測恢復。安裝、更新、權限與測試限制見 [Userscript 說明](userscript/README.zh-HK.md)。
+
+```powershell
+node tools/build-player-userscript.cjs
+node --test "tests/player-userscript-*.test.cjs" "tests/player-extension-*.test.cjs"
+```
+
+## 播放器控制擴充功能原始碼
+
+Chrome、Edge 及 Firefox 的播放器控制原始碼位於 `browser-extension/`。建立 1.0.0 發行套件：
+
+```powershell
+node --test "tests/player-extension-*.test.cjs"
+node tools/build-player-extension.cjs --release
+```
+
+輸出位於 `outputs/player-extension-release/`。Chrome／Edge ZIP 用於商店提交；Firefox 的 `firefox-unsigned.xpi` 須經 Mozilla 簽署後才可在普通版 Firefox 永久安裝。發佈、簽署及私隱說明見 [正式版說明](browser-extension/RELEASE.zh-HK.md)；原有本機載入方式見 [開發測試版說明](browser-extension/README.zh-HK.md)。
+
+擴充功能的全部靜音／開聲會同步通知網站保存本次頁面的聲音偏好，增減選台時沿用該選擇，避免保留中的播放器因偏好不一致而重載；不會持久儲存這個偏好。
+
 ## 首頁密碼登入
 
 - 首頁顯示登入畫面，密碼正確後才載入播放器、聊天室及頻道清單。

@@ -790,6 +790,16 @@ textarea:focus {
             return adminGlobalMuted === null ? false : adminGlobalMuted;
         }
 
+        function acceptAdminPlayerAudioPreference(event) {
+            const data = event.data;
+            if (event.source !== window || event.origin !== location.origin ||
+                !data || data.channel !== 'umininn-tv-player' || data.version !== 1 ||
+                data.type !== 'site:audio-preference' || typeof data.muted !== 'boolean') return;
+            adminGlobalMuted = data.muted;
+            adminPlayers.forEach(player => { player.muted = data.muted; });
+        }
+        if (typeof window !== 'undefined') window.addEventListener('message', acceptAdminPlayerAudioPreference);
+
         function updateAdminGlobalAudioButton() {
             const button = document.getElementById('toggle-all-audio');
             if (!button) return;

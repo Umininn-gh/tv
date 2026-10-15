@@ -1,0 +1,84 @@
+{
+  "manifest_version": 3,
+  "name": "Umininn TV 播放器控制（測試版）",
+  "version": "0.1.6",
+  "minimum_chrome_version": "109",
+  "description": "在 Umininn TV 控制已授權播放器的音量、靜音及恢復播放。本機測試版。",
+  "host_permissions": [
+    "https://umininn-gh.github.io/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "https://player.twitch.tv/*",
+    "https://player.kick.com/*",
+    "https://ok.ru/*",
+    "https://www.youtube.com/*",
+    "https://youtube.com/*",
+    "https://www.youtube-nocookie.com/*",
+    "https://youtube-nocookie.com/*",
+    "https://player.angelthump.com/*",
+    "https://goodgame.ru/*",
+    "https://player.goodgame.ru/*"
+  ],
+  "action": {
+    "default_title": "Umininn TV 播放器控制",
+    "default_popup": "popup.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'none'"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://umininn-gh.github.io/tv/",
+        "https://umininn-gh.github.io/tv/?*",
+        "https://umininn-gh.github.io/tv/index.html*",
+        "https://umininn-gh.github.io/tv/admin.html*",
+        "http://localhost/",
+        "http://localhost/?*",
+        "http://localhost/index.html*",
+        "http://localhost/admin.html*",
+        "http://localhost/work/extension-site-*.html*",
+        "http://127.0.0.1/",
+        "http://127.0.0.1/?*",
+        "http://127.0.0.1/index.html*",
+        "http://127.0.0.1/admin.html*",
+        "http://127.0.0.1/work/extension-site-*.html*"
+      ],
+      "js": [
+        "shared/config.js",
+        "shared/media-controller.js",
+        "shared/player-recovery.js",
+        "site-ui.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://player.twitch.tv/*",
+        "https://player.kick.com/*",
+        "https://ok.ru/*",
+        "https://www.youtube.com/*",
+        "https://youtube.com/*",
+        "https://www.youtube-nocookie.com/*",
+        "https://youtube-nocookie.com/*",
+        "https://player.angelthump.com/*",
+        "https://goodgame.ru/*",
+        "https://player.goodgame.ru/*",
+        "http://localhost/work/extension-media-*.html*",
+        "http://127.0.0.1/work/extension-media-*.html*"
+      ],
+      "js": [
+        "shared/config.js",
+        "shared/media-controller.js",
+        "shared/twitch-controller.js",
+        "frame-client.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

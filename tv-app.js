@@ -483,6 +483,18 @@ function getGlobalMuted(count = activePlayers.size) {
     return globalMutedPreference === null ? count > 1 : globalMutedPreference;
 }
 
+function acceptPlayerAudioPreference(event) {
+    const data = event.data;
+    if (event.source !== window || event.origin !== location.origin ||
+        !data || data.channel !== 'umininn-tv-player' || data.version !== 1 ||
+        data.type !== 'site:audio-preference' || typeof data.muted !== 'boolean') return;
+    // The extension has already applied audio in each authorized frame. Record
+    // only the preference so changing the selection cannot undo it or reload a frame.
+    globalMutedPreference = data.muted;
+    activePlayers.forEach(entry => { entry.muted = data.muted; });
+}
+if (typeof window !== 'undefined') window.addEventListener('message', acceptPlayerAudioPreference);
+
 function updateGlobalAudioButton() {
     const button = document.getElementById('toggle-all-audio');
     if (!button || button.tagName !== 'BUTTON') return;
@@ -1417,6 +1429,10 @@ function showChannelManager(section = '') {
     window.open('./channel-manager.html' + (section ? '#' + section : ''), 'umininn-channel-manager', 'width=800,height=800,noopener');
 }
 
+function showUserscript() {
+    window.open('./userscript/', 'umininn-userscript', 'width=860,height=680,noopener');
+}
+
 /* 隱藏離線開關 */
 (function initHideNotLiveToggle() {
     const toggle = document.getElementById('toggleNotLive');
@@ -1616,6 +1632,7 @@ function updateIdPlaceholder() {
         menu.value = '';
         if (action === 'manage') showPopup();
         else if (['new', 'channels', 'sklive', 'health'].includes(action)) showChannelManager(action);
+        else if (action === 'userscript') showUserscript();
     });
 })();
 

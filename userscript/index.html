@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <title>userscript · Umininn TV</title>
+    <link rel="stylesheet" href="./viewer.css">
+    <script src="./viewer.js" defer></script>
+</head>
+<body>
+    <main class="viewer">
+        <header class="viewer-header">
+            <h1>userscript</h1>
+            <button id="copy-userscript" type="button" disabled>複製全部</button>
+        </header>
+        <label for="userscript-source">umininn-tv-player.user.js</label>
+        <textarea id="userscript-source" readonly spellcheck="false" wrap="off"
+            autocapitalize="off" autocomplete="off" aria-busy="true"
+            placeholder="載入中…"></textarea>
+        <footer class="viewer-footer">
+            <p id="viewer-status" role="status" aria-live="polite" aria-atomic="true">正在載入腳本…</p>
+            <button id="retry-userscript" type="button" hidden>重新載入</button>
+        </footer>
+    </main>
+</body>
+</html>
