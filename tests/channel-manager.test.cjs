@@ -22,13 +22,24 @@ class Element {
 
 function snapshot(raw, sha = 'sha-one') { return { channels: ChannelList.parseChannelText(raw), raw, sha }; }
 const initialRaw = '美1,meidingdang,gosh\n大波,dindinxd19,twitch\n';
+const channel = (name, id, platform = 'gosh') => ({ name, id, platform });
+const sourceReport = (channels = [...snapshot(initialRaw).channels, channel('來源新台', 'new-source', 'kick')], extras = {}) => ({ received: channels.length, hidden: 0, channels, duplicates: [], skipped: [], ...extras });
+function compareChannels(existing, candidates) {
+    const keys = new Set(existing.map(ChannelList.channelKey));
+    const added = [];
+    for (const candidate of candidates) {
+        const key = ChannelList.channelKey(candidate);
+        if (!keys.has(key)) { keys.add(key); added.push(candidate); }
+    }
+    return { added };
+}
 
 function fixture(options = {}) {
     const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
     const nodes = Object.fromEntries(ids.map(id => [id, new Element()]));
     const body = new Element('body');
     const document = { body, hidden: false, getElementById: id => nodes[id], createElement: tag => new Element(tag), listeners: {}, addEventListener(name, listener) { (this.listeners[name] ||= []).push(listener); } };
-    const writes = [], data = new Map(), publications = [], reads = [], saves = [], windowListeners = {}, intervals = [];
+    const writes = [], data = new Map(), publications = [], reads = [], saves = [], batchAdds = [], sourceLoads = [], comparisons = [], windowListeners = {}, intervals = [];
     const storage = { getItem: key => data.get(key) ?? null, setItem(key, value) { data.set(key, String(value)); writes.push([key, value]); } };
     const current = { remote: snapshot(options.raw || initialRaw), local: snapshot(options.raw || initialRaw) };
     const client = {
@@ -44,6 +55,15 @@ function fixture(options = {}) {
             const raw = channels.map(channel => [channel.name, channel.id, channel.platform, ...(channel.ggUsername ? [channel.ggUsername] : [])].join(',')).join('\n') + '\n';
             current.remote = { channels, raw, sha: 'sha-saved', baseRaw: before.raw };
             return current.remote;
+        },
+        async addMissing(candidates, token) {
+            batchAdds.push({ candidates, token });
+            if (options.addMissing) return options.addMissing(candidates, token, current);
+            const latest = current.remote;
+            const { added } = compareChannels(latest.channels, candidates);
+            const raw = latest.raw + (added.length ? (latest.raw && !latest.raw.endsWith('\n') ? '\n' : '') + added.map(channel => [channel.name, channel.id, channel.platform, ...(channel.ggUsername ? [channel.ggUsername] : [])].join(',')).join('\n') + '\n' : '');
+            current.remote = { channels: [...latest.channels, ...added], raw, sha: added.length ? 'sha-batch' : latest.sha, baseRaw: latest.raw, added, unchanged: added.length === 0 };
+            return current.remote;
         }
     };
     const shared = { ...ChannelList,
@@ -51,14 +71,19 @@ function fixture(options = {}) {
         loadSharedChannels: async () => current.local,
         publishSharedSnapshot(_storage, raw, previousRaw, versions) { publications.push({ raw, previousRaw, versions }); return true; }
     };
+    const importer = {
+        async load(...args) { sourceLoads.push(args); return options.load ? options.load(...args) : options.report || sourceReport(); },
+        compare(existing, candidates) { comparisons.push({ existing, candidates }); return compareChannels(existing, candidates); }
+    };
+    const fetcher = async () => ({ ok: true, text: async () => options.raw || initialRaw });
     const context = vm.createContext({ document, localStorage: storage, ChannelList: shared, ChannelSync: { createClient: () => client }, TV_CHANNEL_SYNC_CONFIG: { owner: 'Umininn-gh', repo: 'tv' },
-        fetch: async () => ({ ok: true, text: async () => options.raw || initialRaw }), location: { hash: options.hash || '' }, URL,
+        SKLiveImport: importer, fetch: fetcher, location: { hash: options.hash || '' }, URL,
         setInterval(callback, delay) { intervals.push({ callback, delay }); },
         window: { confirm: () => options.confirm !== false, addEventListener(name, listener) { (windowListeners[name] ||= []).push(listener); } }
     });
     vm.runInContext(source, context);
     const ready = async () => { await tick(); await tick(); };
-    return { nodes, current, reads, saves, writes, data, storage, publications, windowListeners, document, intervals, ready,
+    return { nodes, current, reads, saves, batchAdds, sourceLoads, comparisons, fetcher, writes, data, storage, publications, windowListeners, document, intervals, ready,
         async connect(token = 'github_test_secret') { nodes['github-token'].value = token; await nodes['connection-form'].dispatch('submit'); },
         async submit(values) { for (const [name, value] of Object.entries(values)) nodes[name].value = value; await nodes['channel-form'].dispatch('submit'); },
         async windowEvent(name, event = {}) { await Promise.all((windowListeners[name] || []).map(listener => listener(event))); await ready(); }
@@ -203,4 +228,211 @@ test('cancelled deletion and repeated submit during an in-flight write cannot cr
     release(snapshot(initialRaw + 'New,new,kick\n', 'new-sha')); await saving; await f.ready();
     assert.equal(f.publications.length, 1);
     assert.equal(f.nodes['save-channel'].disabled, false);
+});
+
+test('SKLive button previews against a fresh public GitHub read without writing or sending the token to the importer', async () => {
+    const report = sourceReport([...snapshot(initialRaw).channels, channel('來源新台', 'new-source', 'kick'), channel('真正漏台', 'still-missing')]);
+    const f = fixture({ report }); await f.ready();
+    f.current.remote = snapshot(initialRaw + '別人先加入,new-source,kick\n', 'sha-current');
+    f.nodes['channel-name'].value = '未儲存草稿';
+    await f.nodes['sync-sklive'].dispatch('click');
+    assert.deepEqual(f.reads, ['', '']);
+    assert.equal(f.batchAdds.length, 0);
+    assert.equal(f.saves.length, 0);
+    assert.equal(f.publications.length, 0);
+    assert.equal(f.nodes['channel-list'].children.length, 3, 'preview accepts the newest shared snapshot');
+    assert.equal(f.nodes['sklive-additions'].children.length, 1);
+    assert.match(f.nodes['sklive-additions'].children[0].textContent, /真正漏台/);
+    assert.match(f.nodes['manager-status'].textContent, /找到 1 個漏台.*連線 GitHub/);
+    assert.equal(f.nodes['manager-status'].className, 'status warning');
+    assert.equal(f.nodes['channel-name'].value, '未儲存草稿');
+    assert.equal(f.nodes['save-channel'].disabled, true);
+    assert.equal(f.sourceLoads.length, 1);
+    assert.equal(f.sourceLoads[0].length, 1);
+    assert.equal(f.sourceLoads[0][0], f.fetcher, 'the importer receives only the fetch function');
+    assert.equal(f.comparisons[0].existing, f.current.remote.channels);
+});
+
+test('connected SKLive sync makes one batch call and publishes only after confirmed success, preserving the draft', async () => {
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const report = sourceReport([...snapshot(initialRaw).channels, channel('新台 A', 'new-a', 'kick'), channel('新台 B', 'new-b')]);
+    const f = fixture({ report, addMissing: () => pending }); await f.ready(); await f.connect();
+    await button(f.nodes['channel-list'].children[0], '編輯').dispatch('click');
+    f.nodes['channel-name'].value = '保留我的草稿';
+    const syncing = f.nodes['sync-sklive'].dispatch('click'); await tick();
+    assert.equal(f.batchAdds.length, 1);
+    assert.equal(f.batchAdds[0].candidates, report.channels);
+    assert.equal(f.batchAdds[0].token, 'github_test_secret');
+    assert.equal(f.saves.length, 0);
+    assert.equal(f.publications.length, 0);
+    assert.equal(f.nodes['channel-list'].children.length, 2, 'unconfirmed writes must not change the list');
+    assert.equal(f.nodes['sync-sklive'].disabled, true);
+    await f.nodes['sync-sklive'].dispatch('click');
+    await f.nodes['channel-form'].dispatch('submit');
+    assert.equal(f.sourceLoads.length, 1);
+    assert.equal(f.batchAdds.length, 1);
+    assert.equal(f.saves.length, 0);
+    const baseRaw = initialRaw + '別人同時加入,unrelated,twitch\n';
+    const raw = baseRaw + '新台 A,new-a,kick\n新台 B,new-b,gosh\n';
+    release({ ...snapshot(raw, 'sha-confirmed'), baseRaw, added: report.channels.slice(2), unchanged: false });
+    await syncing;
+    assert.equal(f.nodes['channel-list'].children.length, 5);
+    assert.equal(f.publications.length, 1);
+    assert.equal(f.publications[0].raw, raw);
+    assert.equal(f.publications[0].previousRaw, initialRaw);
+    assert.deepEqual(Array.from(f.publications[0].versions), [baseRaw]);
+    assert.equal(f.nodes['channel-name'].value, '保留我的草稿');
+    assert.equal(f.nodes['channel-id'].value, 'meidingdang');
+    assert.match(f.nodes['manager-status'].textContent, /已補回 2 台/);
+    assert.equal(f.nodes['sync-sklive'].disabled, false);
+    assert.equal(f.sourceLoads[0].length, 1);
+    assert.equal(f.sourceLoads[0][0], f.fetcher);
+    assert.equal(JSON.stringify(f.nodes).includes('github_test_secret'), false);
+    assert.equal(JSON.stringify(f.writes).includes('github_test_secret'), false);
+});
+
+test('connected SKLive no-op refreshes the latest rows but does not publish a browser update', async () => {
+    const f = fixture({ report: sourceReport(snapshot(initialRaw).channels) }); await f.ready(); await f.connect();
+    f.current.remote = snapshot('我的自訂名,meidingdang,gosh\n大波,dindinxd19,twitch\n', 'sha-new');
+    await f.nodes['sync-sklive'].dispatch('click');
+    assert.equal(f.batchAdds.length, 1);
+    assert.equal(f.publications.length, 0);
+    assert.equal(f.nodes['sklive-additions'].children.length, 0);
+    assert.match(f.nodes['channel-list'].children[0].children[0].children[0].textContent, /我的自訂名/);
+    assert.match(f.nodes['manager-status'].textContent, /沒有修改清單/);
+    assert.equal(f.nodes['manager-status'].className, 'status success');
+});
+
+test('SKLive source failure preserves rows, draft and GitHub authentication without echoing errors or making writes', async () => {
+    let failSource = true;
+    const f = fixture({ load: async () => {
+        if (failSource) { const error = new Error('Authorization: Bearer github_test_secret'); error.status = 401; throw error; }
+        return sourceReport();
+    } }); await f.ready(); await f.connect();
+    f.nodes['channel-name'].value = '來源失敗仍保留';
+    f.nodes['channel-id'].value = 'draft-id';
+    const rows = f.nodes['channel-list'].children;
+    const previousReads = f.reads.length;
+    await f.nodes['sync-sklive'].dispatch('click');
+    assert.equal(f.batchAdds.length, 0);
+    assert.equal(f.saves.length, 0);
+    assert.equal(f.reads.length, previousReads, 'source failures do not start a GitHub operation');
+    assert.equal(f.publications.length, 0);
+    assert.equal(f.nodes['channel-list'].children, rows);
+    assert.equal(f.nodes['channel-name'].value, '來源失敗仍保留');
+    assert.equal(f.nodes['channel-id'].value, 'draft-id');
+    assert.equal(f.nodes['save-channel'].disabled, false, 'a source HTTP error cannot revoke GitHub credentials');
+    assert.match(f.nodes['manager-status'].textContent, /SKLive.*沒有新增或刪除/);
+    assert.equal(JSON.stringify(f.nodes).includes('github_test_secret'), false);
+    assert.equal(JSON.stringify(f.writes).includes('github_test_secret'), false);
+    failSource = false;
+    await f.nodes['sync-sklive'].dispatch('click');
+    assert.equal(f.batchAdds.length, 1);
+    assert.equal(f.batchAdds[0].token, 'github_test_secret');
+    assert.equal(f.publications.length, 1);
+});
+
+test('SKLive GitHub write failures preserve rows and draft, revoking only unauthorized GitHub credentials', async () => {
+    for (const [status, code, revoked] of [[401, 'auth', true], [403, 'permission', true], [403, 'rate_limit', false], [500, 'http', false]]) {
+        const f = fixture({ addMissing: async () => { const error = new Error('github_test_secret'); error.status = status; error.code = code; throw error; } });
+        await f.ready(); await f.connect();
+        f.nodes['channel-name'].value = 'GitHub 失敗草稿';
+        f.nodes['channel-id'].value = 'draft-id';
+        const rows = f.nodes['channel-list'].children;
+        await f.nodes['sync-sklive'].dispatch('click');
+        assert.equal(f.batchAdds.length, 1);
+        assert.equal(f.saves.length, 0);
+        assert.equal(f.publications.length, 0);
+        assert.equal(f.nodes['channel-list'].children, rows);
+        assert.equal(f.nodes['channel-name'].value, 'GitHub 失敗草稿');
+        assert.equal(f.nodes['channel-id'].value, 'draft-id');
+        assert.equal(f.nodes['save-channel'].disabled, revoked);
+        assert.equal(f.nodes['connection-badge'].textContent, revoked ? '唯讀' : '已連線');
+        assert.equal(f.nodes['manager-status'].className, 'status error');
+        assert.equal(JSON.stringify(f.nodes).includes('github_test_secret'), false);
+        assert.equal(JSON.stringify(f.writes).includes('github_test_secret'), false);
+    }
+});
+
+test('SKLive readonly GitHub read failure retains the previous rows and unsaved draft', async () => {
+    let failRead = false;
+    const f = fixture({ read: async (_token, current) => { if (failRead) { const error = new Error('private upstream details'); error.status = 500; throw error; } return current.remote; } });
+    await f.ready();
+    f.nodes['channel-name'].value = '唯讀草稿';
+    const rows = f.nodes['channel-list'].children;
+    failRead = true;
+    await f.nodes['sync-sklive'].dispatch('click');
+    assert.equal(f.nodes['channel-list'].children, rows);
+    assert.equal(f.nodes['channel-name'].value, '唯讀草稿');
+    assert.equal(f.batchAdds.length, 0);
+    assert.equal(f.publications.length, 0);
+    assert.equal(f.nodes['sklive-result'].hidden, true);
+    assert.equal(f.nodes['manager-status'].textContent.includes('private upstream details'), false);
+});
+
+test('pagehide while SKLive source is pending prevents a later GitHub write and repeated clicks stay coalesced', async () => {
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const f = fixture({ load: () => pending }); await f.ready(); await f.connect();
+    f.nodes['channel-name'].value = '離開後的草稿';
+    const syncing = f.nodes['sync-sklive'].dispatch('click'); await tick();
+    await f.nodes['sync-sklive'].dispatch('click');
+    assert.equal(f.sourceLoads.length, 1);
+    assert.equal(f.batchAdds.length, 0);
+    await f.windowEvent('pagehide');
+    release(sourceReport()); await syncing;
+    await f.windowEvent('pageshow', { persisted: true });
+    assert.equal(f.batchAdds.length, 0);
+    assert.equal(f.reads.length, 2, 'late source success must not start any GitHub request');
+    assert.equal(f.saves.length, 0);
+    assert.equal(f.publications.length, 0);
+    assert.equal(f.nodes['channel-list'].children.length, 2);
+    assert.equal(f.nodes['channel-name'].value, '離開後的草稿');
+    assert.equal(f.nodes['save-channel'].disabled, true);
+    assert.equal(f.nodes['connection-badge'].textContent, '唯讀');
+    assert.equal(JSON.stringify(f.nodes).includes('github_test_secret'), false);
+});
+
+test('unrecognized SKLive rows are clearly incomplete instead of claiming all source channels are included', async () => {
+    const f = fixture({ report: sourceReport(snapshot(initialRaw).channels, { received: 4, hidden: 1, duplicates: [{ index: 2 }], skipped: [{ index: 3, reason: 'unsupported' }] }) });
+    await f.ready();
+    await f.nodes['sync-sklive'].dispatch('click');
+    assert.match(f.nodes['sklive-summary'].textContent, /來源共 4 筆.*1 筆標記隱藏/);
+    assert.match(f.nodes['sklive-summary'].textContent, /合併 1 筆重複/);
+    assert.match(f.nodes['sklive-summary'].textContent, /1 筆未能識別/);
+    assert.doesNotMatch(f.nodes['sklive-summary'].textContent, /全部包括|沒有漏台/);
+    assert.doesNotMatch(f.nodes['manager-status'].textContent, /全部已包括/);
+    assert.equal(f.nodes['manager-status'].className, 'status warning');
+    assert.equal(f.publications.length, 0);
+});
+
+test('all-unrecognized SKLive input warns without any GitHub operation and preserves the draft in both connection modes', async () => {
+    for (const connected of [false, true]) {
+        const report = sourceReport([], { received: 2, hidden: 1, skipped: [{ index: 0, reason: 'unsupported' }, { index: 1, reason: 'unsupported' }] });
+        const f = fixture({ report }); await f.ready();
+        if (connected) await f.connect();
+        f.nodes['channel-name'].value = '所有來源未知仍保留';
+        f.nodes['channel-id'].value = 'draft-id';
+        const rows = f.nodes['channel-list'].children;
+        const reads = f.reads.length;
+        await f.nodes['sync-sklive'].dispatch('click');
+        assert.equal(f.reads.length, reads, 'all-unrecognized input must not start a GitHub read');
+        assert.equal(f.batchAdds.length, 0);
+        assert.equal(f.saves.length, 0);
+        assert.equal(f.publications.length, 0);
+        assert.equal(f.comparisons.length, 0);
+        assert.equal(f.nodes['channel-list'].children, rows);
+        assert.equal(f.nodes['channel-name'].value, '所有來源未知仍保留');
+        assert.equal(f.nodes['channel-id'].value, 'draft-id');
+        assert.equal(f.nodes['sklive-result'].hidden, false);
+        assert.equal(f.nodes['sklive-additions'].children.length, 0);
+        assert.match(f.nodes['sklive-summary'].textContent, /沒有可識別的入口/);
+        assert.match(f.nodes['manager-status'].textContent, /沒有可識別的入口.*沒有修改清單/);
+        assert.doesNotMatch(f.nodes['sklive-summary'].textContent, /全部包括|沒有漏台/);
+        assert.doesNotMatch(f.nodes['manager-status'].textContent, /全部已包括/);
+        assert.equal(f.nodes['manager-status'].className, 'status warning');
+        assert.equal(f.nodes['sync-sklive'].disabled, false);
+        assert.equal(f.nodes['save-channel'].disabled, !connected);
+    }
 });

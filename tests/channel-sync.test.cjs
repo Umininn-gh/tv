@@ -223,3 +223,144 @@ test('invalid token, stale snapshot and invalid configuration fail before any re
         assert.throws(() => ChannelSync.createClient({ ...config, ...changed }, remote.fetch), error => error.code === 'configuration');
     }
 });
+
+test('addMissing appends public fields in one commit and preserves existing rows and metadata verbatim', async () => {
+    const raw = '# 手動排序\r\n我的名稱,Godzilla_2027,gosh\r\nGoodGame,123,goodgame,Public_User';
+    const candidates = [
+        channel('來源名稱', 'GODZILLA_2027'),
+        { ...channel('來源 GG', '123', 'goodgame'), ggUsername: 'Other_User' },
+        { ...channel('新台 📺', 'NEW'), password: 'private-password', token: 'private-token', _fromAPI: true },
+        { ...channel('新 GG', '456', 'goodgame'), ggUsername: 'New_Public', privateId: 'private-id' }
+    ];
+    const before = structuredClone(candidates);
+    const remote = server([file(raw, 'sha-latest'), stored()]);
+    const saved = await ChannelSync.createClient(config, remote.fetch).addMissing(candidates, 'test-token');
+    assert.deepEqual(candidates, before);
+    assert.equal(saved.raw, raw + '\n新台 📺,new,gosh\n新 GG,456,goodgame,New_Public\n');
+    assert.deepEqual(saved.channels.slice(0, 2), [channel('我的名稱', 'godzilla_2027'), { ...channel('GoodGame', '123', 'goodgame'), ggUsername: 'Public_User' }]);
+    assert.deepEqual(saved.added, [channel('新台 📺', 'new'), { ...channel('新 GG', '456', 'goodgame'), ggUsername: 'New_Public' }]);
+    assert.equal(saved.unchanged, false);
+    assert.equal(saved.baseRaw, raw);
+    assert.equal(saved.sha, 'sha-saved');
+    assert.equal(saved.commit.sha, 'commit-sha');
+    assert.deepEqual(remote.requests.map(request => request.method), ['GET', 'PUT']);
+    assert.equal(remote.requests[1].payload.sha, 'sha-latest');
+    assert.equal(remote.requests[1].payload.branch, 'main');
+    assert.equal(Buffer.from(remote.requests[1].payload.content, 'base64').toString('utf8'), saved.raw);
+    for (const request of remote.requests) {
+        assert.ok(request.url.startsWith('https://api.github.com/repos/Umininn-gh/tv/contents/ch1.txt'));
+        assert.equal(request.headers.Authorization, 'Bearer test-token');
+        assert.equal(request.credentials, 'omit');
+        assert.equal(request.redirect, 'error');
+    }
+    assert.ok(!JSON.stringify(saved).includes('private-'));
+    assert.ok(!JSON.stringify(saved).includes('test-token'));
+    assert.ok(!JSON.stringify(remote.requests[1].payload).includes('test-token'));
+});
+
+test('addMissing returns the exact latest snapshot with no PUT when nothing is missing', async () => {
+    const raw = '# 最新清單\r\n自訂名,Godzilla_2027,gosh\r\n自訂 Twitch,DINDINXD19,twitch';
+    for (const candidates of [[], [channel('來源名', 'GODZILLA_2027'), channel('來源名二', 'https://www.twitch.tv/DindinXD19', 'twitch')]]) {
+        const remote = server([file(raw, 'sha-latest')]);
+        const result = await ChannelSync.createClient(config, remote.fetch).addMissing(candidates, 'test-token');
+        assert.equal(result.raw, raw);
+        assert.equal(result.baseRaw, raw);
+        assert.equal(result.sha, 'sha-latest');
+        assert.deepEqual(result.added, []);
+        assert.equal(result.unchanged, true);
+        assert.equal(result.commit, undefined);
+        assert.deepEqual(result.channels, ChannelSync.parseChannelText(raw));
+        assert.deepEqual(remote.requests.map(request => request.method), ['GET']);
+    }
+});
+
+test('addMissing deduplicates canonical candidate identities while keeping cross-platform and distinct IDs', async () => {
+    const remote = server([file(''), stored()]);
+    const saved = await ChannelSync.createClient(config, remote.fetch).addMissing([
+        channel('先出現', 'https://www.twitch.tv/Some_User', 'twitch'),
+        channel('後出現', 'SOME_USER', 'twitch'),
+        channel('同名', 'some_user', 'kick'),
+        channel('同名', 'other_user', 'kick'),
+        channel('HLS', 'https://example.com/Live.m3u8?Key=AbC', 'm3u8'),
+        channel('舊核查不應排除新加入', 'no25no2501', 'twitch')
+    ], 'test-token');
+    assert.deepEqual(saved.added, [
+        channel('先出現', 'some_user', 'twitch'),
+        channel('同名', 'some_user', 'kick'),
+        channel('同名', 'other_user', 'kick'),
+        channel('HLS', 'https://example.com/Live.m3u8?Key=AbC', 'm3u8'),
+        channel('舊核查不應排除新加入', 'no25no2501', 'twitch')
+    ]);
+    assert.deepEqual(ChannelSync.parseChannelText(saved.raw), saved.channels);
+    assert.equal(remote.requests.filter(request => request.method === 'PUT').length, 1);
+});
+
+test('addMissing recomputes missing rows after a SHA conflict, retaining concurrent edits, additions and unrelated deletions', async () => {
+    const beforeRaw = '原名,existing,gosh\n稍後刪除,removed,twitch\n';
+    const latestRaw = '別人改名,existing,gosh\n別人先加,new_a,kick\n其他人新增,unrelated,twitch\n';
+    const remote = server([file(beforeRaw), response(409, {}), file(latestRaw, 'sha-current'), stored('sha-final')]);
+    const candidates = [channel('來源名', 'existing'), channel('來源 A', 'new_a', 'kick'), channel('來源 B', 'new_b', 'kick')];
+    const saved = await ChannelSync.createClient(config, remote.fetch).addMissing(candidates, 'test-token');
+    assert.equal(saved.raw, latestRaw + '來源 B,new_b,kick\n');
+    assert.deepEqual(saved.added, [channel('來源 B', 'new_b', 'kick')]);
+    assert.equal(saved.channels[0].name, '別人改名');
+    assert.equal(saved.channels[1].name, '別人先加');
+    assert.ok(!saved.channels.some(item => item.id === 'removed'));
+    assert.equal(saved.baseRaw, latestRaw);
+    assert.equal(saved.sha, 'sha-final');
+    assert.deepEqual(remote.requests.map(request => request.method), ['GET', 'PUT', 'GET', 'PUT']);
+    assert.equal(remote.requests[3].payload.sha, 'sha-current');
+});
+
+test('addMissing conflict becomes a no-op when another writer has already added every missing candidate', async () => {
+    const latestRaw = initial + '別人取名,new,kick\n';
+    const remote = server([file(initial), response(422, {}), file(latestRaw, 'sha-current')]);
+    const saved = await ChannelSync.createClient(config, remote.fetch).addMissing([channel('來源名', 'NEW', 'kick')], 'test-token');
+    assert.equal(saved.raw, latestRaw);
+    assert.equal(saved.baseRaw, latestRaw);
+    assert.equal(saved.sha, 'sha-current');
+    assert.equal(saved.unchanged, true);
+    assert.deepEqual(saved.added, []);
+    assert.equal(saved.channels.at(-1).name, '別人取名');
+    assert.equal(saved.commit, undefined);
+    assert.deepEqual(remote.requests.map(request => request.method), ['GET', 'PUT', 'GET']);
+});
+
+test('addMissing repeated conflicts stop after two PUTs without changing candidates', async () => {
+    const remote = server([file(initial), response(409, {}), file(initial, 'sha-current'), response(422, {})]);
+    const candidates = [channel('新台', 'new')];
+    const before = structuredClone(candidates);
+    await assert.rejects(ChannelSync.createClient(config, remote.fetch).addMissing(candidates, 'test-token'), error => error.code === 'conflict');
+    assert.deepEqual(candidates, before);
+    assert.equal(remote.requests.filter(request => request.method === 'PUT').length, 2);
+});
+
+test('addMissing validates the entire candidate list and token before any request', async () => {
+    const remote = server([]);
+    const client = ChannelSync.createClient(config, remote.fetch);
+    for (const token of ['', ' token', 'token ', 'to\nken', null]) {
+        await assert.rejects(client.addMissing([], token), error => error.code === 'auth');
+    }
+    for (const candidates of [null, {}, [channel('新台', 'new'), channel('壞,資料', 'bad')], [channel('私人來源', 'https://user:password@example.com/live', 'm3u8')]]) {
+        await assert.rejects(client.addMissing(candidates, 'test-token'), error => error.code === 'validation');
+    }
+    assert.equal(remote.requests.length, 0);
+});
+
+test('addMissing never PUTs when the latest remote read fails or is invalid', async () => {
+    for (const result of [response(401, {}), response(403, {}), response(429, {}), response(500, {}), file('未知,id,unknown\n'), response(200, {})]) {
+        const remote = server([result]);
+        await assert.rejects(ChannelSync.createClient(config, remote.fetch).addMissing([channel('新台', 'new')], 'test-token'));
+        assert.deepEqual(remote.requests.map(request => request.method), ['GET']);
+    }
+});
+
+test('addMissing does not report success after a failed or unconfirmed PUT', async () => {
+    for (const result of [response(401, {}), response(500, {}), response(200, {})]) {
+        const remote = server([file(initial), result]);
+        const candidates = [channel('新台', 'new')];
+        await assert.rejects(ChannelSync.createClient(config, remote.fetch).addMissing(candidates, 'test-token'));
+        assert.deepEqual(candidates, [channel('新台', 'new')]);
+        assert.deepEqual(remote.requests.map(request => request.method), ['GET', 'PUT']);
+    }
+});
