@@ -2966,7 +2966,7 @@ function renderChatMessage(message, historical = false, countAsNew = !historical
     if (key) seenMessageIds.add(key);
     try { appendMessageWithScroll(line, key); }
     catch (err) { if (key) seenMessageIds.delete(key); throw err; }
-    if (retentionPaused && countAsNew) { unreadMessageCount++; updateUnreadCounter(); }
+    if (!autoScroll && countAsNew) { unreadMessageCount++; updateUnreadCounter(); }
     trimSeenMessageIds();
 }
 
