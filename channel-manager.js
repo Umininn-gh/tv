@@ -14,7 +14,7 @@
         gosh: { label: 'Gosh', hint: '填寫 Gosh 頻道 ID，播放時會取得最新串流。', placeholder: '例如：meidingdang' },
         goodgame: { label: 'GoodGame', hint: '填寫 GoodGame 頻道的數字 ID；如有公開頻道名稱，可一併填寫。', placeholder: '例如：219534' }
     };
-    const ids = ['connection-form', 'github-token', 'connect-button', 'disconnect-button', 'connection-state', 'connection-badge', 'repository-owner', 'repository-name', 'manager-status', 'new', 'channel-form', 'channel-fields', 'editor-heading', 'cancel-edit', 'channel-name', 'channel-platform', 'channel-id', 'channel-id-label', 'channel-id-help', 'goodgame-fields', 'channel-gg-username', 'save-channel', 'save-hint', 'refresh-channels', 'channel-count', 'channel-search', 'channel-list', 'empty-list', 'legacy-channels', 'legacy-summary', 'legacy-list'];
+    const ids = ['connection-form', 'github-token', 'connect-button', 'disconnect-button', 'connection-state', 'connection-badge', 'repository-owner', 'repository-name', 'manager-status', 'new', 'channel-form', 'channel-fields', 'editor-heading', 'cancel-edit', 'channel-name', 'channel-platform', 'channel-id', 'channel-id-label', 'channel-id-help', 'goodgame-fields', 'channel-gg-username', 'save-channel', 'save-hint', 'refresh-channels', 'channel-count', 'channel-search', 'channel-list', 'empty-list', 'legacy-channels', 'legacy-summary', 'legacy-list', 'sync-sklive', 'sklive-hint', 'sklive-result', 'sklive-summary', 'sklive-additions'];
     const ui = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
     const state = { snapshot: null, token: '', busy: false, previous: null, readonlyFallback: false, client: null, localRaw: null, localSyncQueued: false, localSyncing: false, authGeneration: 0 };
     const config = globalThis.TV_CHANNEL_SYNC_CONFIG || {};
@@ -59,6 +59,9 @@
         ui['channel-fields'].disabled = busy;
         ui['cancel-edit'].disabled = busy;
         ui['save-channel'].disabled = busy || !canSave();
+        ui['sync-sklive'].disabled = busy || !state.client || typeof SKLiveImport === 'undefined';
+        ui['sync-sklive'].textContent = canSave() ? '核對並補回缺少的台' : '核對 SKLive 清單';
+        ui['sklive-hint'].textContent = canSave() ? '按一次便會核對並儲存漏台；沒有漏台便不提交。' : '目前只核對；連線 GitHub 後，同一按鍵可直接補回漏台。';
         ui['channel-list'].querySelectorAll('button').forEach(button => { button.disabled = busy || !canSave(); });
         ui['legacy-list'].querySelectorAll('button').forEach(button => { button.disabled = busy || !canSave(); });
         ui['save-hint'].textContent = canSave() ? '儲存會更新所有人的頻道清單。' : state.readonlyFallback ? '目前使用備用清單；重新連線成功後才可儲存。' : '連線後可儲存至共用清單。';
@@ -281,6 +284,61 @@
         finally { finishOperation(); }
     }
 
+    function showSKLiveResult(report, additions, saved) {
+        ui['sklive-result'].hidden = false;
+        const skipped = report.skipped.length;
+        const duplicates = report.duplicates.length;
+        ui['sklive-summary'].textContent = '來源共 ' + report.received + ' 筆（' + report.hidden + ' 筆標記隱藏），識別到 ' + report.channels.length + ' 個不同入口。' +
+            (duplicates ? ' 合併 ' + duplicates + ' 筆重複。' : '') +
+            (skipped ? ' ' + skipped + ' 筆未能識別，沒有自動加入。' : '') +
+            (additions.length ? (saved ? ' 已補回 ' : ' 缺少 ') + additions.length + ' 台：' : !report.channels.length ? ' 沒有可識別的入口，清單沒有更動。' : skipped ? ' 已識別的入口均已包括；未識別項目未加入。' : ' 本站已全部包括，沒有漏台。');
+        ui['sklive-additions'].replaceChildren(...additions.map(channel => make('li', '', channel.name + ' · ' + (PLATFORMS[channel.platform]?.label || channel.platform) + ' · ' + channel.id)));
+    }
+
+    async function syncSKLive() {
+        if (state.busy || !state.client || typeof SKLiveImport === 'undefined') return;
+        const authGeneration = state.authGeneration;
+        const before = state.snapshot;
+        let stage = 'source';
+        lock(true);
+        ui['sklive-result'].hidden = true;
+        message('正在讀取 SKLive 清單並核對漏台…');
+        try {
+            // The importer only sends the fixed public source URL to its proxies.
+            // GitHub authorization remains confined to the existing GitHub client.
+            const report = await SKLiveImport.load(fetch);
+            if (authGeneration !== state.authGeneration) return;
+            if (!report.channels.length) {
+                showSKLiveResult(report, [], false);
+                message('來源有資料，但沒有可識別的入口；沒有修改清單，請稍後再核對。', 'warning');
+                return;
+            }
+            const writable = canSave();
+            stage = writable ? 'save' : 'read';
+            const result = writable
+                ? await state.client.addMissing(report.channels, state.token)
+                : await state.client.read();
+            if (authGeneration !== state.authGeneration) return;
+            const additions = writable ? result.added : SKLiveImport.compare(result.channels, report.channels).added;
+            accept(result);
+            let published = true;
+            if (writable && additions.length) {
+                try { published = ChannelList.publishSharedSnapshot(localStorage, result.raw, before && before.raw, [result.baseRaw]) !== false; } catch (_) { published = false; }
+            }
+            showSKLiveResult(report, additions, writable);
+            const skipped = report.skipped.length;
+            const text = additions.length
+                ? writable ? '已補回 ' + additions.length + ' 台，保留所有現有台及名稱。' + (!published ? ' GitHub 已儲存，網站部署完成後會更新。' : '')
+                    : '找到 ' + additions.length + ' 個漏台；連線 GitHub 後，再按一次便可補回。'
+                : '已核對 SKLive 的 ' + report.channels.length + ' 個' + (skipped ? '已識別入口，均已包括；沒有修改清單。' : '入口，本站全部已包括；沒有修改清單。');
+            message(text + (skipped ? ' 另有 ' + skipped + ' 筆未能識別，詳見核對結果。' : ''), skipped || !published || (!writable && additions.length) ? 'warning' : 'success');
+        } catch (error) {
+            if (authGeneration !== state.authGeneration) return;
+            if (stage === 'source') message('暫時讀不到有效的 SKLive 清單；沒有新增或刪除任何台，請稍後再試。', 'error');
+            else { revokeIfUnauthorized(error); message(failure(error, stage), 'error'); }
+        } finally { finishOperation(); }
+    }
+
     Object.entries(PLATFORMS).forEach(([value, platform]) => {
         const option = make('option', '', platform.label);
         option.value = value;
@@ -292,6 +350,7 @@
     ui['cancel-edit'].addEventListener('click', resetEditor);
     ui['channel-search'].addEventListener('input', render);
     ui['refresh-channels'].addEventListener('click', () => refresh());
+    ui['sync-sklive'].addEventListener('click', syncSKLive);
     ui['channel-form'].addEventListener('submit', event => {
         event.preventDefault();
         if (state.busy || !canSave()) return;

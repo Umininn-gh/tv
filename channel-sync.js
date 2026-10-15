@@ -94,6 +94,10 @@
         return !!left && !!right && ['name', 'id', 'platform', 'ggUsername'].every(field => (left[field] || '') === (right[field] || ''));
     }
 
+    function requireWriteToken(token) {
+        if (typeof token !== 'string' || !token.trim() || /[\u0000-\u0020\u007f]/.test(token)) throw failure('auth', '請先輸入有權修改這個程式庫的 GitHub 憑證。');
+    }
+
     function prepareMutation(snapshot, mutation) {
         if (!snapshot || typeof snapshot.sha !== 'string' || !snapshot.sha) throw failure('validation', '請先重新載入共享清單，再儲存修改。');
         const original = validateChannels(snapshot.channels);
@@ -194,7 +198,7 @@
         }
 
         async function save(snapshot, mutation, token) {
-            if (typeof token !== 'string' || !token.trim() || /[\u0000-\u0020\u007f]/.test(token)) throw failure('auth', '請先輸入有權修改這個程式庫的 GitHub 憑證。');
+            requireWriteToken(token);
             const prepared = prepareMutation(snapshot, mutation);
             for (let attempt = 0; attempt < 2; attempt++) {
                 const latest = await read(token);
@@ -214,7 +218,42 @@
             }
         }
 
-        return Object.freeze({ read, save });
+        async function addMissing(candidates, token) {
+            requireWriteToken(token);
+            if (!Array.isArray(candidates)) throw failure('validation', '頻道清單格式不正確。');
+            const seen = new Set();
+            const prepared = [];
+            for (const value of candidates) {
+                const channel = publicChannel(value);
+                const key = ChannelList.channelKey(channel);
+                if (!seen.has(key)) {
+                    seen.add(key);
+                    prepared.push(channel);
+                }
+            }
+            for (let attempt = 0; attempt < 2; attempt++) {
+                const latest = await read(token);
+                const existing = new Set(latest.channels.map(ChannelList.channelKey));
+                const added = prepared.filter(channel => !existing.has(ChannelList.channelKey(channel)));
+                if (!added.length) return { ...latest, added: [], unchanged: true, baseRaw: latest.raw };
+                const channels = [...latest.channels, ...added];
+                // Keep all existing rows, comments and public metadata exactly as read.
+                const raw = latest.raw + (latest.raw && !latest.raw.endsWith('\n') ? '\n' : '') + serializeChannels(added);
+                const body = { message: 'Update shared channels (add missing)', content: encodeUtf8(raw), sha: latest.sha, branch };
+                try {
+                    const result = await request('PUT', token, body);
+                    if (!result || !result.content || typeof result.content.sha !== 'string' || !result.content.sha) {
+                        throw failure('invalid_data', 'GitHub 未確認儲存結果，請重新載入清單確認。');
+                    }
+                    return { channels, raw, sha: result.content.sha, added, unchanged: false, baseRaw: latest.raw, ...(result.commit ? { commit: result.commit } : {}) };
+                } catch (error) {
+                    if (error.code !== 'write_conflict') throw error;
+                    if (attempt === 1) throw failure('conflict', '共享清單同時有其他修改，請重新載入後再試。');
+                }
+            }
+        }
+
+        return Object.freeze({ read, save, addMissing });
     }
 
     const api = { createClient, parseChannelText, serializeChannels };

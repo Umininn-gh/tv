@@ -1,0 +1,276 @@
+{
+  "checkedOn": "2026-10-16",
+  "timezone": "Asia/Hong_Kong",
+  "checkedAt": "2026-10-15T20:43:24.265Z",
+  "sourceUrl": "https://skknower.com/user/ctvhiki49713",
+  "sourceApi": "https://live.sk-knower.com/skgamerversion_api.php?page=ctvhiki49713",
+  "website": "https://umininn-gh.github.io/tv/",
+  "summary": {
+    "sourceRecords": 19,
+    "hiddenSourceRecords": 3,
+    "distinctSourceChannels": 19,
+    "websiteChannels": 51,
+    "alreadyIncluded": 19,
+    "missing": 0,
+    "unrecognized": 0,
+    "duplicateSourceRecords": 0
+  },
+  "action": "no-change",
+  "notes": [
+    "來源標記隱藏的入口也逐一比對；沒有套用來源的隱藏狀態到本站。",
+    "同一平台和帳號視為同一台，保留本站的名稱和排序。",
+    "這是核查當時的來源快照，將來可在頻道管理重新按鍵核對。",
+    "自動判斷永久失效及刪台已擱置；此工具只補漏，不會刪台。"
+  ],
+  "entries": [
+    {
+      "source": {
+        "name": "友寶",
+        "id": "yaubotai",
+        "platform": "kick"
+      },
+      "websiteMatch": {
+        "name": "友",
+        "id": "yaubotai",
+        "platform": "kick"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "友寶2",
+        "id": "yaubotaibackup",
+        "platform": "kick"
+      },
+      "websiteMatch": {
+        "name": "友2",
+        "id": "yaubotaibackup",
+        "platform": "kick"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "友寶G",
+        "id": "yaubotai01",
+        "platform": "gosh"
+      },
+      "websiteMatch": {
+        "name": "友寶G",
+        "id": "yaubotai01",
+        "platform": "gosh"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "哥普",
+        "id": "zero_cobra",
+        "platform": "twitch"
+      },
+      "websiteMatch": {
+        "name": "哥普",
+        "id": "zero_cobra",
+        "platform": "twitch"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "哥2",
+        "id": "godzilla_2027",
+        "platform": "gosh"
+      },
+      "websiteMatch": {
+        "name": "哥2",
+        "id": "godzilla_2027",
+        "platform": "gosh"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "雀",
+        "id": "jeukpo",
+        "platform": "kick"
+      },
+      "websiteMatch": {
+        "name": "雀",
+        "id": "jeukpo",
+        "platform": "kick"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "西野",
+        "id": "nanase-maru525",
+        "platform": "kick"
+      },
+      "websiteMatch": {
+        "name": "西野",
+        "id": "nanase-maru525",
+        "platform": "kick"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "WC",
+        "id": "no25no2501",
+        "platform": "gosh"
+      },
+      "websiteMatch": {
+        "name": "WC",
+        "id": "no25no2501",
+        "platform": "gosh"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "ATV",
+        "id": "collartv",
+        "platform": "kick"
+      },
+      "websiteMatch": {
+        "name": "ATV",
+        "id": "collartv",
+        "platform": "kick"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "汁仔",
+        "id": "whw9457",
+        "platform": "kick"
+      },
+      "websiteMatch": {
+        "name": "汁仔",
+        "id": "whw9457",
+        "platform": "kick"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "白汁",
+        "id": "10268974521971",
+        "platform": "ok"
+      },
+      "websiteMatch": {
+        "name": "w",
+        "id": "10268974521971",
+        "platform": "ok"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "然",
+        "id": "yinlove",
+        "platform": "kick"
+      },
+      "websiteMatch": {
+        "name": "然",
+        "id": "yinlove",
+        "platform": "kick"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "羅拔",
+        "id": "baggio1967",
+        "platform": "kick"
+      },
+      "websiteMatch": {
+        "name": "羅拔",
+        "id": "baggio1967",
+        "platform": "kick"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "火",
+        "id": "falconjurer",
+        "platform": "kick"
+      },
+      "websiteMatch": {
+        "name": "火",
+        "id": "falconjurer",
+        "platform": "kick"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "金剛",
+        "id": "kingkong_tv",
+        "platform": "gosh"
+      },
+      "websiteMatch": {
+        "name": "金剛",
+        "id": "kingkong_tv",
+        "platform": "gosh"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "美1",
+        "id": "meidingdang",
+        "platform": "gosh"
+      },
+      "websiteMatch": {
+        "name": "美1",
+        "id": "meidingdang",
+        "platform": "gosh"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "美2",
+        "id": "meidingdang0",
+        "platform": "gosh"
+      },
+      "websiteMatch": {
+        "name": "美2",
+        "id": "meidingdang0",
+        "platform": "gosh"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "有片",
+        "id": "fish3345678",
+        "platform": "gosh"
+      },
+      "websiteMatch": {
+        "name": "有片",
+        "id": "fish3345678",
+        "platform": "gosh"
+      },
+      "action": "already-included"
+    },
+    {
+      "source": {
+        "name": "KA",
+        "id": "kinganime",
+        "platform": "gosh"
+      },
+      "websiteMatch": {
+        "name": "KA",
+        "id": "kinganime",
+        "platform": "gosh"
+      },
+      "action": "already-included"
+    }
+  ],
+  "skipped": [],
+  "duplicates": []
+}

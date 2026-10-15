@@ -1573,7 +1573,7 @@ function updateIdPlaceholder() {
         const action = menu.value;
         menu.value = '';
         if (action === 'manage') showPopup();
-        else if (action === 'new' || action === 'channels') showChannelManager(action);
+        else if (['new', 'channels', 'sklive'].includes(action)) showChannelManager(action);
     });
 })();
 

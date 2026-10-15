@@ -4,13 +4,14 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="referrer" content="no-referrer">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://api.github.com; img-src 'self' data:; form-action 'none'; base-uri 'self'; object-src 'none'">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://api.github.com https://young-cloud-e59f.chicktv001.workers.dev https://wispy-sound-ef1a.for-api.workers.dev; img-src 'self' data:; form-action 'none'; base-uri 'self'; object-src 'none'">
     <title>共用頻道管理</title>
     <link rel="stylesheet" href="./channel-manager.css">
     <script src="./channel-list.js" defer></script>
     <script src="./channel-sync-config.js" defer></script>
-    <script src="./channel-sync.js" defer></script>
-    <script src="./channel-manager.js" defer></script>
+    <script src="./channel-sync.js?v=20261016-sklive-add-only" defer></script>
+    <script src="./sklive-import.js?v=20261016-sklive-add-only" defer></script>
+    <script src="./channel-manager.js?v=20261016-sklive-add-only" defer></script>
 </head>
 <body>
     <header class="page-header">
@@ -44,6 +45,17 @@
         </section>
 
         <p id="manager-status" class="status" role="status" aria-live="polite">正在載入共用頻道…</p>
+
+        <section id="sklive" class="card sklive-card" aria-labelledby="sklive-heading">
+            <div class="section-heading"><h2 id="sklive-heading">從 SKLive 補台</h2><span class="badge connected-badge">只補漏台</span></div>
+            <p class="secondary">核對 <a href="https://skknower.com/user/ctvhiki49713" target="_blank" rel="noopener noreferrer">雞友直播台</a> 的全部入口，包含來源標記隱藏的台。只加入缺少的台，不刪除、不改名，也不重排你的現有清單。</p>
+            <div class="editor-footer"><p id="sklive-hint" class="hint">可先核對；連線 GitHub 後，同一按鍵可直接補回漏台。</p><button id="sync-sklive" class="primary" type="button">核對 SKLive 清單</button></div>
+            <div id="sklive-result" class="sklive-result" hidden>
+                <p id="sklive-summary" class="secondary"></p>
+                <ul id="sklive-additions" class="sklive-additions" aria-label="SKLive 核對結果"></ul>
+            </div>
+            <p class="hint">自動刪除失效台暫不提供：離線、改名、停權及查詢故障未能可靠區分。</p>
+        </section>
 
         <section id="new" class="card editor-card" aria-labelledby="editor-heading">
             <div class="section-heading"><h2 id="editor-heading">新增頻道</h2><button id="cancel-edit" class="text-button" type="button" hidden>取消編輯</button></div>
