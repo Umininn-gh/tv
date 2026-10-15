@@ -73,7 +73,7 @@
             await loadScript('./jquery-3.6.0.min.js', 'module');
             await loadScript('./channel-list.js');
             await loadScript('./stream-performance.js');
-            await loadScript('./stream-quality.js').catch(error => console.warn('畫質調節暫時未能載入，沿用平台播放器。', error));
+            await loadScript('./stream-quality.js?v=20261016-recovery-visibility').catch(error => console.warn('畫質調節暫時未能載入，沿用平台播放器。', error));
             await loadScript('./embed-audio.js').catch(error => console.warn('YouTube 聲音同步暫時未能載入，請使用播放器聲音控制。', error));
             await loadScript('./tv-app.js');
             if (!window.tvAppReady || typeof window.tvAppReady.then !== 'function') {
