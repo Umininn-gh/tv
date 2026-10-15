@@ -303,6 +303,7 @@ const RENDERERS = {
         wrapper.className = `${wrapperClass} twitch-wrapper`;
         const twitch = StreamQuality.createTwitchPlayer(wrapper, {
             channel: channel.id, parent, muted,
+            sizeAwareQuality: false,
             isMultiView: () => activePlayers.size > 1,
             fallbackUrl: p.buildUrl(channel, muted)
         });
@@ -316,7 +317,7 @@ const RENDERERS = {
             recoverButton.type = 'button';
             recoverButton.className = 'twitch-recover-button';
             recoverButton.textContent = '↻ 恢復播放';
-            recoverButton.title = '改回自動畫質並嘗試恢復 Twitch 播放';
+            recoverButton.title = '嘗試恢復 Twitch 播放';
             recoverButton.addEventListener('click', () => {
                 recoverButton.textContent = twitch.recover() ? '↻ 恢復播放' : '稍後再試';
             });

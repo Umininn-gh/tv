@@ -10,7 +10,7 @@
     <script src="./flv.min.js"></script>
     <script src="./channel-list.js"></script>
     <script src="./stream-performance.js"></script>
-    <script src="./stream-quality.js?v=20261016-recovery-visibility"></script>
+    <script src="./stream-quality.js?v=20261016-twitch-auto"></script>
     <script src="./embed-audio.js"></script>
 		<script type="module" src="jquery-3.6.0.min.js"></script>
     <style>
@@ -1004,6 +1004,7 @@ textarea:focus {
             } else if (channel.platform === 'twitch' && typeof StreamQuality !== 'undefined') {
                 player.twitch = StreamQuality.createTwitchPlayer(element, {
                     channel: channel.id, parent: location.hostname || 'localhost', muted: player.muted,
+                    sizeAwareQuality: false,
                     isMultiView: () => adminPlayers.size > 1,
                     fallbackUrl: getStreamUrl(channel)
                 });
@@ -1014,7 +1015,7 @@ textarea:focus {
                     recoverButton.type = 'button';
                     recoverButton.className = 'twitch-recover-button';
                     recoverButton.textContent = '↻ 恢復播放';
-                    recoverButton.title = '改回自動畫質並嘗試恢復 Twitch 播放';
+                    recoverButton.title = '嘗試恢復 Twitch 播放';
                     recoverButton.addEventListener('click', () => {
                         recoverButton.textContent = player.twitch.recover() ? '↻ 恢復播放' : '稍後再試';
                     });

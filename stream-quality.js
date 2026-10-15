@@ -1,4 +1,4 @@
-/* Size-aware quality for the supported Twitch embed API. */
+/* Twitch-managed quality by default; size-aware quality is an explicit opt-in. */
 (function (root) {
     'use strict';
 
@@ -85,6 +85,7 @@
     }
 
     function createTwitchPlayer(wrapper, options) {
+        const sizeAwareQuality = options.sizeAwareQuality === true;
         let started = false;
         let disposed = false;
         let ready = false;
@@ -344,7 +345,7 @@
 
         function checkHealth() {
             healthTimer = null;
-            if (disposed) return;
+            if (disposed || !sizeAwareQuality) return;
             if (contextUnavailable()) { suspendContext(); return; }
             if (contextSuspended || contextSettling) return;
             if (disposed || !ready || !hasPlayed || playbackPaused || !wrapper.isConnected || !isMultiView() || isFullscreen() || networkAuto || !lastRequested || lastRequested === 'auto') return;
@@ -375,7 +376,7 @@
         }
 
         function ensureHealthChecks() {
-            if (!contextSuspended && !contextSettling && !contextUnavailable() && !playbackBlocked && hasPlayed && !playbackPaused && healthTimer === null) healthTimer = root.setTimeout(checkHealth, HEALTH_INTERVAL_MS);
+            if (sizeAwareQuality && !contextSuspended && !contextSettling && !contextUnavailable() && !playbackBlocked && hasPlayed && !playbackPaused && healthTimer === null) healthTimer = root.setTimeout(checkHealth, HEALTH_INTERVAL_MS);
         }
 
         function meaningfulSizeChange(a, b) {
@@ -384,6 +385,15 @@
 
         function evaluate() {
             if (disposed || !ready || !player || !wrapper.isConnected) return false;
+            if (!sizeAwareQuality) {
+                if (updateContext(readPlayerSize())) return false;
+                // Do not send even setQuality('auto'): changing quality during a
+                // platform transition may interrupt it. Leave selection to Twitch.
+                wrapper.dataset.streamQuality = 'auto';
+                setMode('auto');
+                stopHealthChecks();
+                return true;
+            }
             const multi = isMultiView();
             const fullscreen = isFullscreen();
             const size = readPlayerSize();
@@ -461,6 +471,10 @@
             if (disposed) return;
             if (contextUnavailable()) { suspendContext(); return; }
             if (contextSuspended || contextSettling) return;
+            if (!sizeAwareQuality) {
+                if (ready) { wrapper.dataset.streamQuality = 'auto'; setMode('auto'); }
+                return;
+            }
             if (resizeTimer !== null) root.clearTimeout(resizeTimer);
             resizeTimer = root.setTimeout(() => { resizeTimer = null; evaluate(); }, RESIZE_DELAY_MS);
         }
@@ -636,7 +650,7 @@
             cancelStartup();
             stopHealthChecks();
             finishQualitySwitch();
-            recoveryAuto = true;
+            recoveryAuto = sizeAwareQuality;
             verifyAfterContext = false;
             recoveryAutoSize = size;
             recoveryAutoMulti = isMultiView();
@@ -647,7 +661,7 @@
             resumeEligible = false;
             automaticResumeAttempted = true;
             emptyBufferSamples = 0;
-            if (autoGroupSeen) {
+            if (sizeAwareQuality && autoGroupSeen) {
                 const current = publicCall('getQuality');
                 lastRequested = 'auto';
                 wrapper.dataset.streamQuality = 'auto';
@@ -656,7 +670,7 @@
                     catch (_) { finishQualitySwitch(); }
                 }
             }
-            setMode('recovery-auto');
+            setMode(sizeAwareQuality ? 'recovery-auto' : 'auto');
             return requestPlay();
         }
 
