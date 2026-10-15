@@ -13,6 +13,7 @@ class Element {
     appendChild(child) { this.children.push(child); return child; }
     replaceChildren(...children) { this.children = children; }
     setAttribute(key, value) { this.attributes[key] = String(value); }
+    removeAttribute(key) { delete this.attributes[key]; }
     addEventListener(name, listener) { (this.listeners[name] ||= []).push(listener); }
     async dispatch(name, options = {}) { await Promise.all((this.listeners[name] || []).map(listener => listener({ preventDefault() {}, ...options }))); await tick(); }
     querySelectorAll(tag) { return this.children.flatMap(child => [...(child.tagName === tag.toUpperCase() ? [child] : []), ...child.querySelectorAll(tag)]); }
@@ -76,23 +77,162 @@ function fixture(options = {}) {
         compare(existing, candidates) { comparisons.push({ existing, candidates }); return compareChannels(existing, candidates); }
     };
     const fetcher = async () => ({ ok: true, text: async () => options.raw || initialRaw });
-    const health = { options: null, refreshes: 0, cancellations: 0 };
+    const health = { options: null, creations: 0, refreshes: 0, cancellations: 0 };
+    const location = { hash: options.hash || '' };
     const context = vm.createContext({ document, localStorage: storage, ChannelList: shared, ChannelSync: { createClient: () => client }, TV_CHANNEL_SYNC_CONFIG: { owner: 'Umininn-gh', repo: 'tv' },
-        ...(options.health ? { ChannelHealth: {}, ChannelHealthUI: { createUI(settings) { health.options = settings; return { refresh() { health.refreshes++; }, cancel() { health.cancellations++; } }; } } } : {}),
-        SKLiveImport: importer, fetch: fetcher, location: { hash: options.hash || '' }, URL,
+        ...(options.health ? { ChannelHealth: {}, ChannelHealthUI: { createUI(settings) { health.creations++; health.options = settings; return { refresh() { health.refreshes++; }, cancel() { health.cancellations++; } }; } } } : {}),
+        SKLiveImport: importer, fetch: fetcher, location, URL,
         setInterval(callback, delay) { intervals.push({ callback, delay }); },
         window: { confirm: () => options.confirm !== false, addEventListener(name, listener) { (windowListeners[name] ||= []).push(listener); } }
     });
     vm.runInContext(source, context);
     const ready = async () => { await tick(); await tick(); };
-    return { nodes, current, reads, saves, batchAdds, sourceLoads, comparisons, fetcher, writes, data, storage, publications, windowListeners, document, intervals, ready, health,
+    return { nodes, current, reads, saves, batchAdds, sourceLoads, comparisons, fetcher, writes, data, storage, publications, windowListeners, document, intervals, ready, health, location,
         async connect(token = 'github_test_secret') { nodes['github-token'].value = token; await nodes['connection-form'].dispatch('submit'); },
         async submit(values) { for (const [name, value] of Object.entries(values)) nodes[name].value = value; await nodes['channel-form'].dispatch('submit'); },
-        async windowEvent(name, event = {}) { await Promise.all((windowListeners[name] || []).map(listener => listener(event))); await ready(); }
+        async windowEvent(name, event = {}) { await Promise.all((windowListeners[name] || []).map(listener => listener(event))); await ready(); },
+        async route(hash) { location.hash = hash; await this.windowEvent('hashchange'); }
     };
 }
 
 function button(row, label) { return row.querySelectorAll('button').find(element => element.textContent === label); }
+
+function visibleFeatureSections(f) {
+    return ['new', 'channels', 'sklive', 'health'].filter(id => !f.nodes[id].hidden);
+}
+
+test('each service opens only its own screen; unknown routes fall back to management', async () => {
+    for (const [hash, section, active] of [
+        ['', 'channels', 'manage'], ['#manage', 'channels', 'manage'],
+        ['#new', 'new', 'new'], ['#channels', 'channels', 'channels'],
+        ['#sklive', 'sklive', 'sklive'], ['#health', 'health', 'health'],
+        ['#not-a-screen', 'channels', 'manage']
+    ]) {
+        const f = fixture({ hash }); await f.ready();
+        assert.deepEqual(visibleFeatureSections(f), [section], hash || 'default screen');
+        assert.ok(f.nodes['page-heading'].textContent, 'the visible screen has its own heading');
+        assert.ok(f.nodes['page-description'].textContent, 'the visible screen explains its purpose');
+        for (const view of ['manage', 'new', 'channels', 'sklive', 'health']) {
+            assert.equal(f.nodes['view-' + view].attributes['aria-current'], view === active ? 'page' : 'false', hash + ' ' + view);
+        }
+        assert.equal(f.saves.length, 0);
+        assert.equal(f.batchAdds.length, 0);
+    }
+});
+
+test('management and deletion screens expose distinct actions while readonly navigation cannot mutate', async () => {
+    const f = fixture(); await f.ready();
+    let first = f.nodes['channel-list'].children[0];
+    assert.ok(button(first, '編輯'));
+    assert.ok(!button(first, '編輯').hidden);
+    assert.ok(!button(first, '刪除') || button(first, '刪除').hidden);
+    assert.equal(button(first, '編輯').disabled, true);
+    await f.route('#channels');
+    first = f.nodes['channel-list'].children[0];
+    assert.ok(button(first, '刪除'));
+    assert.ok(!button(first, '刪除').hidden);
+    assert.ok(!button(first, '編輯') || button(first, '編輯').hidden);
+    assert.equal(button(first, '刪除').disabled, true);
+    await button(first, '刪除').dispatch('click');
+    for (const view of ['new', 'sklive', 'health', 'manage']) await f.route('#' + view);
+    assert.equal(f.saves.length, 0);
+    assert.equal(f.batchAdds.length, 0);
+    assert.equal(f.publications.length, 0);
+});
+
+test('new and edit drafts survive navigation independently without losing the authenticated session', async () => {
+    const f = fixture({ hash: '#new' }); await f.ready(); await f.connect();
+    f.nodes['channel-name'].value = '新增草稿';
+    f.nodes['channel-id'].value = 'new-draft';
+    f.nodes['channel-platform'].value = 'kick';
+    const authenticatedReads = f.reads.length;
+    await f.route('#sklive'); await f.route('#health'); await f.route('#new');
+    assert.equal(f.nodes['channel-name'].value, '新增草稿');
+    assert.equal(f.nodes['channel-id'].value, 'new-draft');
+    assert.equal(f.nodes['channel-platform'].value, 'kick');
+    await f.route('#manage');
+    await button(f.nodes['channel-list'].children[0], '編輯').dispatch('click');
+    assert.deepEqual(visibleFeatureSections(f), ['new']);
+    assert.equal(f.nodes['channel-name'].value, '美1');
+    f.nodes['channel-name'].value = '編輯草稿';
+    f.nodes['channel-id'].value = 'edit-draft';
+    await f.route('#new');
+    assert.equal(f.nodes['channel-name'].value, '新增草稿');
+    assert.equal(f.nodes['channel-id'].value, 'new-draft');
+    await f.route('#edit');
+    assert.equal(f.nodes['channel-name'].value, '編輯草稿');
+    assert.equal(f.nodes['channel-id'].value, 'edit-draft');
+    assert.equal(f.nodes['connection-badge'].textContent, '已連線');
+    assert.equal(f.nodes['save-channel'].disabled, false);
+    assert.equal(f.reads.length, authenticatedReads, 'screen changes do not reconnect or reload GitHub');
+    assert.equal(f.saves.length, 0);
+    await f.nodes['cancel-edit'].dispatch('click');
+    assert.deepEqual(visibleFeatureSections(f), ['channels']);
+    await f.route('#new');
+    assert.equal(f.nodes['channel-name'].value, '新增草稿', 'cancelling an edit does not erase the independent new draft');
+    assert.equal(JSON.stringify(f.writes).includes('github_test_secret'), false);
+});
+
+test('health repair returns to the original result screen on cancellation or successful save', async () => {
+    const f = fixture({ hash: '#health', health: true }); await f.ready(); await f.connect();
+    const h = f.health.options;
+    const previous = h.getSnapshot().channels[0];
+    const resultMarker = new Element('li'); resultMarker.textContent = '既有查核結果';
+    f.nodes['health-results'].appendChild(resultMarker);
+    assert.equal((await h.runAction({ action: 'edit', previous, channel: { id: 'repaired-entry', platform: 'kick' } })).opened, true);
+    assert.deepEqual(visibleFeatureSections(f), ['new']);
+    assert.equal(f.nodes['channel-id'].value, 'repaired-entry');
+    await f.nodes['cancel-edit'].dispatch('click');
+    assert.deepEqual(visibleFeatureSections(f), ['health']);
+    assert.equal(f.health.options, h, 'the health UI and scanner facade are retained');
+    assert.equal(f.health.creations, 1);
+    assert.equal(f.nodes['health-results'].children[0], resultMarker);
+    assert.equal(f.health.cancellations, 0);
+    assert.equal(f.saves.length, 0);
+    await h.runAction({ action: 'edit', previous, channel: { id: 'repaired-entry', platform: 'kick' } });
+    await f.submit({});
+    assert.equal(f.saves.length, 1);
+    assert.equal(f.saves[0].change.action, 'edit');
+    assert.equal(f.saves[0].change.previous.id, previous.id);
+    assert.equal(f.saves[0].change.channel.id, 'repaired-entry');
+    assert.deepEqual(visibleFeatureSections(f), ['health']);
+    assert.equal(f.health.creations, 1);
+    assert.equal(f.nodes['health-results'].children[0], resultMarker);
+});
+
+test('an edit saved after leaving its screen cannot resurrect an empty editor through browser history', async () => {
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const f = fixture({ save: () => pending }); await f.ready(); await f.connect();
+    await button(f.nodes['channel-list'].children[0], '編輯').dispatch('click');
+    await f.submit({ 'channel-name': '已儲存名稱' });
+    assert.equal(f.nodes['save-channel'].disabled, true);
+    await f.route('#health');
+    release(snapshot('已儲存名稱,meidingdang,gosh\n大波,dindinxd19,twitch\n', 'saved-away'));
+    await f.ready();
+    assert.deepEqual(visibleFeatureSections(f), ['health'], 'completion leaves the current screen alone');
+    await f.route('#edit');
+    assert.deepEqual(visibleFeatureSections(f), ['channels'], 'history cannot reopen a cleared edit draft as a new channel');
+    assert.equal(f.nodes['view-manage'].attributes['aria-current'], 'page');
+    assert.equal(f.saves.length, 1);
+});
+
+test('legacy promotion stays within management and addition even after background list rerenders', async () => {
+    const f = fixture({ privateChannels: [channel('舊私人台', 'legacy-user', 'kick')] }); await f.ready();
+    assert.equal(f.nodes['legacy-channels'].hidden, false);
+    await f.route('#new');
+    assert.equal(f.nodes['legacy-channels'].hidden, false);
+    for (const view of ['channels', 'sklive', 'health']) {
+        await f.route('#' + view);
+        assert.equal(f.nodes['legacy-channels'].hidden, true, view);
+        f.nodes['channel-search'].value = view;
+        await f.nodes['channel-search'].dispatch('input');
+        assert.equal(f.nodes['legacy-channels'].hidden, true, view + ' after render');
+    }
+    await f.route('#manage');
+    assert.equal(f.nodes['legacy-channels'].hidden, false);
+    assert.equal(f.saves.length, 0);
+});
 
 test('health scan always loads a fresh snapshot; readonly results have no write authority and pagehide cancels', async () => {
     const f = fixture({ health: true }); await f.ready();
@@ -213,6 +353,7 @@ test('shared add, edit and confirmed delete publish exact raw versions and retai
     assert.equal(f.saves[1].change.action, 'edit');
     assert.equal(f.saves[1].change.previous.id, 'meidingdang');
     assert.equal(f.saves[1].change.channel.id, 'meidingdang2');
+    await f.route('#channels');
     await button(f.nodes['channel-list'].children[0], '刪除').dispatch('click');
     assert.equal(f.saves[2].change.action, 'delete');
     assert.equal(f.nodes['channel-list'].children.length, 2);
@@ -305,8 +446,10 @@ test('cancelled deletion and repeated submit during an in-flight write cannot cr
     const pending = new Promise(resolve => { release = resolve; });
     const f = fixture({ confirm: false, save: () => pending });
     await f.ready(); await f.connect();
+    await f.route('#channels');
     await button(f.nodes['channel-list'].children[0], '刪除').dispatch('click');
     assert.equal(f.saves.length, 0);
+    await f.route('#new');
     const saving = f.submit({ 'channel-name': 'New', 'channel-id': 'new', 'channel-platform': 'kick' }); await tick();
     assert.equal(f.nodes['save-channel'].disabled, true);
     await f.nodes['channel-form'].dispatch('submit');
