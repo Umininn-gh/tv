@@ -1037,9 +1037,18 @@ function checkAllLiveChannels() {
     });
 }
 
+function selectAllChannelSelection() {
+    const hideOffline = Boolean(document.getElementById('toggleNotLive')?.checked);
+    document.querySelectorAll("#channel-options input[type='checkbox']").forEach(chk => {
+        const status = channelStatuses[`${chk.dataset.platform}_${chk.value}`] || 'unknown';
+        // Match the hide-offline filter: only confirmed offline channels vanish.
+        chk.checked = !hideOffline || status !== 'not-live';
+    });
+}
+
 function clearAllChannelSelection() {
     document.querySelectorAll("#channel-options input[type='checkbox']").forEach(chk => {
-        chk.checked = true;
+        chk.checked = false;
     });
 }
 

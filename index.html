@@ -901,6 +901,12 @@
             margin-top: 8px;
             justify-content: center;
         }
+        .channel-selection-actions {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+        }
+        #channel-selection .channel-selection-actions button { min-width: 0; padding: 0 8px; }
 
         /* ---------------- 手機適配 ---------------- */
         @media (max-width: 768px) {
@@ -1213,7 +1219,7 @@
     </style>
     <link rel="stylesheet" href="./login.css">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261016-health-review"></script>
+    <script defer src="./login.js?v=20261016-selection-actions"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">
@@ -1335,7 +1341,10 @@
         <div id="channel-options"></div>
         <button onclick="watchSelectedChannels()" style="background: #9147ff; color: #000; font-weight: 600;">▶️ 開始觀看</button>
         <button onclick="checkAllLiveChannels()" style="background: var(--green); color: #000; font-weight: 600;">所有在線頻道</button>
-        <button onclick="clearAllChannelSelection()" style="background: var(--bg-2); color: var(--label);">全選</button>
+        <div class="channel-selection-actions">
+            <button id="select-all-channels" type="button" onclick="selectAllChannelSelection()" title="隱藏離線開啟時，全選可見頻道並取消離線頻道" style="background: var(--bg-2); color: var(--label);">全選</button>
+            <button id="deselect-all-channels" type="button" onclick="clearAllChannelSelection()" style="background: var(--bg-2); color: var(--label);">取消全選</button>
+        </div>
         <button id="adjust-player-positions" type="button" disabled>↔️ 調整播放器位置</button>
         <button id="reset-player-positions" type="button">↺ 重設播放器位置</button>
         <p class="player-position-hint">開始觀看至少兩台後，可以拖曳或點選兩格交換位置。</p>
