@@ -11,6 +11,7 @@
     <script src="./channel-list.js"></script>
     <script src="./stream-performance.js"></script>
     <script src="./stream-quality.js"></script>
+    <script src="./embed-audio.js"></script>
 		<script type="module" src="jquery-3.6.0.min.js"></script>
     <style>
         * {
@@ -140,6 +141,17 @@
             margin-left: auto;
             padding-left: 0.625em;
         }
+
+        #input-container .global-audio-toggle {
+            height: 18px;
+            min-height: 18px;
+            padding: 0 5px;
+            font-size: 11px;
+            line-height: 1;
+            flex-shrink: 0;
+        }
+        .global-audio-feedback { max-width: 13em; font-size: 10px; line-height: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .global-audio-feedback[hidden] { display: none; }
 
         #channel-selection {
             display: none;
@@ -672,6 +684,8 @@ textarea:focus {
                 <button id="addChannelBtn">➕ 加台</button>
                 <button onclick="editClick()">🗑 del台</button>
                 <button id="more-channels-btn" onclick="toggleChannelSelection()">📺 看更台</button>
+                <button id="toggle-all-audio" class="global-audio-toggle" type="button" aria-pressed="false" onclick="toggleAdminGlobalAudio()">🔇 全部靜音</button>
+                <output id="global-audio-feedback" class="global-audio-feedback" role="status" aria-live="polite" hidden></output>
                 <button id="chatToggleBtn">💬 chat(免插件)</button>
                 <button onclick="showPopup()">成為台主</button>
 				<button id="open-admin-btn">通知</button>
@@ -764,6 +778,81 @@ textarea:focus {
         let adminVaughnProxyIndex = 0;
         let adminPlayersMounted = false;
         let adminEmptyMessage = null;
+        let adminGlobalMuted = null;
+        let adminAudioFeedbackTimer = null;
+
+        function getAdminGlobalMuted() {
+            return adminGlobalMuted === null ? false : adminGlobalMuted;
+        }
+
+        function updateAdminGlobalAudioButton() {
+            const button = document.getElementById('toggle-all-audio');
+            if (!button) return;
+            const muted = getAdminGlobalMuted();
+            button.textContent = muted ? '🔊 全部開聲' : '🔇 全部靜音';
+            button.setAttribute('aria-pressed', String(muted));
+        }
+
+        function getAdminFrameAudioUrl(frame, channel, muted) {
+            if (!frame || !frame.src) return null;
+            try {
+                const url = new URL(frame.src, location.href);
+                if (channel.platform === 'kick' && url.hostname === 'player.kick.com' ||
+                    channel.platform === 'twitch' && url.hostname === 'player.twitch.tv') {
+                    url.searchParams.set('muted', String(muted));
+                } else if (channel.platform === 'ok' && url.hostname === 'ok.ru') {
+                    url.searchParams.delete('muted');
+                    url.searchParams.set('silent', muted ? '1' : '0');
+                } else return null;
+                return url.href;
+            } catch (_) { return null; }
+        }
+
+        function showAdminGlobalAudioFeedback(result) {
+            const output = document.getElementById('global-audio-feedback');
+            if (!output) return;
+            const messages = [];
+            if (result.reloaded) messages.push(`${result.reloaded} 台已重新載入以切換聲音`);
+            if (result.unsupported.length) messages.push(`${result.unsupported.join('、')} 請在播放器內調整聲音`);
+            output.title = messages.join('；');
+            output.textContent = [result.unsupported.length ? `${result.unsupported.length} 台需手動` : '', result.reloaded ? `${result.reloaded} 台重載` : ''].filter(Boolean).join('／');
+            output.hidden = messages.length === 0;
+            if (adminAudioFeedbackTimer !== null) clearTimeout(adminAudioFeedbackTimer);
+            if (!output.hidden) adminAudioFeedbackTimer = setTimeout(() => { output.hidden = true; adminAudioFeedbackTimer = null; }, 5000);
+        }
+
+        function toggleAdminGlobalAudio() {
+            const muted = !getAdminGlobalMuted();
+            adminGlobalMuted = muted;
+            const result = { muted, reloaded: 0, unsupported: [] };
+            function apply(player) {
+                if (player.disposed || player.failed) return;
+                try {
+                    if (player.video) {
+                        player.video.muted = muted;
+                    } else if (player.twitch && typeof player.twitch.setMuted === 'function') {
+                        player.twitch.setMuted(muted, true);
+                        if (player.element.dataset?.streamQualityMode === 'platform-auto') result.reloaded++;
+                    } else if (player.audio) {
+                        if (!player.audio.setMuted(muted, true)) { result.unsupported.push(player.channel.name || player.channel.platform); return; }
+                    } else if (player.iframe) {
+                        const url = getAdminFrameAudioUrl(player.iframe, player.channel, muted);
+                        if (!url) { result.unsupported.push(player.channel.name || player.channel.platform); return; }
+                        player.iframe.src = url;
+                        result.reloaded++;
+                    } else return;
+                    player.muted = muted;
+                } catch (_) { result.unsupported.push(player.channel.name || player.channel.platform); }
+            }
+            adminPlayers.forEach(apply);
+            if (!adminPlayersMounted) {
+                const initial = document.getElementById('MyFrame');
+                if (initial && initial.isConnected) apply({ iframe: initial, channel: { platform: 'ok', name: 'OK.ru' } });
+            }
+            updateAdminGlobalAudioButton();
+            showAdminGlobalAudioFeedback(result);
+            return result;
+        }
 
         function channelStatusKey(channel) {
             return ChannelList.channelKey(channel);
@@ -875,6 +964,7 @@ textarea:focus {
             if (!player || player.disposed) return;
             player.disposed = true;
             try { player.twitch?.dispose(); } catch (error) {}
+            try { player.audio?.dispose(); } catch (error) {}
             releaseAdminMedia(player);
             if (player.iframe) {
                 try { player.iframe.src = 'about:blank'; } catch (error) {}
@@ -890,13 +980,13 @@ textarea:focus {
 
         function createAdminPlayer(channel) {
             const element = document.createElement('div');
-            const player = { key: channelStatusKey(channel), channel, element, video: null, iframe: null, hls: null, flv: null, twitch: null, disposed: false, failed: false };
+            const player = { key: channelStatusKey(channel), channel, element, video: null, iframe: null, hls: null, flv: null, twitch: null, audio: null, muted: getAdminGlobalMuted(), disposed: false, failed: false };
             if (channel.platform === 'm3u8' || channel.platform === 'gosh' || channel.platform === 'vaughn') {
                 const video = document.createElement('video');
                 video.className = 'hls-video-element';
                 video.controls = true;
                 video.autoplay = true;
-                video.muted = false;
+                video.muted = player.muted;
                 video.playsInline = true;
                 video.style.width = '100%';
                 video.style.height = '100%';
@@ -908,7 +998,7 @@ textarea:focus {
                     : () => { void attachHlsVideo(video, channel, player); };
             } else if (channel.platform === 'twitch' && typeof StreamQuality !== 'undefined') {
                 player.twitch = StreamQuality.createTwitchPlayer(element, {
-                    channel: channel.id, parent: location.hostname || 'localhost', muted: false,
+                    channel: channel.id, parent: location.hostname || 'localhost', muted: player.muted,
                     isMultiView: () => adminPlayers.size > 1,
                     fallbackUrl: getStreamUrl(channel)
                 });
@@ -932,8 +1022,9 @@ textarea:focus {
                 if (channel.platform === 'youtube') {
                     const id = channel.id;
                     iframe.src = id.startsWith('UC') || id.startsWith('HC') || id.includes('channel')
-                        ? 'https://www.youtube.com/embed/live_stream?channel=' + id + '&autoplay=1&mute=0'
-                        : 'https://www.youtube.com/embed/' + id + '?autoplay=1&mute=0';
+                        ? 'https://www.youtube.com/embed/live_stream?channel=' + id + '&autoplay=1&mute=' + (player.muted ? '1' : '0')
+                        : 'https://www.youtube.com/embed/' + id + '?autoplay=1&mute=' + (player.muted ? '1' : '0');
+                    iframe.src += '&enablejsapi=1&origin=' + encodeURIComponent(location.origin);
                     iframe.referrerPolicy = 'strict-origin-when-cross-origin';
                     iframe.allow = 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture';
                 } else {
@@ -945,6 +1036,22 @@ textarea:focus {
                 iframe.addEventListener('error', () => showAdminPlayerError(player));
                 element.appendChild(iframe);
                 player.iframe = iframe;
+                if (channel.platform === 'youtube' && typeof EmbedAudio !== 'undefined') {
+                    player.audio = EmbedAudio.createYouTubeController(iframe, {
+                        muted: player.muted,
+                        onIframe(current) {
+                            current.className = iframe.className;
+                            current.allow = iframe.allow;
+                            current.allowFullscreen = iframe.allowFullscreen;
+                            current.referrerPolicy = iframe.referrerPolicy;
+                            player.iframe = current;
+                        },
+                        onError() {
+                            if (!player.disposed) showAdminGlobalAudioFeedback({ reloaded: 0, unsupported: [player.channel.name || 'YouTube'] });
+                        }
+                    });
+                    player.start = () => player.audio.start();
+                }
             }
             return player;
         }
@@ -978,6 +1085,7 @@ textarea:focus {
                 return;
             }
             const isOnlyOne = desired.length === 1;
+            const newUnsupportedAudio = [];
             desired.forEach((channel, index) => {
                 const key = channelStatusKey(channel);
                 let player = adminPlayers.get(key);
@@ -986,6 +1094,9 @@ textarea:focus {
                     adminPlayers.set(key, player);
                     container.appendChild(player.element);
                     if (player.start) player.start();
+                    if (adminGlobalMuted !== null && !player.video && !player.twitch && !player.audio && !getAdminFrameAudioUrl(player.iframe, channel, getAdminGlobalMuted())) {
+                        newUnsupportedAudio.push(channel.name || channel.platform);
+                    }
                 }
                 player.channel = channel;
                 player.element.className = (isOnlyOne ? 'full-screen-video' : 'video') + (player.twitch ? ' twitch-wrapper' : '');
@@ -995,6 +1106,7 @@ textarea:focus {
                 player.element.style.order = String(index);
             });
             adminPlayers.forEach(player => player.twitch?.refresh());
+            if (newUnsupportedAudio.length) showAdminGlobalAudioFeedback({ reloaded: 0, unsupported: newUnsupportedAudio });
         }
 
         // ======================== 單一頻道播放（主畫面）================
@@ -1003,11 +1115,11 @@ textarea:focus {
         }
 
         // 取得各平台 iframe 嵌入網址（不包含 M3U8 / YouTube）
-        function getStreamUrl(channel) {
+        function getStreamUrl(channel, muted = getAdminGlobalMuted()) {
             if (!channel) return '';
-            if (channel.platform === 'kick') return 'https://player.kick.com/' + channel.id + '?muted=false&autoplay=true';
-            if (channel.platform === 'twitch') return 'https://player.twitch.tv/?channel=' + channel.id + '&parent=' + encodeURIComponent(location.hostname || 'localhost');
-            if (channel.platform === 'ok') return 'https://ok.ru/videoembed/' + channel.id + '?nochat=1&autoplay=1';
+            if (channel.platform === 'kick') return 'https://player.kick.com/' + channel.id + '?muted=' + muted + '&autoplay=true';
+            if (channel.platform === 'twitch') return 'https://player.twitch.tv/?channel=' + channel.id + '&parent=' + encodeURIComponent(location.hostname || 'localhost') + '&muted=' + muted;
+            if (channel.platform === 'ok') return 'https://ok.ru/videoembed/' + channel.id + '?nochat=1&autoplay=1&silent=' + (muted ? '1' : '0');
             if (channel.platform === 'at') return 'https://player.angelthump.com/?channel=' + channel.id;
             return '';
         }

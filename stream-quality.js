@@ -12,6 +12,7 @@
     // Twitch initializes embed visibility through a delayed observer. READY can
     // precede that observation, and a play command sent earlier is discarded.
     const STARTUP_PLAY_DELAY_MS = 2000;
+    const STARTUP_FOLLOWUP_DELAY_MS = 8000;
     let sdkRequest = null;
     let nextPlayerId = 0;
 
@@ -121,6 +122,7 @@
         let verifyAfterContext = false;
         let startupPlayAttempted = false;
         let startupTimer = null;
+        let startupFollowupTimer = null;
         const subscriptions = [];
         const doc = wrapper.ownerDocument || root.document;
         wrapper.dataset.streamQualityMode = 'loading';
@@ -198,6 +200,49 @@
         function cancelStartup() {
             if (startupTimer !== null) root.clearTimeout(startupTimer);
             startupTimer = null;
+            if (startupFollowupTimer !== null) root.clearTimeout(startupFollowupTimer);
+            startupFollowupTimer = null;
+        }
+
+        function startupFollowupVisible() {
+            if (contextUnavailable() || contextSuspended || contextSettling) return false;
+            const iframe = wrapper.querySelector('iframe');
+            if (!iframe || typeof iframe.getBoundingClientRect !== 'function') return false;
+            try {
+                if (typeof iframe.checkVisibility === 'function' && !iframe.checkVisibility({ opacityProperty: true, visibilityProperty: true, contentVisibilityAuto: true })) return false;
+                const rect = iframe.getBoundingClientRect();
+                if (!(rect.width >= 400 && rect.height >= 300)) return false;
+                const viewportWidth = root.innerWidth || doc.documentElement && doc.documentElement.clientWidth;
+                const viewportHeight = root.innerHeight || doc.documentElement && doc.documentElement.clientHeight;
+                if (!(viewportWidth > 0 && viewportHeight > 0) || ![rect.left, rect.top, rect.right, rect.bottom].every(Number.isFinite)) return false;
+                let left = Math.max(0, rect.left), top = Math.max(0, rect.top);
+                let right = Math.min(viewportWidth, rect.right), bottom = Math.min(viewportHeight, rect.bottom);
+                if (typeof root.getComputedStyle === 'function') {
+                    for (let ancestor = iframe.parentElement; ancestor; ancestor = ancestor.parentElement) {
+                        const style = root.getComputedStyle(ancestor);
+                        const clipX = /^(auto|scroll|hidden|clip)$/.test(style.overflowX);
+                        const clipY = /^(auto|scroll|hidden|clip)$/.test(style.overflowY);
+                        if (!clipX && !clipY) continue;
+                        const clip = ancestor.getBoundingClientRect();
+                        if (clipX) { left = Math.max(left, clip.left); right = Math.min(right, clip.right); }
+                        if (clipY) { top = Math.max(top, clip.top); bottom = Math.min(bottom, clip.bottom); }
+                    }
+                }
+                return Math.max(0, right - left) * Math.max(0, bottom - top) >= rect.width * rect.height * 0.5;
+            } catch (_) { return false; }
+        }
+
+        function scheduleStartupFollowup() {
+            if (disposed || hasPlayed || playbackPaused || playbackBlocked || contextSuspended || contextSettling) return;
+            startupFollowupTimer = root.setTimeout(() => {
+                startupFollowupTimer = null;
+                if (disposed || !ready || hasPlayed || playbackPaused || playbackBlocked || !wrapper.isConnected || !startupFollowupVisible()) return;
+                // This is one check for an unconfirmed startup, not a pause or
+                // network diagnosis. A cached isPaused=false does not confirm
+                // that video started; only the first PLAYING cancels the check.
+                if (publicCall('getEnded') !== false) return;
+                requestPlay();
+            }, STARTUP_FOLLOWUP_DELAY_MS);
         }
 
         function scheduleStartupPlayback() {
@@ -206,7 +251,7 @@
                 startupTimer = null;
                 if (disposed || !ready || hasPlayed || playbackPaused || playbackBlocked || startupPlayAttempted || !wrapper.isConnected || contextUnavailable() || contextSuspended || contextSettling) return;
                 startupPlayAttempted = true;
-                requestPlay();
+                if (requestPlay()) scheduleStartupFollowup();
             }, STARTUP_PLAY_DELAY_MS);
         }
 
@@ -552,9 +597,9 @@
             }
         }
 
-        function setMuted(value) {
+        function setMuted(value, force = false) {
             const muted = Boolean(value);
-            if (disposed || desiredMuted === muted) return;
+            if (disposed || !force && desiredMuted === muted) return;
             desiredMuted = muted;
             if (ready) publicCall('setMuted', muted);
             else mutedDirty = true;

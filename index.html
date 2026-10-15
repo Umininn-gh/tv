@@ -251,6 +251,8 @@
             line-height: 1;
         }
         #top-bar button { padding-top: 0; padding-bottom: 0; }
+        #global-audio-feedback { max-width: 13em; overflow: hidden; text-overflow: ellipsis; font-size: 10px; }
+        #global-audio-feedback[hidden] { display: none; }
         #top-bar .toggle-switch .slider { width: 25.5px; height: 15.5px; }
         #top-bar .toggle-switch .slider::before {
             width: 13.5px;
@@ -1183,6 +1185,8 @@
                 <button id="delChannelBtn">🗑 del台</button>
                 <button id="logout-btn" type="button">登出</button>
                 <button id="more-channels-btn" onclick="toggleChannelSelection()">📺 看更台</button>
+                <button id="toggle-all-audio" type="button" aria-pressed="false" onclick="toggleAllAudio()" title="同步支援的播放器聲音；部分外站播放器會重新載入">🔇 全部靜音</button>
+                <span id="global-audio-feedback" role="status" aria-live="polite" hidden></span>
    
                 <label class="toggle-switch purple-toggle" id="chatToggleWrapper">
                     <span class="toggle-label" id="chatToggleLabel">TWITCH</span>

@@ -113,7 +113,7 @@ const PLATFORMS = {
         icon: 'ⓞ',
         type: 'iframe',
         buildUrl: (ch, muted) =>
-            `https://ok.ru/videoembed/${ch.id}?nochat=1&autoplay=1${muted ? '&muted=1' : ''}`,
+            `https://ok.ru/videoembed/${ch.id}?nochat=1&autoplay=1&silent=${muted ? 1 : 0}`,
         aliases: ['okru'],
         status: async (ch, signal) => {
             // ★ 透過代理池輪詢
@@ -154,7 +154,7 @@ const PLATFORMS = {
     youtube: {
         label: 'YouTube Live',
         icon: 'ⓨ',
-        type: 'iframe',
+        type: 'youtube',
         allow: "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture",
         referrerPolicy: "strict-origin-when-cross-origin",
         buildUrl: (ch, muted) => {
@@ -264,6 +264,39 @@ const PLATFORMS = {
    播放器渲染器 (依 type 分派)
    ------------------------------------------------------------------------------------- */
 const RENDERERS = {
+    youtube(channel, p, muted, wrapperClass) {
+        if (typeof EmbedAudio === 'undefined') return RENDERERS.iframe(channel, p, muted, wrapperClass);
+        const wrapper = document.createElement('div');
+        wrapper.className = `${wrapperClass} youtube-wrapper`;
+        const iframe = RENDERERS.iframe(channel, p, muted, 'youtube-iframe');
+        const url = new URL(iframe.src);
+        url.searchParams.set('enablejsapi', '1');
+        url.searchParams.set('origin', location.origin || `https://${parent}`);
+        iframe.src = url.href;
+        iframe.style.width = '100%';
+        iframe.style.height = '100%';
+        iframe.style.border = '0';
+        iframe.style.display = 'block';
+        wrapper.appendChild(iframe);
+        const youtube = EmbedAudio.createYouTubeController(iframe, {
+            muted,
+            onIframe(frame) {
+                frame.style.width = '100%';
+                frame.style.height = '100%';
+                frame.style.border = '0';
+                frame.style.display = 'block';
+            },
+            onError() {
+                if (globalMutedPreference !== null && wrapper.isConnected) showGlobalAudioFeedback({ unsupported: [channel.name], reloaded: 0 });
+            }
+        });
+        const resource = { element: wrapper, video: null, disposed: false, failed: false, hls: null, flv: null, youtube };
+        playerResources.set(wrapper, resource);
+        queueMicrotask(() => {
+            if (!resource.disposed && wrapper.isConnected) youtube.start();
+        });
+        return wrapper;
+    },
     twitch(channel, p, muted, wrapperClass) {
         if (typeof StreamQuality === 'undefined') return RENDERERS.iframe(channel, p, muted, wrapperClass);
         const wrapper = document.createElement('div');
@@ -439,9 +472,87 @@ const playerResources = new WeakMap();
 const PLAYER_POSITION_STORAGE_KEY = 'playerPositionOrder';
 let preferredPlayerOrder = [];
 let playerPositionEditor = null;
+let globalMutedPreference = null;
+let globalAudioFeedbackTimer = null;
 const statusScheduler = StreamPerformance.createStatusScheduler({ maxConcurrent: 4, cacheMs: 30000 });
 const goshMetadataRequests = StreamPerformance.createInFlightCoalescer();
 const parent = location.hostname || "localhost";
+
+function getGlobalMuted(count = activePlayers.size) {
+    return globalMutedPreference === null ? count > 1 : globalMutedPreference;
+}
+
+function updateGlobalAudioButton() {
+    const button = document.getElementById('toggle-all-audio');
+    if (!button || button.tagName !== 'BUTTON') return;
+    const muted = getGlobalMuted();
+    button.textContent = muted ? '🔊 全部開聲' : '🔇 全部靜音';
+    button.setAttribute('aria-pressed', String(muted));
+}
+
+function getFrameAudioUrl(frame, channel, muted) {
+    if (!frame || !frame.src) return null;
+    try {
+        const url = new URL(frame.src, location.href);
+        if (channel.platform === 'kick' && url.hostname === 'player.kick.com' ||
+            channel.platform === 'twitch' && url.hostname === 'player.twitch.tv') {
+            url.searchParams.set('muted', String(muted));
+        } else if (channel.platform === 'ok' && url.hostname === 'ok.ru') {
+            url.searchParams.delete('muted');
+            url.searchParams.set('silent', muted ? '1' : '0');
+        } else return null;
+        return url.href;
+    } catch (_) { return null; }
+}
+
+function showGlobalAudioFeedback(result) {
+    const output = document.getElementById('global-audio-feedback');
+    if (!output || output.id !== 'global-audio-feedback') return;
+    const messages = [];
+    if (result.unsupported.length) messages.push(`${result.unsupported.length} 台需手動調聲`);
+    if (result.reloaded) messages.push(`${result.reloaded} 台重載`);
+    output.textContent = messages.join('；');
+    output.title = result.unsupported.length ? `${result.unsupported.join('、')} 暫不支援同步聲音，請在播放器內調整。` : '部分外站播放器已重新載入以切換聲音。';
+    output.hidden = !messages.length;
+    if (globalAudioFeedbackTimer !== null) clearTimeout(globalAudioFeedbackTimer);
+    if (!output.hidden) globalAudioFeedbackTimer = setTimeout(() => { output.hidden = true; globalAudioFeedbackTimer = null; }, 6000);
+}
+
+function toggleAllAudio() {
+    const muted = !getGlobalMuted();
+    globalMutedPreference = muted;
+    const result = { muted, reloaded: 0, unsupported: [] };
+    function apply(entry) {
+        const resource = entry.resource;
+        if (entry.failed || resource?.disposed || resource?.failed) return;
+        try {
+            if (resource?.video) resource.video.muted = muted;
+            else if (resource?.twitch) {
+                resource.twitch.setMuted(muted, true);
+                if (resource.element.dataset?.streamQualityMode === 'platform-auto') result.reloaded++;
+            } else if (resource?.youtube) {
+                if (resource.youtube.setMuted(muted, true) === false) { result.unsupported.push(entry.channel.name); return; }
+            } else {
+                const element = resource ? resource.element : entry.element;
+                const frame = element.tagName === 'IFRAME' ? element : element.querySelector?.('iframe') || Array.from(element.children).find(child => child.tagName === 'IFRAME');
+                const url = getFrameAudioUrl(frame, entry.channel, muted);
+                if (!url) { result.unsupported.push(entry.channel.name || entry.channel.platform); return; }
+                // These platforms expose audio only as an embed URL option.
+                frame.src = url;
+                result.reloaded++;
+            }
+            entry.muted = muted;
+        } catch (_) { result.unsupported.push(entry.channel.name || entry.channel.platform); }
+    }
+    activePlayers.forEach(apply);
+    if (!activePlayers.size) {
+        const initial = document.getElementById('MyFrame');
+        if (initial?.tagName === 'IFRAME' && initial.isConnected) apply({ element: initial, channel: { platform: 'ok', name: 'OK.ru' } });
+    }
+    updateGlobalAudioButton();
+    showGlobalAudioFeedback(result);
+    return result;
+}
 
 /* ★ 記錄上一次 ch1.txt 的原始內容，用來偵測是否有更新 */
 let _lastCh1TxtRaw = null;
@@ -505,6 +616,7 @@ function disposePlayer(entry) {
     if (resource) {
         resource.disposed = true;
         try { resource.twitch?.dispose(); } catch (error) {}
+        try { resource.youtube?.dispose(); } catch (error) {}
         if (resource.video) { try { resource.video.pause(); } catch (error) {} }
         if (resource.hls) {
             const hls = resource.hls;
@@ -533,6 +645,7 @@ function destroyAllHLSInstances() {
     currentFLVInstances.forEach(instance => { try { instance.destroy(); } catch (error) {} });
     currentHLSInstances = [];
     currentFLVInstances = [];
+    updateGlobalAudioButton();
 }
 
 function renderChannelElement(channel, muted, wrapperClass) {
@@ -595,23 +708,26 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
         if (!retained.has(child)) child.remove();
     }
     const count = selected.length;
-    const muted = count > 1;
+    const muted = getGlobalMuted(count);
     const cols = Math.max(1, Math.ceil(Math.sqrt(count)));
     const rows = Math.max(1, Math.ceil(count / cols));
     container.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
     container.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
     currentDisplayChannel = count === 1 ? selected[0] : null;
+    updateGlobalAudioButton();
     if (!count) {
         container.innerHTML = `<div style="color:var(--label-2); text-align:center; padding:2rem;">${emptyMessage}</div>`;
         playerPositionEditor?.refresh();
         return;
     }
+    const unsyncedAudio = [];
     selected.forEach((channel, index) => {
         const key = ChannelList.channelKey(channel);
         let entry = activePlayers.get(key);
         const nativePlayer = entry && entry.resource;
         const element = entry && (nativePlayer ? nativePlayer.element : entry.element);
-        const reusable = entry && element.isConnected && !entry.failed && !(nativePlayer && nativePlayer.failed) && (nativePlayer || entry.muted === muted);
+        const hasUrlAudioControl = ['twitch', 'kick', 'ok', 'youtube'].includes(channel.platform);
+        const reusable = entry && element.isConnected && !entry.failed && !(nativePlayer && nativePlayer.failed) && (nativePlayer || entry.muted === muted || !hasUrlAudioControl);
         if (!reusable) {
             if (entry) disposePlayer(entry);
             const rendered = renderChannelElement(channel, muted, count === 1 ? 'full-screen-video' : 'video');
@@ -620,11 +736,13 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
             entry = { channel, element: rendered, resource, muted, failed: !resource && (type === 'hls' || type === 'flv') };
             activePlayers.set(key, entry);
             container.appendChild(rendered);
+            if (globalMutedPreference !== null && !resource && !entry.failed && !['twitch', 'kick', 'ok'].includes(channel.platform)) unsyncedAudio.push(channel.name);
         } else {
             // Preserve manual mute, volume and pause changes within the same mode.
             if (entry.resource && entry.muted !== muted) {
                 if (entry.resource.video) entry.resource.video.muted = muted;
                 else entry.resource.twitch?.setMuted(muted);
+                if (entry.resource.youtube) entry.resource.youtube.setMuted(muted);
             }
             entry.muted = muted;
             entry.channel = channel;
@@ -636,6 +754,8 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
         visible.style.order = String(index);
     });
     activePlayers.forEach(entry => entry.resource?.twitch?.refresh());
+    updateGlobalAudioButton();
+    if (unsyncedAudio.length) showGlobalAudioFeedback({ muted, unsupported: unsyncedAudio, reloaded: 0 });
     playerPositionEditor?.refresh();
 }
 
