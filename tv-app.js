@@ -839,6 +839,39 @@ function pollCh1TxtForUpdates() {
     return channelReloadPromise;
 }
 
+/* Keep the channel scrollbar exactly 3px tall, independently of native UI. */
+(function initChannelScrollbar() {
+    const list = document.getElementById('lists');
+    const scrollbar = document.getElementById('channel-scrollbar');
+    if (!list || !scrollbar) return;
+    let pending = false;
+
+    function update() {
+        pending = false;
+        const width = list.clientWidth;
+        const maximum = Math.max(0, list.scrollWidth - width);
+        scrollbar.max = String(maximum);
+        scrollbar.value = String(Math.max(0, Math.min(maximum, list.scrollLeft)));
+        scrollbar.disabled = width <= 0 || maximum <= 0;
+        scrollbar.style.setProperty('--channel-scroll-thumb', `${Math.min(width, Math.max(24, width * width / Math.max(width, list.scrollWidth, 1)))}px`);
+    }
+
+    function schedule() {
+        if (pending) return;
+        pending = true;
+        requestAnimationFrame(update);
+    }
+
+    scrollbar.addEventListener('input', () => { list.scrollLeft = Number(scrollbar.value); });
+    list.addEventListener('scroll', schedule, { passive: true });
+    document.getElementById('toggleNotLive')?.addEventListener('change', schedule);
+    const resizeObserver = new ResizeObserver(schedule);
+    resizeObserver.observe(list);
+    const contentObserver = new MutationObserver(schedule);
+    contentObserver.observe(list, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+    schedule();
+})();
+
 /* =============== UI 按鈕生成 =============== */
 function generateButtons() {
     const container = document.getElementById("lists");
