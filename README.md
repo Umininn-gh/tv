@@ -18,6 +18,9 @@
 | `login.css` | 桌面與手機登入畫面 |
 | `login-config.js` | 密碼 salt、雜湊及登入狀態名稱 |
 | `tv-app.js` | 原有直播台功能，改為登入後啟動 |
+| `channel-manager.html` / `.js` / `.css` | 本站「掛台」管理頁，新增、修改及刪除共用頻道 |
+| `channel-sync-config.js` | 共用清單的 GitHub 程式庫、分支及檔案位置（不含憑證） |
+| `channel-sync.js` | 讀取及寫入 GitHub 共用清單，檢查同時編輯的衝突 |
 | `set-login-password.cjs` | 更新密碼設定的 Node.js 工具 |
 
 ### 更改密碼
@@ -70,15 +73,21 @@ node set-login-password.cjs --generate
 
 ## 直播台清單
 
-首頁與管理頁使用本程式庫的 `ch1.txt`，不再向已失效的 chicktv GitHub Pages 讀取清單。2026-10-14 逐筆核查原先 35 台及 Git 歷史的 43 筆舊記錄，並核對 [SK 雞友直播台](https://skknower.com/user/ctvhiki49713)。目前共 51 個不同直播入口，涵蓋該頁當日顯示的全部 16 台。
+首頁、「看更台」、舊播放器管理頁及新的「掛台」管理頁使用本程式庫 `main` 分支的 `ch1.txt`。主頁的「掛台」、「加台」及「del台」都開啟本站 `channel-manager.html`，不再連到別人的 Vercel 管理服務。2026-10-14 逐筆核查原先 35 台及 Git 歷史的 43 筆舊記錄，並核對 [SK 雞友直播台](https://skknower.com/user/ctvhiki49713)。核查後共 51 個不同直播入口，涵蓋該頁當日顯示的全部 16 台。
+
+管理頁可直接查看清單；儲存時使用擁有 `Umininn-gh/tv` 寫入權限的 GitHub 帳戶所建立的 fine-grained personal access token。Repository access 只選 `tv`，Contents 權限設為 Read and write，再貼到管理頁連線。權杖只在該視窗記憶體中使用，不保存到 localStorage、程式碼或網址；關閉／中斷連線後需重新輸入。首頁密碼是觀看閘，不能代替 GitHub 寫入權限。其他 GitHub 帳戶若未獲程式庫寫入權限，不能管理共用清單。
+
+新增、改名、修改 ID／平台及刪除會直接提交到同一份 `ch1.txt`。儲存前先讀取最新版本，保留其他頻道的更新；同一個頻道被別人修改時會提示衝突，保留未儲存的表單。瀏覽器只在 GitHub 確認成功後更新畫面。依據 [GitHub Contents API](https://docs.github.com/en/rest/repos/contents#create-or-update-file-contents) 的檔案 SHA 檢查更新，不會直接覆蓋別人的整份清單。
+
+同一瀏覽器已開著的觀看頁會即時收到成功儲存的清單，避免 GitHub Pages 尚在部署時顯示舊版本；其他裝置在 Pages 部署完成後更新。觀看頁每 60 秒檢查清單，切回視窗時亦會檢查。清單改名或新增時保留仍在播放的台及未套用的選台勾選；刪除或改 ID／平台只移除原來的對應播放器。網絡暫時失效時保留最後成功讀取的清單。
 
 原先 35 台保留 31 台，移除 4 個已無法使用的入口：Kick 的 `wing36747`、`no25no25`、`cobra-and-godzilla`，以及 Twitch 的 `no25no2501`。同 ID 的 Kick 和 Gosh 台仍然有效，分別保留。43 筆舊記錄中補回 17 台；另外 21 筆目前失效、2 筆是完整網址與 ID 的重複、1 個是已結束活動的 YouTube 存檔，2 筆無法確認。另從原程式的 whitewing918 公開清單和使用者提供的線索，補回 Twitch 的 G／OurChickenLife、RachelW 和 TristaLiveTV。
 
 `channel-validation.json` 保存全部 81 筆來源記錄的逐筆結果、動作和官方證據；`channel-recovery.json` 保存還原來源及原來 43 筆舊記錄。AngelThump `ppkkkpp` 的官方 API 重試仍回覆 500，GoodGame `219534` 連線逾時；兩者暫緩加入，沒有當作已刪除。有效但離線的帳戶保留；若開啟「隱藏離線」，這些按鈕會暫時隱藏。
 
-清單以「平台 + 頻道 ID」去重，完整 Twitch／YouTube 網址先轉成 ID，保留同名不同 ID 或不同平台的台。Gosh 保存頻道 ID，播放時再取得最新串流網址。已核查失效的 25 個入口也會從載入的瀏覽器舊清單中排除，原始儲存及備份保留。廣州電視的舊 HLS 入口已驗證直播片段和本站網域的跨來源播放權限，並改用較清楚的名稱，與雞舍台 G 分開。
+清單以「平台 + 頻道 ID」去重，完整 Twitch／YouTube 網址先轉成 ID，保留同名不同 ID 或不同平台的台。Gosh 保存頻道 ID，播放時再取得最新串流網址。廣州電視的舊 HLS 入口已驗證直播片段和本站網域的跨來源播放權限，並改用較清楚的名稱，與雞舍台 G 分開。
 
-瀏覽器已有的 `customChannels1` 自訂清單優先於預設清單；舊版 `customChannels` 會合併匯入一次，保留原始儲存備份。刪除的台會維持刪除，手動加回後才重新顯示。網絡暫時失效時使用上次成功載入的清單。只存在已清除的瀏覽器儲存、沒有進入 GitHub 的項目，無法由 Git 歷史找回。
+舊版瀏覽器的 `customChannels1`、`customChannels` 自訂清單、刪除記錄及備份繼續保留，但不再覆寫共用清單，避免每個瀏覽器看到不同頻道。管理頁下方會列出仍未加入共用清單的舊私人頻道，由擁有人逐個選擇加入後才公開。只存在已清除的瀏覽器儲存、沒有進入 GitHub 的項目，無法由 Git 歷史找回。
 
 ## 多台播放
 

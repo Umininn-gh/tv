@@ -687,7 +687,7 @@ textarea:focus {
                 <button id="toggle-all-audio" class="global-audio-toggle" type="button" aria-pressed="false" onclick="toggleAdminGlobalAudio()">🔇 全部靜音</button>
                 <output id="global-audio-feedback" class="global-audio-feedback" role="status" aria-live="polite" hidden></output>
                 <button id="chatToggleBtn">💬 chat(免插件)</button>
-                <button onclick="showPopup()">成為台主</button>
+                <button onclick="showPopup()">🐓掛台</button>
 				<button id="open-admin-btn">通知</button>
             </div>
         </div>
@@ -1121,6 +1121,8 @@ textarea:focus {
             if (channel.platform === 'twitch') return 'https://player.twitch.tv/?channel=' + channel.id + '&parent=' + encodeURIComponent(location.hostname || 'localhost') + '&muted=' + muted;
             if (channel.platform === 'ok') return 'https://ok.ru/videoembed/' + channel.id + '?nochat=1&autoplay=1&silent=' + (muted ? '1' : '0');
             if (channel.platform === 'at') return 'https://player.angelthump.com/?channel=' + channel.id;
+            if (channel.platform === 'bs') return channel.id;
+            if (channel.platform === 'goodgame') return 'https://goodgame.ru/player?' + encodeURIComponent(channel.id) + (muted ? '&muted=1' : '');
             return '';
         }
 
@@ -1191,10 +1193,38 @@ textarea:focus {
         }
 
         // ======================== 從外部來源載入頻道清單 =================
-        async function loadChannelsFromUrl() {
-            const loaded = await ChannelList.loadChannels(localStorage, fetch);
-            channels = loaded.channels;
-            generateButtons();
+        let adminChannelReload = null;
+        let adminChannelReloadQueued = false;
+        function loadChannelsFromUrl() {
+            adminChannelReloadQueued = true;
+            if (adminChannelReload) return adminChannelReload;
+            adminChannelReload = (async () => {
+                do {
+                    adminChannelReloadQueued = false;
+                    const loaded = await ChannelList.loadSharedChannels(localStorage, fetch);
+                    if (loaded.raw === null || JSON.stringify(loaded.channels) === JSON.stringify(channels)) continue;
+                    const selection = document.getElementById('channel-selection');
+                    const draft = new Map(Array.from(document.querySelectorAll('#channel-options input'), input => [channelStatusKey({ name: input.dataset.name || 'channel', platform: input.dataset.platform, id: input.value }), input.checked]));
+                    const scrollTop = selection.scrollTop;
+                    channels = loaded.channels;
+                    const available = new Map(channels.map(channel => [channelStatusKey(channel), channel]));
+                    adminPlayers.forEach((entry, key) => { if (available.has(key)) entry.channel = available.get(key); });
+                    const retained = Array.from(adminPlayers.values()).filter(entry => available.has(entry.key)).map(entry => entry.channel);
+                    if (retained.length !== adminPlayers.size) renderAdminChannels(retained, '未選擇頻道');
+                    generateButtons();
+                    if (selection.style.display !== 'none') {
+                        generateChannelOptions();
+                        document.querySelectorAll('#channel-options input').forEach(input => {
+                            const key = channelStatusKey({ name: input.dataset.name || 'channel', platform: input.dataset.platform, id: input.value });
+                            if (draft.has(key)) input.checked = draft.get(key);
+                        });
+                        selection.scrollTop = scrollTop;
+                    }
+                    const menu = document.getElementById('channel-menu');
+                    if (menu.style.display === 'block') { const position = menu.scrollTop; toggleChannelMenu(); toggleChannelMenu(); menu.scrollTop = position; }
+                } while (adminChannelReloadQueued);
+            })().catch(error => console.warn('頻道同步暫時失敗', error)).finally(() => { adminChannelReload = null; });
+            return adminChannelReload;
         }
 
         // ======================== 產生頂部按鈕 & 刪除模式 =================
@@ -1249,14 +1279,7 @@ textarea:focus {
         }
 
         function editClick() {
-            document.querySelectorAll(".button-wrapper button:last-child").forEach(btn => {
-                if (btn.innerText === "x") btn.style.display = "inline-flex";
-            });
-            setTimeout(() => {
-                document.querySelectorAll(".button-wrapper button:last-child").forEach(btn => {
-                    if (btn.innerText === "x") btn.style.display = "none";
-                });
-            }, 8000);
+            showPopup('channels');
         }
 
         // ======================== 狀態更新（UI 樣式）====================
@@ -1461,7 +1484,7 @@ textarea:focus {
         // ======================== 彈窗事件綁定 ========================
         function bindModalEvents() {
             const addBtn = document.getElementById('addChannelBtn');
-            if (addBtn) addBtn.onclick = openAddChannelModal;
+            if (addBtn) addBtn.onclick = () => showPopup('new');
             const confirmBtn = document.getElementById('confirmAddChannel');
             const cancelBtn = document.getElementById('cancelAddChannel');
             if (confirmBtn) confirmBtn.onclick = addChannelFromModal;
@@ -1486,9 +1509,16 @@ textarea:focus {
             await loadChannelsFromUrl();
             bindModalEvents();
             setInterval(fetchAllStatuses, 480000);
+            setInterval(loadChannelsFromUrl, 60000);
+            window.addEventListener('focus', loadChannelsFromUrl);
+            document.addEventListener('visibilitychange', () => { if (!document.hidden) loadChannelsFromUrl(); });
+            window.addEventListener('storage', event => {
+                if (event.storageArea && event.storageArea !== localStorage) return;
+                if (event.key === ChannelList.sharedUpdateKey || event.key === null) loadChannelsFromUrl();
+            });
         });
-        function showPopup() {
-            window.open("https://chicktv01.42web.io/add.php", "_blank", "width=800,height=600");
+        function showPopup(section = '') {
+            window.open('./channel-manager.html' + (section ? '#' + section : ''), 'umininn-channel-manager', 'width=800,height=800,noopener');
         }
     </script>
 </body>

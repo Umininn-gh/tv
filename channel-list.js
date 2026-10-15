@@ -7,6 +7,8 @@
     const MIGRATION_KEY = 'customChannels1LegacyImported';
     const CACHE_KEY = 'umininnChannelListCache';
     const REMOVED_KEY = 'umininnRemovedChannels';
+    const SHARED_CACHE_KEY = 'umininnSharedChannelCache';
+    const SHARED_UPDATE_KEY = 'umininnSharedChannelUpdate';
     const PLATFORMS = new Set(['twitch', 'kick', 'ok', 'at', 'm3u8', 'youtube', 'bs', 'vaughn', 'gosh', 'goodgame']);
     const CASE_INSENSITIVE_IDS = new Set(['twitch', 'kick', 'at', 'vaughn', 'gosh']);
     const ALIASES = { vl: 'kick', okru: 'ok', angelthump: 'at' };
@@ -212,7 +214,91 @@
         }), raw };
     }
 
-    const api = { platformKey, normalizeChannel, channelKey, mergeChannels, parseChannelText, readCustomChannels, saveCustomChannels, forgetChannel, restoreChannel, loadChannels };
+    function readObject(storage, key) {
+        try {
+            const value = JSON.parse(readRaw(storage, key));
+            return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+        } catch (error) { return null; }
+    }
+
+    // A successful GitHub save can precede the Pages deployment. Remember exactly
+    // which old file versions may still be served, rather than replacing a newer
+    // deployment with an arbitrary long-lived browser copy.
+    function publishSharedSnapshot(storage, raw, previousRaw, additionalOldVersions = []) {
+        parseChannelText(raw);
+        const pending = readObject(storage, SHARED_UPDATE_KEY);
+        const cached = readObject(storage, SHARED_CACHE_KEY);
+        const oldVersions = [previousRaw, cached && cached.raw, ...additionalOldVersions];
+        if (pending && typeof pending.raw === 'string') {
+            oldVersions.push(pending.raw, ...(Array.isArray(pending.oldVersions) ? pending.oldVersions : []));
+        }
+        const update = {
+            raw,
+            oldVersions: [...new Set(oldVersions.filter(value => typeof value === 'string' && value !== raw))].slice(0, 32)
+        };
+        if (!writeRaw(storage, SHARED_UPDATE_KEY, JSON.stringify(update))) return false;
+        return true;
+    }
+
+    async function loadSharedChannels(storage, fetcher, providedText) {
+        const pendingBeforeRequest = readRaw(storage, SHARED_UPDATE_KEY);
+        let raw = null;
+        let refreshed = false;
+        try {
+            raw = providedText;
+            if (typeof raw !== 'string') {
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), 15000);
+                try {
+                    const response = await fetcher(`./ch1.txt?t=${Date.now()}`, { cache: 'no-store', signal: controller.signal });
+                    if (!response.ok) throw new Error('Channel list unavailable');
+                    raw = await response.text();
+                } finally { clearTimeout(timer); }
+            }
+            parseChannelText(raw);
+            refreshed = true;
+        } catch (error) {
+            const cached = readObject(storage, SHARED_CACHE_KEY);
+            raw = cached && typeof cached.raw === 'string' ? cached.raw : null;
+        }
+
+        // Read after the network await so a save in another tab wins over an
+        // older response already in flight. Private legacy storage is untouched.
+        const pendingAfterRequest = readRaw(storage, SHARED_UPDATE_KEY);
+        const pending = readObject(storage, SHARED_UPDATE_KEY);
+        if (!pending && pendingBeforeRequest !== pendingAfterRequest) {
+            const currentCache = readObject(storage, SHARED_CACHE_KEY);
+            if (currentCache && typeof currentCache.raw === 'string') {
+                try { parseChannelText(currentCache.raw); raw = currentCache.raw; } catch (error) { /* Retain the valid network result. */ }
+            }
+        }
+        if (pending && typeof pending.raw === 'string') {
+            try {
+                parseChannelText(pending.raw);
+                if (pendingBeforeRequest !== pendingAfterRequest) {
+                    raw = pending.raw;
+                } else if (refreshed && raw === pending.raw) {
+                    writeRaw(storage, SHARED_UPDATE_KEY, 'null');
+                } else if (raw === null || raw === pending.raw || (Array.isArray(pending.oldVersions) && pending.oldVersions.includes(raw))) {
+                    raw = pending.raw;
+                } else if (refreshed) {
+                    // A different valid deployment superseded our saved version.
+                    writeRaw(storage, SHARED_UPDATE_KEY, 'null');
+                }
+            } catch (error) { /* Ignore a malformed browser cache. */ }
+        }
+        let channels = [];
+        if (typeof raw === 'string') {
+            try {
+                channels = parseChannelText(raw);
+                writeRaw(storage, SHARED_CACHE_KEY, JSON.stringify({ raw }));
+            } catch (error) { raw = null; }
+        }
+        return { channels, raw, refreshed };
+    }
+
+    const api = { platformKey, normalizeChannel, channelKey, mergeChannels, parseChannelText, readCustomChannels, saveCustomChannels, forgetChannel, restoreChannel, loadChannels,
+        loadSharedChannels, publishSharedSnapshot, sharedUpdateKey: SHARED_UPDATE_KEY };
     root.ChannelList = api;
     if (typeof module === 'object' && module.exports) module.exports = api;
 })(globalThis);

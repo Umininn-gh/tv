@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="referrer" content="no-referrer">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://api.github.com; img-src 'self' data:; form-action 'none'; base-uri 'self'; object-src 'none'">
+    <title>共用頻道管理</title>
+    <link rel="stylesheet" href="./channel-manager.css">
+    <script src="./channel-list.js" defer></script>
+    <script src="./channel-sync-config.js" defer></script>
+    <script src="./channel-sync.js" defer></script>
+    <script src="./channel-manager.js" defer></script>
+</head>
+<body>
+    <header class="page-header">
+        <div class="header-inner">
+            <div><h1>頻道管理</h1><p>與直播主頁共用同一份清單，新增、編輯及刪除會套用給所有人。</p></div>
+            <a class="back-link" href="./">返回直播台 <span aria-hidden="true">↗</span></a>
+        </div>
+    </header>
+    <main>
+        <section class="card connection-card" aria-labelledby="connection-heading">
+            <div class="section-heading"><h2 id="connection-heading">連線以管理共用清單</h2><span id="connection-badge" class="badge muted-badge">唯讀</span></div>
+            <p id="connection-state" class="secondary">可先查看頻道；輸入此程式庫的 GitHub 存取權杖後便可儲存。</p>
+            <form id="connection-form">
+                <label for="github-token">GitHub 存取權杖</label>
+                <div class="connection-fields">
+                    <input id="github-token" type="password" autocomplete="off" spellcheck="false" autocapitalize="none" placeholder="貼上 fine-grained personal access token" required>
+                    <button id="connect-button" class="primary" type="submit">連線</button>
+                    <button id="disconnect-button" class="subtle" type="button" hidden>中斷連線</button>
+                </div>
+            </form>
+            <p class="hint">權杖只留在這個視窗的記憶體，關閉或中斷連線後需重新輸入。</p>
+            <details class="token-help">
+                <summary>第一次使用：設定 GitHub 權限</summary>
+                <ol>
+                    <li>開啟 <a href="https://github.com/settings/personal-access-tokens/new?name=TV%20channels" target="_blank" rel="noopener noreferrer">GitHub 權杖設定</a>，建立 fine-grained personal access token。</li>
+                    <li>Resource owner 選擇 <strong id="repository-owner">此程式庫的擁有人</strong>，Repository access 選 Only select repositories，然後選取 <strong id="repository-name">tv</strong>。</li>
+                    <li>Repository permissions 的 Contents 選 <strong>Read and write</strong>，再產生權杖並貼到上面的欄位。</li>
+                </ol>
+                <p>只有本身有程式庫寫入權限的 GitHub 帳戶能儲存變更。</p>
+            </details>
+        </section>
+
+        <p id="manager-status" class="status" role="status" aria-live="polite">正在載入共用頻道…</p>
+
+        <section id="new" class="card editor-card" aria-labelledby="editor-heading">
+            <div class="section-heading"><h2 id="editor-heading">新增頻道</h2><button id="cancel-edit" class="text-button" type="button" hidden>取消編輯</button></div>
+            <form id="channel-form">
+                <fieldset id="channel-fields">
+                    <div class="form-grid">
+                        <div><label for="channel-name">顯示名稱</label><input id="channel-name" type="text" maxlength="120" required placeholder="例如：雞舍台"></div>
+                        <div><label for="channel-platform">平台</label><select id="channel-platform" required></select></div>
+                        <div class="wide"><label id="channel-id-label" for="channel-id">頻道 ID</label><input id="channel-id" type="text" maxlength="2048" autocapitalize="none" spellcheck="false" required><p id="channel-id-help" class="hint"></p></div>
+                        <div id="goodgame-fields" class="wide" hidden><label for="channel-gg-username">GoodGame 公開頻道名稱</label><input id="channel-gg-username" type="text" maxlength="80" autocapitalize="none" spellcheck="false" placeholder="例如：Pomi"><p class="hint">數字 ID 之外可保留公開名稱，供播放器取得串流。</p></div>
+                    </div>
+                    <div class="editor-footer"><span id="save-hint" class="hint">連線後可儲存至共用清單。</span><button id="save-channel" type="submit" class="primary" disabled>新增到共用清單</button></div>
+                </fieldset>
+            </form>
+        </section>
+
+        <section id="channels" class="card list-card" aria-labelledby="list-heading">
+            <div class="list-toolbar"><div><h2 id="list-heading">共用頻道</h2><p id="channel-count" class="secondary">載入中</p></div><button id="refresh-channels" class="subtle" type="button">重新整理</button></div>
+            <label class="sr-only" for="channel-search">搜尋名稱、ID 或平台</label>
+            <input id="channel-search" type="search" placeholder="搜尋名稱、ID 或平台" autocomplete="off">
+            <ul id="channel-list" class="channel-list" aria-label="共用頻道清單"></ul>
+            <p id="empty-list" class="empty-message" hidden>清單尚未有頻道。</p>
+        </section>
+
+        <details id="legacy-channels" class="card legacy-card" hidden>
+            <summary id="legacy-summary">瀏覽器內的舊私人頻道</summary>
+            <p class="secondary">原有私人頻道仍保留於這個瀏覽器。你可以逐個加入共用清單，讓所有人看到。</p>
+            <ul id="legacy-list" class="channel-list" aria-label="舊私人頻道"></ul>
+        </details>
+        <p class="page-note">清單由此網站的 GitHub 程式庫管理。其他裝置會在網站部署更新後讀取新清單。</p>
+    </main>
+</body>
+</html>

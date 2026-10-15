@@ -554,8 +554,8 @@ function toggleAllAudio() {
     return result;
 }
 
-/* ★ 記錄上一次 ch1.txt 的原始內容，用來偵測是否有更新 */
-let _lastCh1TxtRaw = null;
+let channelReloadPromise = null;
+let channelReloadQueued = false;
 
 const HLS_CONFIG = {
     enableWorker: true,
@@ -762,6 +762,10 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
 function pruneActivePlayers() {
     if (!activePlayers.size) return;
     const available = new Map(channels.map(channel => [ChannelList.channelKey(channel), channel]));
+    activePlayers.forEach((entry, key) => {
+        if (available.has(key)) entry.channel = available.get(key);
+    });
+    if (currentDisplayChannel) currentDisplayChannel = available.get(ChannelList.channelKey(currentDisplayChannel)) || null;
     const remaining = getPlayerPositionKeys().map(key => available.get(key)).filter(Boolean);
     if (remaining.length !== activePlayers.size) syncActivePlayers(remaining);
 }
@@ -803,53 +807,35 @@ async function loadTwitchCredentials() {
     } catch (e) { console.warn(e); }
 }
 
-/* ★ 修改版：可接收外部已抓好的 ch1.txt 內容，避免重複 fetch */
+/* The manager and both viewing pages share the published channel file. */
 async function loadChannelsFromUrl(providedTxtRaw) {
-    const loaded = await ChannelList.loadChannels(localStorage, fetch, providedTxtRaw);
+    const loaded = await ChannelList.loadSharedChannels(localStorage, fetch, providedTxtRaw);
+    if (loaded.raw === null || JSON.stringify(loaded.channels) === JSON.stringify(channels)) return;
     channels = loaded.channels;
     pruneActivePlayers();
-    if (loaded.raw !== null) _lastCh1TxtRaw = loaded.raw;
     generateButtons();
+    const selection = document.getElementById('channel-selection');
+    if (selection && selection.style.display !== 'none') generateChannelOptions({ preserveSelection: true });
+    const menu = document.getElementById('channel-menu');
+    if (menu && menu.style.display === 'block') {
+        const scrollTop = menu.scrollTop;
+        toggleChannelMenu();
+        toggleChannelMenu();
+        menu.scrollTop = scrollTop;
+    }
 }
 
-/* ============ ★ ch1.txt 自動偵測更新（不用 F5） ============ */
-async function pollCh1TxtForUpdates() {
-    try {
-        const resp = await fetch(
-            `./ch1.txt?t=${Date.now()}`,
-            { cache: 'no-store' }
-        );
-        if (!resp.ok) return;
-        const raw = await resp.text();
-
-        // 內容沒變 → 直接結束
-        if (raw === _lastCh1TxtRaw) return;
-
-        console.log('[ch1.txt] 偵測到更新，重新載入頻道');
-        // 重新載入（保留目前播放中的影片，不會被中斷）
-        await loadChannelsFromUrl(raw);
-
-        // 若目前正在播放的頻道被刪掉了 → 停止播放
-        if (currentDisplayChannel) {
-            const stillExists = channels.some(ch =>
-                ch.id === currentDisplayChannel.id &&
-                ch.platform === currentDisplayChannel.platform
-            );
-            if (!stillExists) displaySingleChannel(null);
-        }
-
-        // 如果看更台面板 / 手機頻道選單是開著的，順便重繪
-        const sel = document.getElementById('channel-selection');
-        if (sel && sel.style.display !== 'none') generateChannelOptions();
-
-        const menu = document.getElementById('channel-menu');
-        if (menu && menu.style.display === 'block') {
-            toggleChannelMenu();                       // 先關
-            setTimeout(() => toggleChannelMenu(), 0);  // 再開，重建列表
-        }
-    } catch (e) {
-        console.warn('[ch1.txt poll]', e);
-    }
+/* Serialize refreshes so an old in-flight response cannot undo a newer edit. */
+function pollCh1TxtForUpdates() {
+    channelReloadQueued = true;
+    if (channelReloadPromise) return channelReloadPromise;
+    channelReloadPromise = (async () => {
+        do {
+            channelReloadQueued = false;
+            await loadChannelsFromUrl();
+        } while (channelReloadQueued);
+    })().catch(error => console.warn('[channel sync]', error)).finally(() => { channelReloadPromise = null; });
+    return channelReloadPromise;
 }
 
 /* =============== UI 按鈕生成 =============== */
@@ -964,9 +950,17 @@ function fetchAllStatuses(options) {
     return Promise.all(channels.map(ch => fetchStatus(ch, options)));
 }
 
-function generateChannelOptions() {
+function generateChannelOptions({ preserveSelection = false } = {}) {
     const container = document.getElementById("channel-options");
     if (!container) return;
+    const previous = new Map();
+    if (preserveSelection) {
+        container.querySelectorAll('input[type="checkbox"]').forEach(input => {
+            previous.set(ChannelList.channelKey({ name: input.dataset.name || 'channel', platform: input.dataset.platform, id: input.value }), input.checked);
+        });
+    }
+    const panel = document.getElementById('channel-selection');
+    const scrollTop = panel ? panel.scrollTop : 0;
     container.innerHTML = "";
     const frag = document.createDocumentFragment();
 
@@ -982,7 +976,7 @@ function generateChannelOptions() {
                    value="${escapeHtml(ch.id)}"
                    data-platform="${ch.platform}"
                    data-name="${escapeHtml(ch.name)}"
-                   ${activePlayers.has(ChannelList.channelKey(ch)) ? 'checked' : ''}
+                   ${(previous.has(ChannelList.channelKey(ch)) ? previous.get(ChannelList.channelKey(ch)) : activePlayers.has(ChannelList.channelKey(ch))) ? 'checked' : ''}
                    id="chk_${idSafe}">
             <label class="channel-option-label"
                    id="status-label-${idSafe}"
@@ -995,6 +989,7 @@ function generateChannelOptions() {
     });
     container.appendChild(frag);
     channels.forEach(ch => updateChannelOptionLabel(ch));
+	if (preserveSelection && panel) panel.scrollTop = scrollTop;
 	fetchAllStatuses();
 }
 
@@ -1331,10 +1326,12 @@ function renderDeleteChannelList() {
 }
 
 function escapeHtml(str) {
-    return String(str).replace(/[&<>]/g, function (m) {
+    return String(str).replace(/[&<>"']/g, function (m) {
         if (m === '&') return '&amp;';
         if (m === '<') return '&lt;';
         if (m === '>') return '&gt;';
+        if (m === '"') return '&quot;';
+        return '&#39;';
         return m;
     });
 }
@@ -1367,10 +1364,14 @@ function confirmDeleteChannels() {
     }
     closeDeleteModal();
 }
-window.editClick = function () { openDeleteModal(); };
+window.editClick = function () { showChannelManager('channels'); };
 
 function showPopup() {
-    window.open("https://chicktv01.vercel.app", "_blank", "width=800,height=600");
+    showChannelManager();
+}
+
+function showChannelManager(section = '') {
+    window.open('./channel-manager.html' + (section ? '#' + section : ''), 'umininn-channel-manager', 'width=800,height=800,noopener');
 }
 
 /* 隱藏離線開關 */
@@ -1565,7 +1566,7 @@ function updateIdPlaceholder() {
 }
 
 document.getElementById('addChannelBtn').onclick = () =>
-    document.getElementById('addChannelModal').classList.add('active');
+    showChannelManager('new');
 
 document.getElementById('confirmAddChannel').onclick = async () => {
     const name = document.getElementById('modal-channel-name').value.trim();
@@ -1601,7 +1602,7 @@ document.getElementById('addChannelModal').addEventListener('click', (e) => {
     if (e.target.classList.contains('modal-mask')) document.getElementById('addChannelModal').classList.remove('active');
 });
 
-document.getElementById('delChannelBtn').onclick = openDeleteModal;
+document.getElementById('delChannelBtn').onclick = () => showChannelManager('channels');
 document.getElementById('confirmDeleteChannels').onclick = confirmDeleteChannels;
 document.getElementById('cancelDeleteModal').onclick = closeDeleteModal;
 document.getElementById('deleteChannelModal')?.addEventListener('click', (e) => {
@@ -1617,11 +1618,15 @@ async function initializeTvApp() {
     // 狀態檢查：原本的 5 分鐘
     setInterval(() => fetchAllStatuses({ force: true }), 300000);
 
-    // ★ ch1.txt 內容偵測：每 60 秒一次（可自行調整）
-    setInterval(pollCh1TxtForUpdates, 1080000);
+    setInterval(pollCh1TxtForUpdates, 60000);
     // 分頁重新回到前景時也檢查一次，手機切回來能馬上同步
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden) pollCh1TxtForUpdates();
+    });
+    window.addEventListener('focus', pollCh1TxtForUpdates);
+    window.addEventListener('storage', event => {
+        if (event.storageArea && event.storageArea !== localStorage) return;
+        if (event.key === ChannelList.sharedUpdateKey || event.key === null) pollCh1TxtForUpdates();
     });
 }
 
