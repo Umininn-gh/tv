@@ -108,10 +108,14 @@
             white-space: nowrap;
             padding: 0;
             cursor: grab;
+            touch-action: pan-y pinch-zoom;
+            user-select: none;
+            -webkit-user-select: none;
             scrollbar-width: none;
             -webkit-overflow-scrolling: touch;
         }
         #lists:active { cursor: grabbing; }
+        #lists.is-dragging, #lists.is-dragging button { cursor: grabbing; }
 
         #lists::-webkit-scrollbar { display: none; width: 0; height: 0; }
         /* Native Firefox scrollbar thickness depends on the OS. Keep the
@@ -1220,7 +1224,7 @@
     </style>
     <link rel="stylesheet" href="./login.css">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261016-channel-drag"></script>
+    <script defer src="./login.js?v=20261016-icon-drag"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">

@@ -858,6 +858,7 @@ function pollCh1TxtForUpdates() {
     if (!list || !scrollbar) return;
     let pending = false;
     let drag = null;
+    let suppressIconClick = false;
 
     function metrics() {
         const width = list.clientWidth;
@@ -868,15 +869,21 @@ function pollCh1TxtForUpdates() {
 
     function endDrag(event) {
         if (!drag || event && event.pointerId !== drag.id) return;
-        const id = drag.id;
+        const previous = drag;
         drag = null;
-        try { scrollbar.releasePointerCapture(id); } catch (_) {}
+        if (previous.surface === list && previous.moved) list.classList.remove('is-dragging');
+        if (previous.surface !== list || previous.moved) {
+            try { previous.surface.releasePointerCapture(previous.id); } catch (_) {}
+        }
     }
 
     function update() {
         pending = false;
         const { width, maximum, thumb } = metrics();
-        if (drag && (width !== drag.width || maximum !== drag.maximum)) endDrag();
+        if (drag && (width !== drag.width || maximum !== drag.maximum)) {
+            if (drag.surface === list) suppressIconClick = true;
+            endDrag();
+        }
         scrollbar.max = String(maximum);
         scrollbar.value = String(Math.max(0, Math.min(maximum, list.scrollLeft)));
         scrollbar.disabled = width <= 0 || maximum <= 0;
@@ -897,25 +904,56 @@ function pollCh1TxtForUpdates() {
         if (drag || event.isPrimary === false) return;
         const { width, maximum, thumb } = metrics();
         if (width <= 0 || maximum <= 0) { schedule(); return; }
-        drag = { id: event.pointerId, x: event.clientX, width, maximum,
+        drag = { surface: scrollbar, id: event.pointerId, x: event.clientX, width, maximum,
             travel: Math.max(1, scrollbar.getBoundingClientRect().width - thumb) };
         scrollbar.focus({ preventScroll: true });
         try { scrollbar.setPointerCapture(event.pointerId); } catch (_) {}
+    });
+    list.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || event.isPrimary === false) return;
+        if (drag) { event.preventDefault(); return; }
+        suppressIconClick = false;
+        const { width, maximum } = metrics();
+        if (width <= 0) return;
+        // Keep native button focus/click until horizontal movement exceeds 6px.
+        drag = { surface: list, id: event.pointerId, x: event.clientX, y: event.clientY,
+            width, maximum, moved: false };
     });
     document.addEventListener('pointermove', event => {
         if (!drag || event.pointerId !== drag.id) return;
         if (event.pointerType === 'mouse' && !(event.buttons & 1)) { endDrag(); return; }
         const { width, maximum } = metrics();
-        if (width !== drag.width || maximum !== drag.maximum || scrollbar.disabled) { endDrag(); schedule(); return; }
+        const icons = drag.surface === list;
+        if (width !== drag.width || maximum !== drag.maximum || !icons && scrollbar.disabled) {
+            if (icons) suppressIconClick = true;
+            endDrag(); schedule(); return;
+        }
+        if (icons && !drag.moved) {
+            const x = Math.abs(event.clientX - drag.x), y = Math.abs(event.clientY - drag.y);
+            if (y > 6 && y > x) { suppressIconClick = true; endDrag(); return; }
+            if (x <= 6) return;
+            drag.moved = true;
+            suppressIconClick = true;
+            list.classList.add('is-dragging');
+            try { list.setPointerCapture(event.pointerId); } catch (_) {}
+        }
         event.preventDefault();
         const delta = event.clientX - drag.x;
         drag.x = event.clientX;
-        list.scrollLeft = Math.max(0, Math.min(maximum, list.scrollLeft + delta * maximum / drag.travel));
+        list.scrollLeft = Math.max(0, Math.min(maximum, list.scrollLeft + (icons ? -delta : delta * maximum / drag.travel)));
         scrollbar.value = String(list.scrollLeft);
     });
     document.addEventListener('pointerup', endDrag);
     document.addEventListener('pointercancel', endDrag);
     scrollbar.addEventListener('lostpointercapture', endDrag);
+    list.addEventListener('lostpointercapture', event => { if (event.target === list) endDrag(event); });
+    list.addEventListener('dragstart', event => event.preventDefault());
+    list.addEventListener('click', event => {
+        if (!suppressIconClick || event.detail === 0) return;
+        suppressIconClick = false;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+    }, true);
     window.addEventListener('blur', () => endDrag());
     scrollbar.addEventListener('click', event => event.preventDefault());
     // Pointer defaults are replaced above; native range keyboard input remains.
