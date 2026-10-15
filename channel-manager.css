@@ -15,6 +15,10 @@ h2 { font-size: 17px; font-weight: 650; }
 .header-inner p { margin-top: 5px; color: #78817a; font-size: 13px; }
 .back-link { flex-shrink: 0; text-decoration: none; font-weight: 600; }
 main { max-width: 800px; margin: 0 auto; padding: 25px 24px 40px; }
+.manager-nav { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 18px; }
+.manager-nav a { padding: 8px 11px; border-radius: 8px; border: 1px solid #dce3d9; text-decoration: none; color: #52654f; background: #fafcf8; font-size: 13px; font-weight: 600; }
+.manager-nav a[aria-current="page"] { color: #fff; background: #3b855a; border-color: #3b855a; }
+.list-purpose { margin-bottom: 14px; }
 .card { border: 1px solid #e1e6df; background: #fff; border-radius: 15px; padding: 22px; box-shadow: 0 2px 4px #273b2910; }
 .card + .card { margin-top: 18px; }
 .section-heading, .list-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }

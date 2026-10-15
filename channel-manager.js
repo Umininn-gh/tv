@@ -16,6 +16,20 @@
     };
     const ids = ['connection-form', 'github-token', 'connect-button', 'disconnect-button', 'connection-state', 'connection-badge', 'repository-owner', 'repository-name', 'manager-status', 'new', 'channel-form', 'channel-fields', 'editor-heading', 'cancel-edit', 'channel-name', 'channel-platform', 'channel-id', 'channel-id-label', 'channel-id-help', 'goodgame-fields', 'channel-gg-username', 'save-channel', 'save-hint', 'refresh-channels', 'channel-count', 'channel-search', 'channel-list', 'empty-list', 'legacy-channels', 'legacy-summary', 'legacy-list', 'sync-sklive', 'sklive-hint', 'sklive-result', 'sklive-summary', 'sklive-additions'];
     const ui = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
+    const views = {
+        manage: ['掛台管理', '查看及修改已掛台的名稱、平台與入口。'],
+        new: ['加台', '手動新增直播入口，加入所有人共用的清單。'],
+        channels: ['del台', '逐台選擇要移除的入口，確認後才會刪除。'],
+        sklive: ['SKLive 補台', '核對來源清單，只補回本站缺少的台。'],
+        health: ['疑似失效台檢查', '掃描現有台，查看證據後再決定如何處理。'],
+        edit: ['編輯已掛台', '修改這個頻道的資料，儲存後更新共用清單。']
+    };
+    const panels = Object.fromEntries(['health', 'sklive', 'new', 'channels'].map(id => [id, document.getElementById(id)]));
+    const navigation = Object.fromEntries(['manage', 'new', 'channels', 'sklive', 'health'].map(view => [view, document.getElementById('view-' + view)]));
+    const editorFields = ['channel-name', 'channel-id', 'channel-platform', 'channel-gg-username'];
+    const drafts = { new: null, edit: null };
+    let currentView = '';
+    let editReturnView = 'manage';
     const state = { snapshot: null, token: '', busy: false, previous: null, readonlyFallback: false, client: null, localRaw: null, localSyncQueued: false, localSyncing: false, authGeneration: 0 };
     let healthUI = null;
     let healthScanner = null;
@@ -105,6 +119,57 @@
         platformFields();
     }
 
+    function editorDraft() {
+        return currentView === 'edit' && !state.previous ? null : { previous: state.previous, fields: Object.fromEntries(editorFields.map(id => [id, ui[id].value])) };
+    }
+
+    function restoreEditor(draft) {
+        resetEditor();
+        if (!draft) return;
+        state.previous = draft.previous;
+        editorFields.forEach(id => { ui[id].value = draft.fields[id]; });
+        if (state.previous) {
+            ui['editor-heading'].textContent = '編輯頻道';
+            ui['save-channel'].textContent = '儲存共用頻道';
+            ui['cancel-edit'].hidden = false;
+        }
+        platformFields();
+    }
+
+    function applyView(requested) {
+        let next = Object.hasOwn(views, requested) ? requested : 'manage';
+        if (next === 'edit' && currentView !== 'edit' && !drafts.edit) next = 'manage';
+        if (next !== currentView) {
+            if (Object.hasOwn(drafts, currentView)) drafts[currentView] = editorDraft();
+            currentView = next;
+            if (Object.hasOwn(drafts, next)) restoreEditor(drafts[next]);
+        }
+        document.title = views[next][0] + ' · 直播台';
+        document.getElementById('page-heading').textContent = views[next][0];
+        document.getElementById('page-description').textContent = views[next][1];
+        document.body.setAttribute('data-view', next);
+        panels.health.hidden = next !== 'health';
+        panels.sklive.hidden = next !== 'sklive';
+        panels.new.hidden = !['new', 'edit'].includes(next);
+        panels.channels.hidden = !['manage', 'channels'].includes(next);
+        const active = next === 'edit' ? editReturnView : next;
+        Object.entries(navigation).forEach(([view, link]) => { link.setAttribute('aria-current', active === view ? 'page' : 'false'); });
+        document.getElementById('list-heading').textContent = next === 'channels' ? '選擇要刪除的台' : '已掛台';
+        document.getElementById('list-purpose').textContent = next === 'channels' ? '刪除會更新所有人的共用清單；每次刪除都需要確認。' : '選擇頻道以修改名稱、平台或播放入口。';
+        render();
+    }
+
+    function navigate(view) {
+        location.hash = '#' + view;
+        applyView(view);
+    }
+
+    function cancelEditing() {
+        resetEditor();
+        drafts.edit = null;
+        if (currentView === 'edit') navigate(editReturnView);
+    }
+
     function focusEditor() {
         ui.new.scrollIntoView({ behavior: 'smooth', block: 'start' });
         ui['channel-name'].focus({ preventScroll: true });
@@ -112,6 +177,11 @@
 
     function edit(channel) {
         if (state.busy) return;
+        if (currentView !== 'edit') editReturnView = ['manage', 'channels', 'health'].includes(currentView) ? currentView : 'manage';
+        // Enter the editor before populating it, keeping the separate add draft intact.
+        if (Object.hasOwn(drafts, currentView)) drafts[currentView] = editorDraft();
+        currentView = 'edit';
+        location.hash = '#edit';
         state.previous = channel;
         ui['channel-name'].value = channel.name;
         ui['channel-id'].value = channel.id;
@@ -121,6 +191,7 @@
         ui['save-channel'].textContent = '儲存共用頻道';
         ui['cancel-edit'].hidden = false;
         platformFields();
+        applyView('edit');
         focusEditor();
     }
 
@@ -143,10 +214,12 @@
         } else {
             const editButton = make('button', 'edit-button', '編輯');
             editButton.type = 'button';
+            editButton.hidden = currentView === 'channels';
             editButton.setAttribute('aria-label', '編輯 ' + channel.name);
             editButton.addEventListener('click', () => edit(channel));
             const deleteButton = make('button', 'delete-button', '刪除');
             deleteButton.type = 'button';
+            deleteButton.hidden = currentView !== 'channels';
             deleteButton.setAttribute('aria-label', '刪除 ' + channel.name);
             deleteButton.addEventListener('click', () => {
                 if (!canSave() || state.busy) return;
@@ -172,7 +245,7 @@
         try { privateChannels = ChannelList.readCustomChannels(localStorage); } catch (_) { /* Storage can be unavailable. */ }
         const sharedKeys = new Set(channels.map(ChannelList.channelKey));
         const extras = privateChannels.filter(channel => !sharedKeys.has(ChannelList.channelKey(channel)));
-        ui['legacy-channels'].hidden = extras.length === 0;
+        ui['legacy-channels'].hidden = extras.length === 0 || !['manage', 'new'].includes(currentView);
         ui['legacy-summary'].textContent = '瀏覽器內另有 ' + extras.length + ' 個舊私人頻道';
         ui['legacy-list'].replaceChildren(...extras.map(channel => row(channel, true)));
     }
@@ -251,7 +324,7 @@
             }
         } finally {
             finishOperation();
-            if (initial && location.hash === '#new') focusEditor();
+            if (initial && ['new', 'edit'].includes(currentView)) focusEditor();
         }
     }
 
@@ -276,6 +349,8 @@
     async function save(change, clearEditor = true) {
         if (state.busy || !canSave()) return false;
         const before = state.snapshot;
+        const submittedView = currentView;
+        const submittedPrevious = state.previous;
         lock(true);
         message('正在儲存共用清單…');
         try {
@@ -283,7 +358,21 @@
             accept(saved);
             let published = true;
             try { published = ChannelList.publishSharedSnapshot(localStorage, saved.raw, before.raw, [saved.baseRaw]) !== false; } catch (_) { published = false; }
-            if (clearEditor || (change.action === 'delete' && state.previous && ChannelList.channelKey(state.previous) === ChannelList.channelKey(change.previous))) resetEditor();
+            if (clearEditor) {
+                if (currentView === submittedView && state.previous === submittedPrevious) {
+                    resetEditor();
+                    if (Object.hasOwn(drafts, submittedView)) drafts[submittedView] = null;
+                    if (submittedView === 'edit') navigate(editReturnView);
+                } else if (drafts[submittedView]?.previous === submittedPrevious) drafts[submittedView] = null;
+            }
+            if (change.action === 'delete') {
+                const deletedKey = ChannelList.channelKey(change.previous);
+                if (drafts.edit?.previous && ChannelList.channelKey(drafts.edit.previous) === deletedKey) drafts.edit = null;
+                if (state.previous && ChannelList.channelKey(state.previous) === deletedKey) {
+                    resetEditor();
+                    if (currentView === 'edit') navigate(editReturnView);
+                }
+            }
             message(published ? '已儲存，共用頻道清單已更新。' : 'GitHub 已儲存。這個瀏覽器暫時未能同步預覽；網站部署後會更新。', published ? 'success' : 'warning');
             return true;
         } catch (error) { revokeIfUnauthorized(error); message(failure(error, 'save'), 'error'); return false; }
@@ -402,6 +491,10 @@
         ui['channel-platform'].appendChild(option);
     });
     resetEditor();
+    applyView(location.hash.slice(1));
+    Object.entries(navigation).forEach(([view, link]) => {
+        link.addEventListener('click', event => { event.preventDefault(); navigate(view); });
+    });
     try { state.client = ChannelSync.createClient(config); } catch (_) { /* The fallback remains readable. */ }
     if (typeof ChannelHealthUI !== 'undefined' && typeof ChannelHealth !== 'undefined') {
         healthUI = ChannelHealthUI.createUI({ document, getSnapshot: healthSnapshot, canWrite: canSave, isBusy: () => state.busy, runAction: runHealthAction, onMessage: message,
@@ -428,7 +521,7 @@
         });
     }
     ui['channel-platform'].addEventListener('change', platformFields);
-    ui['cancel-edit'].addEventListener('click', resetEditor);
+    ui['cancel-edit'].addEventListener('click', cancelEditing);
     ui['channel-search'].addEventListener('input', render);
     ui['refresh-channels'].addEventListener('click', () => refresh());
     ui['sync-sklive'].addEventListener('click', syncSKLive);
@@ -473,7 +566,7 @@
     });
     window.addEventListener('pagehide', () => { if (healthUI) healthUI.cancel(); state.authGeneration++; state.token = ''; ui['github-token'].value = ''; message('連線已中斷；如需儲存，請重新輸入權杖。'); });
     window.addEventListener('pageshow', event => { if (event.persisted) lock(state.busy); });
-    window.addEventListener('hashchange', () => { if (location.hash === '#new') { resetEditor(); focusEditor(); } });
+    window.addEventListener('hashchange', () => { applyView(location.hash.slice(1)); });
     window.addEventListener('focus', syncLocal);
     document.addEventListener('visibilitychange', () => { if (!document.hidden) syncLocal(); });
     window.addEventListener('storage', event => {

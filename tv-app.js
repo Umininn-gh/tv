@@ -1410,7 +1410,7 @@ function confirmDeleteChannels() {
 window.editClick = function () { showChannelManager('channels'); };
 
 function showPopup() {
-    showChannelManager();
+    showChannelManager('manage');
 }
 
 function showChannelManager(section = '') {

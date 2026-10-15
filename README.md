@@ -79,7 +79,7 @@ node set-login-password.cjs --generate
 
 ## 直播台清單
 
-首頁、「看更台」、舊播放器管理頁及新的「掛台」管理頁使用本程式庫 `main` 分支的 `ch1.txt`。主頁的「台務」下拉選單收納「掛台」、「加台」及「del台」，都開啟本站 `channel-manager.html`，不再連到別人的 Vercel 管理服務。2026-10-14 逐筆核查原先 35 台及 Git 歷史的 43 筆舊記錄，並核對 [SK 雞友直播台](https://skknower.com/user/ctvhiki49713)。核查後共 51 個不同直播入口，涵蓋該頁當日顯示的全部 16 台。
+首頁、「看更台」、舊播放器管理頁及新的「掛台」管理頁使用本程式庫 `main` 分支的 `ch1.txt`。主頁「台務」各功能開啟本站的獨立功能畫面：「掛台」查看及編輯已掛台、「加台」只顯示新增表單、「del台」只列出可確認刪除的頻道；「SKLive 補台」和「疑似失效台檢查」亦各有專用畫面。它們共用 `channel-manager.html` 的資料及連線，但不再把所有工具堆在同一畫面。頁內導覽保留 GitHub 連線、分開保存未儲存的新增／編輯表單及掃描結果；編輯完成或取消會返回原來的功能。舊的 `#new`、`#channels`、`#sklive`、`#health` 連結繼續有效，沒有指定功能時顯示掛台管理。2026-10-14 逐筆核查原先 35 台及 Git 歷史的 43 筆舊記錄，並核對 [SK 雞友直播台](https://skknower.com/user/ctvhiki49713)。核查後共 51 個不同直播入口，涵蓋該頁當日顯示的全部 16 台。
 
 管理頁可直接查看清單；儲存時使用擁有 `Umininn-gh/tv` 寫入權限的 GitHub 帳戶所建立的 fine-grained personal access token。Repository access 只選 `tv`，Contents 權限設為 Read and write，再貼到管理頁連線。權杖只在該視窗記憶體中使用，不保存到 localStorage、程式碼或網址；關閉／中斷連線後需重新輸入。首頁密碼是觀看閘，不能代替 GitHub 寫入權限。其他 GitHub 帳戶若未獲程式庫寫入權限，不能管理共用清單。
 
