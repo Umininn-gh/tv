@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Chickchat7</title>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="./chat-message-format.js?v=20261016-chat-reliability"></script>
+    <script src="./chat-message-store.js?v=20261016-chat-reliability"></script>
     <style>
         :root { --t-bg: #0e0e10; --t-alt: #18181b; --t-purp: #9147ff; --t-text: #efeff1; --input-bg: #18181b; }
         body { background: var(--t-bg); color: var(--t-text); font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden;   --bg-base: #09090b;
@@ -1267,6 +1269,7 @@
     </button>
     <button id="loadMoreHistoryBtn" onclick="loadMoreHistory()" class="btn-primary" disabled>載入更早留言</button>
     <span id="historyStatus" role="status" aria-live="polite">正在連接聊天室…</span>
+    <span id="chatStorageNotice" role="status" hidden style="font-size:11px;color:#e4b95b"></span>
 </div>
 <main id="chat-container">
     <div id="messages"></div>
@@ -1405,11 +1408,18 @@
 
 <script>
 // ===================== 重要設定 =====================
+// Storage can be unavailable in private/embedded contexts. Reading chat must
+// still work when remembering preferences is not permitted by the browser.
+const chatStorage = {
+    getItem(key) { try { return localStorage.getItem(key); } catch (_) { return null; } },
+    setItem(key, value) { try { localStorage.setItem(key, value); } catch (_) {} },
+    removeItem(key) { try { localStorage.removeItem(key); } catch (_) {} }
+};
 const CLIENT_ID = '0uhjgjpko804ba35q1nj1h6x2eriq9';
 const CHAT_HISTORY_BATCH_SIZE = 30;
 const MAX_MESSAGES = CHAT_HISTORY_BATCH_SIZE * 10;
 let CHANNEL = "whitewing940920"; 
-const savedChannel = localStorage.getItem('twitch_channel');
+const savedChannel = chatStorage.getItem('twitch_channel');
 if (savedChannel) CHANNEL = savedChannel;
 
 const REDIRECT_URI = encodeURIComponent(location.origin + location.pathname);
@@ -1420,8 +1430,8 @@ const DEFAULT_IMG_MAX_HEIGHT = 180;
 const DEFAULT_VIDEO_MAX_HEIGHT = 250;
 
 function applyMediaSizeFromStorage() {
-    let imgH = parseInt(localStorage.getItem('chat_img_max_height'), 10);
-    let videoH = parseInt(localStorage.getItem('chat_video_max_height'), 10);
+    let imgH = parseInt(chatStorage.getItem('chat_img_max_height'), 10);
+    let videoH = parseInt(chatStorage.getItem('chat_video_max_height'), 10);
     if (isNaN(imgH) || imgH < 20) imgH = DEFAULT_IMG_MAX_HEIGHT;
     if (isNaN(videoH) || videoH < 20) videoH = DEFAULT_VIDEO_MAX_HEIGHT;
     document.body.style.setProperty('--media-img-max-height', imgH + 'px');
@@ -1432,7 +1442,7 @@ function changeImgMaxHeight(val) {
     let v = parseInt(val, 10);
     if (isNaN(v) || v < 20) v = DEFAULT_IMG_MAX_HEIGHT;
     v = Math.min(Math.max(v, 20), 2000);
-    localStorage.setItem('chat_img_max_height', v);
+    chatStorage.setItem('chat_img_max_height', v);
     document.body.style.setProperty('--media-img-max-height', v + 'px');
     const el = document.getElementById('imgMaxHeightInput');
     if (el) el.value = v;
@@ -1444,7 +1454,7 @@ function changeVideoMaxHeight(val) {
     let v = parseInt(val, 10);
     if (isNaN(v) || v < 20) v = DEFAULT_VIDEO_MAX_HEIGHT;
     v = Math.min(Math.max(v, 20), 2000);
-    localStorage.setItem('chat_video_max_height', v);
+    chatStorage.setItem('chat_video_max_height', v);
     document.body.style.setProperty('--media-video-max-height', v + 'px');
     const el = document.getElementById('videoMaxHeightInput');
     if (el) el.value = v;
@@ -1483,20 +1493,39 @@ let ACCESS_TOKEN = "";
 let myLoginId = "";
 let myDisplayName = "";
 let myAvatar = "";
-let myBadges = localStorage.getItem('twitch_my_badges') || ""; 
+let myBadges = chatStorage.getItem('twitch_my_badges') || "";
 let socket = null;
-let altMap = {};
+let altMap = Object.create(null);
 let emojiLists = {};
 let audioLists = {};
 let customBadges = {};
-let msgCache = {}; 
-let userCache = {}; 
+let msgCache = Object.create(null);
+let userCache = Object.create(null);
+const cachedChatRecords = new Map();
+const customQuoteIndex = new Map();
+const MAX_CACHED_CHAT_RECORDS = MAX_MESSAGES * 4;
+const MAX_CACHED_CHAT_USERS = 500;
+let quoteRefreshScheduled = false;
+let chatQuoteVersion = 0;
+let activeChatQuoteReferences = null;
+const changedQuoteReferences = new Set();
+const pendingQuoteLoads = new Map();
+let chatMessageStore = null;
+let chatVirtualizer = null;
+let bufferArchiveTask = null;
+let bufferFlushTask = null;
+let returnLatestRequest = 0;
+let returningToLatest = false;
+function getLogicalChatCount() {
+    return chatVirtualizer ? chatVirtualizer.logicalCount() : document.getElementById('messages')?.children.length || 0;
+}
+function getBufferedChatCount() { return messageBuffer.reduce((count, item) => count + (item.count || 1), 0); }
 let pendingReply = { id: null, user: null, displayName: null };
 let isDeleteMode = false;
 let isAudioDeleteMode = false;
 let myColor = "#9147ff";
-let showUsernameInChat = localStorage.getItem('chat_show_username') === 'true';
-let showTimestamp = localStorage.getItem('chat_show_timestamp') !== 'false';
+let showUsernameInChat = chatStorage.getItem('chat_show_username') === 'true';
+let showTimestamp = chatStorage.getItem('chat_show_timestamp') !== 'false';
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 let maxReconnectDelay = 30000;
@@ -1526,20 +1555,6 @@ let mentionSearchTerm = "";
 const MAX_RTAG_DEPTH = 5;
 let offsetX = 0, offsetY = 0;
 
-const RE_S_TAG = /\[S\](.*?)E\]/g;
-const RE_s_TAG = /\[s\](.*?)e\]/g;
-const RE_s_URL = /\[s\]\s*([^\s\[]+)/gi;
-const RE_y_TAG = /\[y\](.*?)[\[]?t\]/gi;
-const RE_y_URL = /\[y\]\s*([^\s\[]+)/gi;
-const RE_a_TAG = /\[a\](.*?)\[o\]/gi;
-const RE_HTTP_LINK = /(^|\s)(https?:\/\/[^\s]+)/gi;
-const RE_IS_YOUTUBE = /youtu/i;
-const RE_IS_IMG_EXT = /(img|jpg|png|gif)(?:\?[^\s"']*)?/i;
-const RE_IS_TWITTER_X = /twitter|https:\/\/x\.com/i;
-const RE_IS_THREADS = /www\.threads\.com/i;
-const RE_IS_VIDEO_EXT = /\.(webm|mp4|m3u8|flv)(?:\?[^\s]*)?/i;
-const RE_IS_STEAM = /steampowered|steamcommunity/i;
-
 // ===================== 工具函數 =====================
 function getParameterByName(name, url) {
     url = url.replace(/&amp;/g, '&');
@@ -1556,17 +1571,29 @@ function getTagValue(tags, key) {
 function getOldestRetainedHistoryCursor() {
     const oldest = document.getElementById('messages')?.firstElementChild;
     const tags = msgCache[oldest?.dataset.messageId]?.ircMessage?.tags || '';
-    const cursor = Number(getTagValue(tags, 'rm-received-ts') || oldest?.dataset.msgTs);
+    const cursor = Number(oldest?.dataset.receivedTs || getTagValue(tags, 'rm-received-ts'));
     return Number.isFinite(cursor) && cursor > 0 ? cursor : null;
 }
 function limitMessages(viewport = captureChatViewport()) {
     const $msgs = $("#messages");
     const children = $msgs.children();
-    if(!retentionPaused && children.length > MAX_MESSAGES) {
-        const removed = children.slice(0, children.length - MAX_MESSAGES);
-        removed.each(function() { if (this.dataset.messageKey) seenMessageIds.delete(this.dataset.messageKey); });
-        removed.find('video').each(function() { mediaObserver.unobserve(this); });
-        removed.remove();
+    if(!retentionPaused && getLogicalChatCount() > MAX_MESSAGES) {
+        let removedIds = [];
+        if (chatVirtualizer) {
+            const removed = chatVirtualizer.trimToLatest(MAX_MESSAGES);
+            removed.forEach(item => { if (item.key) seenMessageIds.delete(item.key); });
+            removedIds = removed.map(item => item.id).filter(Boolean);
+        } else {
+            const removed = children.slice(0, children.length - MAX_MESSAGES);
+            removed.each(function() {
+                if (this.dataset.messageKey) seenMessageIds.delete(this.dataset.messageKey);
+                if (this.dataset.messageId) removedIds.push(this.dataset.messageId);
+            });
+            removed.find('video').each(function() { mediaObserver.unobserve(this); this.pause(); });
+            removed.remove();
+        }
+        removedIds.forEach(dropCachedChatRecord);
+        if (!chatVirtualizer) chatMessageStore?.forget(removedIds);
         const cursor = getOldestRetainedHistoryCursor();
         if (cursor !== null) oldestHistoryCursor = cursor;
         hasMoreHistory = true;
@@ -1576,18 +1603,88 @@ function limitMessages(viewport = captureChatViewport()) {
     if (retentionPaused) showPausedRetentionStatus();
     updateHistoryButton();
 }
-function getUserDisplayName(userId, fallbackName) {
-    if(userCache[userId]) return userCache[userId];
-    const keys = Object.keys(msgCache);
-    let latest = null, latestTs = 0;
-    for(let k of keys){
-        let msg = msgCache[k];
-        if(msg && msg.user && (msg.user.login === userId || msg.user.displayName === userId || msg.user === userId)){
-            if(msg.timestamp > latestTs){ latestTs = msg.timestamp; latest = msg; }
-        }
+function chatReferenceKey(login, timestamp) { return `${String(login).toLowerCase()}:${timestamp}`; }
+function rememberChatRecord(record, id, key = id) {
+    id = String(id);
+    if (isSuppressedChatMetadata({ id, login: record.user?.login, timestamp: record.timestamp })) return;
+    const previous = cachedChatRecords.get(id);
+    record.id = id;
+    record.key = key;
+    cachedChatRecords.delete(id);
+    cachedChatRecords.set(id, record);
+    msgCache[id] = record;
+    msgCache[String(record.timestamp)] = record;
+    const reference = chatReferenceKey(record.user?.login || '', record.timestamp);
+    if (!customQuoteIndex.has(reference)) customQuoteIndex.set(reference, new Map());
+    customQuoteIndex.get(reference).set(id, record);
+    if (!previous || previous.content !== record.content) {
+        chatQuoteVersion++;
+        changedQuoteReferences.add(reference);
+        changedQuoteReferences.add(`id:${id}`);
+        scheduleQuoteRefresh();
     }
-    if(latest && latest.displayName){ userCache[userId] = latest.displayName; return latest.displayName; }
-    return fallbackName || userId;
+    if (!previous || previous.content !== record.content || previous.ircMessage?.tags !== record.ircMessage?.tags) {
+        chatMessageStore?.remember(record, { id, key });
+    }
+    while (cachedChatRecords.size > MAX_CACHED_CHAT_RECORDS) {
+        const [oldId, old] = cachedChatRecords.entries().next().value;
+        cachedChatRecords.delete(oldId);
+        if (msgCache[oldId] === old) delete msgCache[oldId];
+        if (msgCache[String(old.timestamp)] === old) delete msgCache[String(old.timestamp)];
+        const oldReference = chatReferenceKey(old.user?.login || '', old.timestamp);
+        const records = customQuoteIndex.get(oldReference);
+        records?.delete(oldId);
+        if (!records?.size) customQuoteIndex.delete(oldReference);
+    }
+}
+function getCachedChatReference(login, timestamp) {
+    if (chatMessageStore?.referenceCount(login, timestamp) > 1) return { ambiguous: true };
+    const records = customQuoteIndex.get(chatReferenceKey(login, timestamp));
+    // The legacy format has no message ID. Two messages by the same author in
+    // the same millisecond are ambiguous, so never silently choose one.
+    if (records?.size > 1) return { ambiguous: true };
+    if (records?.size === 1) {
+        const record = records.values().next().value;
+        return isSuppressedChatMetadata({ id: record.id, login: record.user?.login, timestamp: record.timestamp }) ? null : record;
+    }
+    const legacy = msgCache[String(timestamp)];
+    return legacy && String(legacy.user?.login || legacy.user).toLowerCase() === String(login).toLowerCase() ? legacy : null;
+}
+function requestChatReference(login, timestamp) {
+    const reference = chatReferenceKey(login, timestamp);
+    if (!chatMessageStore || pendingQuoteLoads.has(reference)) return;
+    const request = chatMessageStore.getByReference(login, Number(timestamp)).then(record => {
+        if (record && !record.ambiguous) rememberChatRecord(record, record.id || String(timestamp), record.key);
+    }).catch(err => console.warn('暫存引用未能讀取:', err)).finally(() => pendingQuoteLoads.delete(reference));
+    pendingQuoteLoads.set(reference, request);
+}
+function requestChatMessageById(id) {
+    const reference = `id:${id}`;
+    if (!chatMessageStore || pendingQuoteLoads.has(reference)) return;
+    const request = chatMessageStore.getById(id).then(record => {
+        if (record) rememberChatRecord(record, record.id || id, record.key);
+    }).catch(err => console.warn('暫存回覆未能讀取:', err)).finally(() => pendingQuoteLoads.delete(reference));
+    pendingQuoteLoads.set(reference, request);
+}
+function scheduleQuoteRefresh() {
+    if (quoteRefreshScheduled) return;
+    quoteRefreshScheduled = true;
+    requestAnimationFrame(() => {
+        quoteRefreshScheduled = false;
+        const references = new Set(changedQuoteReferences);
+        changedQuoteReferences.clear();
+        refreshVisibleMessages(references);
+    });
+}
+function getUserDisplayName(userId, fallbackName) {
+    return userCache[String(userId).toLowerCase()] || fallbackName || userId;
+}
+function rememberChatUser(login, displayName) {
+    const key = String(login).toLowerCase();
+    delete userCache[key];
+    userCache[key] = displayName;
+    const keys = Object.keys(userCache);
+    if (keys.length > MAX_CACHED_CHAT_USERS) delete userCache[keys[0]];
 }
 function renderBadges(badgeStr) {
     if(!badgeStr) return "";
@@ -1595,7 +1692,7 @@ function renderBadges(badgeStr) {
     badgeStr.split(',').forEach(b => {
         let key = b.split('/')[0];
         let url = customBadges[b] || customBadges[key];
-        if(url) html += `<img class="badge" src="${url}">`;
+        if(ChatMessageFormat.safeUrl(url, true)) html += `<img class="badge" src="${escapeChatText(url)}" referrerpolicy="no-referrer">`;
     });
     return html;
 }
@@ -1754,6 +1851,8 @@ function restoreChatViewport(anchor) {
 }
 
 function pauseChatFollowing() {
+    returnLatestRequest++;
+    returningToLatest = false;
     autoScroll = false;
     markRetentionPaused();
     restoredScrollTop = null;
@@ -1766,21 +1865,33 @@ function pauseChatFollowing() {
     updateHistoryButton();
 }
 
-function forceScrollToBottom(force = false) {
+function forceScrollToBottom(force = false, prepared = false) {
     if (force) {
+        const request = prepared ? returnLatestRequest : ++returnLatestRequest;
         autoScroll = true;
-        retentionPaused = false;
         unreadMessageCount = 0;
-        unreadResetVersion++;
+        if (!prepared) unreadResetVersion++;
         updateUnreadCounter();
         readingAnchor = null;
         pendingUpScrollTop = null;
         scrollbarScrollUntil = 0;
         userScrollUntil = 0;
+        if (!prepared && (bufferFlushTask || messageBuffer.some(item => item.archiveId) || chatVirtualizer?.pages.size)) {
+            returningToLatest = true;
+            forceScrollToBottom();
+            return Promise.resolve(flushMessageBuffer()).then(() => chatVirtualizer?.prepareTrim(MAX_MESSAGES)).then(() => {
+                if (request === returnLatestRequest) return forceScrollToBottom(true, true);
+            }).catch(err => {
+                returningToLatest = false;
+                showChatStorageWarning(err);
+            });
+        }
+        returningToLatest = false;
+        retentionPaused = false;
         flushMessageBuffer();
         limitMessages(null);
         trimSeenMessageIds();
-        if ((document.getElementById('messages')?.children.length || 0) <= MAX_MESSAGES) {
+        if (getLogicalChatCount() <= MAX_MESSAGES) {
             setHistoryStatus(`已回到最新留言；恢復 ${MAX_MESSAGES} 則保留上限。`);
         }
     }
@@ -1851,29 +1962,49 @@ function retryChatImage(button, event) {
 function appendMessageWithScroll(html, key = null) {
     if (document.hidden) {
         const timestamp = Number(html.match(/data-msg-ts="(\d+)"/)?.[1]) || Date.now();
-        messageBuffer.push({ html, timestamp, key });
+        const item = { html, timestamp, key };
+        Object.assign(item, bufferEntryMetadata(item));
+        messageBuffer.push(item);
         messageBuffer.sort((a, b) => a.timestamp - b.timestamp);
         if (!retentionPaused && messageBuffer.length > MAX_BUFFER_SIZE) {
             const removed = messageBuffer.shift();
             if (removed.key) seenMessageIds.delete(removed.key);
+            if (removed.id) { dropCachedChatRecord(removed.id); chatMessageStore?.forget([removed.id]); }
             setHistoryStatus(`背景期間累積超過 ${MAX_BUFFER_SIZE} 則；回到分頁後會補抓可用紀錄。`);
         }
+        archiveMessageBuffer();
         return;
     }
     const viewport = captureChatViewport();
     const $newElements = $(html);
     addTimestampsToElements($newElements);
-    insertMessageElements($newElements);
-    
-    $newElements.find('video.media-preview').addBack('video.media-preview').each(function() {
-        mediaObserver.observe(this);
-    });
-    limitMessages(viewport);
-    if (autoScroll) forceScrollToBottom(false);
+    const pending = insertMessageElements($newElements);
+    const finish = (anchor) => {
+        observeChatMedia($newElements.toArray());
+        limitMessages(anchor);
+        if (autoScroll) forceScrollToBottom(false);
+    };
+    if (pending) pending.then(() => finish(null)).catch(err => showChatStorageWarning(err));
+    else finish(viewport);
 }
 
 function insertMessageElements($elements) {
     const messages = document.getElementById('messages');
+    if (chatVirtualizer && (chatVirtualizer.pages.size || (retentionPaused && getLogicalChatCount() > MAX_MESSAGES))) {
+        return chatVirtualizer.insertElements($elements.toArray()).catch(err => {
+            // A failed disk read or optional renderer must not consume a batch
+            // whose IDs were already received. Keep every still-pending row.
+            showChatStorageWarning(err);
+            const viewport = captureChatViewport();
+            $elements.each(function() {
+                if (this.isConnected || isSuppressedChatMetadata({ id: this.dataset.messageId,
+                    login: this.dataset.userLogin, timestamp: Number(this.dataset.msgTs) })) return;
+                const next = Array.from(messages.children).find(row => Number(row.dataset.msgTs) > Number(this.dataset.msgTs));
+                messages.insertBefore(this, next || null);
+            });
+            restoreChatViewport(viewport);
+        });
+    }
     $elements.each(function() {
         const ts = Number(this.dataset && this.dataset.msgTs);
         const next = Number.isFinite(ts) ? Array.from(messages.children).find(el =>
@@ -1884,19 +2015,94 @@ function insertMessageElements($elements) {
 }
 
 function flushMessageBuffer() {
-    if (messageBuffer.length > 0) {
+    if (bufferFlushTask) return bufferFlushTask;
+    const insert = entries => {
+        const allowed = entries.filter(item => !isSuppressedChatMetadata(bufferEntryMetadata(item)));
+        if (!allowed.length) return;
         const viewport = captureChatViewport();
-        const $elements = $(messageBuffer.map(message => message.html).join(''));
+        const $elements = $(allowed.map(item => {
+            const record = msgCache[item.id] || chatMessageStore?.getCached(item.id);
+            const sourceRecord = item.record || record;
+            return sourceRecord?.ircMessage ? safeBuildChatMessageHtml(sourceRecord.ircMessage, item.html.includes('historical-msg')) : item.html;
+        }).join(''));
+        allowed.forEach((item, index) => { if (item.key) $elements[index]?.setAttribute('data-message-key', item.key); });
         addTimestampsToElements($elements);
-        insertMessageElements($elements);
-        $elements.find('video.media-preview').addBack('video.media-preview').each(function() {
-            mediaObserver.observe(this);
-        });
+        const pending = insertMessageElements($elements);
+        const finish = anchor => { observeChatMedia($elements.toArray()); limitMessages(anchor); if (autoScroll) forceScrollToBottom(); };
+        if (pending) return pending.then(() => finish(null));
+        finish(viewport);
+    };
+    if (!messageBuffer.length) return;
+    if (!messageBuffer.some(item => item.archiveId)) {
+        const entries = messageBuffer;
         messageBuffer = [];
-        limitMessages(viewport);
-        if (autoScroll) forceScrollToBottom();
-        setTimeout(() => { isInitialLoad = false; }, 8000);
+        return insert(entries);
     }
+    bufferFlushTask = (async () => {
+        while (messageBuffer.length) {
+            const first = messageBuffer[0];
+            let entries;
+            if (first.archiveId) {
+                entries = await chatMessageStore.restoreBuffered(first);
+                const retained = new Set(first.items.map(item => item.id));
+                entries = entries.filter(item => retained.has(bufferEntryMetadata(item).id));
+                await Promise.all(entries.map(async item => {
+                    item.record = await chatMessageStore.getById(bufferEntryMetadata(item).id);
+                }));
+                if (messageBuffer[0] !== first) continue;
+                messageBuffer.shift();
+            } else {
+                const end = messageBuffer.findIndex(item => item.archiveId);
+                entries = messageBuffer.splice(0, end < 0 ? messageBuffer.length : end);
+            }
+            await insert(entries);
+        }
+    })().catch(err => showChatStorageWarning(err)).finally(() => { bufferFlushTask = null; });
+    return bufferFlushTask;
+}
+
+function archiveMessageBuffer() {
+    if (bufferArchiveTask || !retentionPaused || !chatMessageStore || chatMessageStore.failed) return;
+    const regular = messageBuffer.filter(item => !item.archiveId);
+    if (regular.length <= MAX_MESSAGES * 2) return;
+    const entries = regular.slice(0, MAX_MESSAGES);
+    bufferArchiveTask = chatMessageStore.archiveBuffered(entries).then(reference => {
+        if (entries.every(item => messageBuffer.includes(item))) {
+            const selected = new Set(entries);
+            messageBuffer = messageBuffer.filter(item => !selected.has(item));
+            messageBuffer.push(reference);
+            messageBuffer.sort((a, b) => a.timestamp - b.timestamp);
+        } else chatMessageStore.deletePage(reference.archiveId).catch(() => {});
+    }).catch(err => showChatStorageWarning(err)).finally(() => { bufferArchiveTask = null; archiveMessageBuffer(); });
+}
+function observeChatMedia(rows) {
+    refreshInsertedChatQuotes(rows);
+    rows.forEach(row => row.querySelectorAll('video.media-preview').forEach(video => mediaObserver.observe(video)));
+    if (window.twttr?.widgets?.load) rows.forEach(row => {
+        try { Promise.resolve(window.twttr.widgets.load(row)).catch(() => {}); } catch (_) {}
+    });
+}
+function showChatStorageWarning(err) {
+    console.warn('本機聊天暫存未能使用:', err);
+    const notice = document.getElementById('chatStorageNotice');
+    if (notice) { notice.textContent = '本機暫存未能使用；閱讀中的留言仍保留。'; notice.hidden = false; }
+}
+function initializeChatStorage() {
+    chatMessageStore = new ChatMessageStore({ maxCachedRecords: MAX_CACHED_CHAT_RECORDS, maxUserNames: MAX_CACHED_CHAT_USERS,
+        onError: showChatStorageWarning });
+    chatVirtualizer = chatMessageStore.createVirtualizer({
+        messages: document.getElementById('messages'), container: document.getElementById('chat-container'),
+        isPaused: () => retentionPaused && !returningToLatest, keepRecent: MAX_MESSAGES,
+        getRecord: id => msgCache[id],
+        rememberRecord: (record, metadata) => rememberChatRecord(record, metadata.id || record.id, metadata.key),
+        renderRecord: (record, entry) => isSuppressedChatMetadata(entry.metadata) ? null :
+            record?.ircMessage ? safeBuildChatMessageHtml(record.ircMessage, entry.html.includes('historical-msg')) : entry.html,
+        shouldInsert: row => !isSuppressedChatMetadata({ id: row.dataset.messageId, login: row.dataset.userLogin, timestamp: Number(row.dataset.msgTs) }),
+        onDiscard: metadata => dropCachedChatRecord(metadata.id),
+        onRestore: nodes => { addTimestampsToElements($(nodes)); observeChatMedia(nodes); if (autoScroll) forceScrollToBottom(); },
+        onArchive: row => row.querySelectorAll('video').forEach(video => { mediaObserver.unobserve(video); video.pause(); }),
+        captureViewport: captureChatViewport, restoreViewport: restoreChatViewport, onError: showChatStorageWarning
+    });
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -2003,16 +2209,20 @@ function setupScrollListener() {
     });
 }
 
-function scrollToMsg(msgId) {
-    let $msg = $(`.id-${msgId}`);
-    if($msg.length){
-        let container = $("#chat-container")[0];
-        let top = $msg.offset().top - $(container).offset().top + container.scrollTop - 50;
-        pauseChatFollowing();
-        container.scrollTo({ top: top, behavior: 'auto' });
-        restoredScrollTop = container.scrollTop;
-        readingAnchor = captureChatViewport();
-    }
+async function scrollToMsg(msgId) {
+    pauseChatFollowing();
+    const request = returnLatestRequest;
+    await chatVirtualizer?.materializeForId(String(msgId));
+    if (request !== returnLatestRequest) return;
+    const row = Array.from(document.querySelectorAll('#messages .chat-line')).find(element =>
+        element.dataset.messageId === String(msgId) || element.dataset.msgTs === String(msgId));
+    if (!row) return;
+    const container = document.getElementById('chat-container');
+    const top = row.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop - 50;
+    container.scrollTo({ top, behavior: 'auto' });
+    restoredScrollTop = container.scrollTop;
+    readingAnchor = captureChatViewport();
+    rememberChatScrollLayout(container);
 }
 
 // ===================== 重連機制 =====================
@@ -2024,9 +2234,9 @@ function scheduleReconnect() {
         if (!isConnecting && (!socket || socket.readyState !== WebSocket.OPEN)) { startChat(); }
     }, delay);
 }
-function clearReconnectTimer() {
+function clearReconnectTimer(resetAttempts = true) {
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
-    reconnectAttempts = 0;
+    if (resetAttempts) reconnectAttempts = 0;
 }
 
 // ===================== 核心解析函數 =====================
@@ -2054,7 +2264,7 @@ function decodeChatImageAttribute(value) {
 }
 
 function normalizeChatImageUrl(value) {
-    const source = String(value || '').trim();
+    const source = typeof value === 'string' ? value.trim() : '';
     try {
         const url = new URL(source, document.baseURI);
         if (!source || !['https:', 'http:'].includes(url.protocol)) return null;
@@ -2065,8 +2275,9 @@ function normalizeChatImageUrl(value) {
     } catch (_) { return null; }
 }
 
-function buildChatImageHtml(value, { emote = false, label = '', escapedSource = false } = {}) {
-    const source = normalizeChatImageUrl(escapedSource ? decodeChatImageAttribute(value) : value);
+function buildChatImageHtml(value, { emote = false, label = '', escapedSource = false, preserveUrl = false } = {}) {
+    const original = escapedSource ? decodeChatImageAttribute(value) : value;
+    const source = preserveUrl ? ChatMessageFormat.safeUrl(original) : normalizeChatImageUrl(original);
     if (!source) return escapeChatText(label || '圖片網址無效');
     const escapedUrl = escapeChatText(source);
     const alt = escapeChatText(label || (emote ? '貼圖' : '圖片'));
@@ -2075,160 +2286,53 @@ function buildChatImageHtml(value, { emote = false, label = '', escapedSource = 
     return `<span class="chat-image${emote ? '' : ' chat-image-media'}" data-state="loading">${preview}<span class="chat-image-fallback" hidden role="status"><span class="chat-image-status">${emote ? '貼圖未能載入' : '圖片未能載入'}</span><button type="button" onclick="retryChatImage(this,event)">重試</button><a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" onclick="event.stopPropagation()">原圖</a></span></span>`;
 }
 
+function buildChatAudioHtml(url) {
+    const safeUrl = escapeChatText(url);
+    return `<div class="wa-audio-player" data-url="${safeUrl}" data-state="paused">
+        <button class="wa-play-btn" onclick="toggleWaAudio(this)">
+            <svg class="wa-icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            <svg class="wa-icon-pause" viewBox="0 0 24 24" style="display:none;"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+        </button><span class="wa-duration">0:00</span><div class="wa-waveform">${generateWaveformSvg(url)}</div></div>`;
+}
 function parseContent(str, escapedInput = false) {
-    str = escapedInput ? String(str || '') : escapeChatText(str || '');
     try {
-        if (!str) return str;
-        if (!str.includes('[') && !str.includes('http')) {
-            const plain = str.split(' ').map(w => {
-                let src = altMap[w.toLowerCase()];
-                return src ? buildChatImageHtml(src, { emote: true, label: decodeChatImageAttribute(w) }) : w;
-            }).join(' ');
-            return escapedInput ? restoreChatHtml(plain) : plain;
-        }
-        let a = str, placeholders = [];
-        const mediaPrefix = `__MEDIA_${Math.random().toString(36).slice(2)}_`;
-        a = a.replace(RE_S_TAG, (m, b) => {
-            b = b.replace(/[\r\n]/g, "").replace(/ /g, '').replace('[S]', '').replace('[', '');
-            let id = `${mediaPrefix}${placeholders.length}__`;
-            placeholders.push(buildChatImageHtml(b, { escapedSource: true }));
-            return id;
-        });
-        a = a.replace(RE_s_TAG, (m, content) => {
-            let b = content.replace(/[\r\n]/g, "").replace(/ /g, '').replace('[s]', '').replace('[', '');
-            let id = `${mediaPrefix}${placeholders.length}__`, e = "";
-            if (RE_IS_YOUTUBE.test(b) && !RE_IS_IMG_EXT.test(b)) {
-                let vid = b.includes('watch?') ? getParameterByName('v', b) : b.replace('https://www.', '').replace('https://', '').replace('youtu.be/', '').replace('youtube.com/embed/', '').replace('youtube.com/shorts/', '').replace('youtube.com/live/', '').replace('&feature=share', '');
-                let t = getParameterByName('t', b);
-                e = `<iframe class="media-preview" src="https://www.youtube.com/embed/${vid}?start=${t}" frameborder="0" allowfullscreen onload="onMediaLoaded()" loading="lazy"></iframe>`;
-            } else if (RE_IS_TWITTER_X.test(b)) {
-                let twUrl = b.replace('https://x.com', 'https://twitter.com');
-                e = `<div class="twitter-tweet-container" style="max-height:400px; height:400px; overflow:hidden;"><blockquote class="twitter-tweet"><a href="${twUrl}"></a></blockquote></div><script async src="https://platform.twitter.com/widgets.js" onload="onMediaLoaded()"><\/script>`;
-            } else if (RE_IS_THREADS.test(b)) {
-                let threadUrl = b.match(/@[\w.]+\/post\/[\w]+/);
-                e = threadUrl ? `<iframe src="https://www.threads.com/${threadUrl[0]}/embed" allowtransparency="true" allowfullscreen frameborder="0" height="300" style="background:#FFF;border-radius:12px;width:100%" onload="onMediaLoaded()" loading="lazy"></iframe>` : b;
-            } else if (RE_IS_VIDEO_EXT.test(b)) {
-                e = `<video controls class="media-preview" autoplay loop muted playsinline src="${b}" onloadeddata="onMediaLoaded()"></video>`;
-            } else if (RE_IS_STEAM.test(b)) {
-                let appId = b.match("app/([0-9]+)");
-                e = appId ? `<iframe class="media-preview" src="https://store.steampowered.com/widget/${appId[1]}" frameborder="0" onload="onMediaLoaded()" loading="lazy"></iframe>` : b;
-            } else {
-                e = buildChatImageHtml(b, { escapedSource: true });
-            }
-            placeholders.push(e);
-            return id;
-        });
-        a = a.replace(RE_s_URL, (m, url) => {
-            if (url.includes(mediaPrefix)) return m;
-            let id = `${mediaPrefix}${placeholders.length}__`;
-            placeholders.push(buildChatImageHtml(url, { escapedSource: true }));
-            return id;
-        });
-        a = a.replace(RE_y_TAG, (m, content) => {
-            let b = content.replace(/[\r\n]/g, "").replace(/ /g, '').replace('[y]', '').replace('[', '');
-            let id = `${mediaPrefix}${placeholders.length}__`, e = "";
-            if (b.includes('facebook')) {
-                e = `<iframe src="https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(b)}&show_text=0&width=300" width="300" height="200" style="border:none;overflow:hidden" scrolling="no" frameborder="0" allowfullscreen onload="onMediaLoaded()" loading="lazy"></iframe>`;
-            } else if (RE_IS_YOUTUBE.test(b)) {
-                let vid = b.includes('watch?') ? getParameterByName('v', b) : b.replace('https://www.', '').replace('https://', '').replace('youtu.be/', '').replace('youtube.com/embed/', '').replace('youtube.com/shorts/', '').replace('youtube.com/live/', '').replace('&feature=share', '');
-                e = `<iframe class="media-preview" src="https://www.youtube.com/embed/${vid}" frameborder="0" allowfullscreen onload="onMediaLoaded()" loading="lazy"></iframe>`;
-            } else if (RE_IS_VIDEO_EXT.test(b)) {
-                e = `<video controls class="media-preview" autoplay loop muted playsinline src="${b}" onloadeddata="onMediaLoaded()"></video>`;
-            } else if (RE_IS_TWITTER_X.test(b)) {
-                let twUrl = b.replace('https://x.com', 'https://twitter.com');
-                e = `<div class="twitter-tweet-container" style="max-height:400px; height:400px; overflow:hidden;"><blockquote class="twitter-tweet"><a href="${twUrl}"></a></blockquote></div><script async src="https://platform.twitter.com/widgets.js" onload="onMediaLoaded()"><\/script>`;
-            } else {
-                e = `<a href="${b}" target="_blank" style="color:#58a6ff;">${b}</a>`;
-            }
-            placeholders.push(e);
-            return id;
-        });
-        a = a.replace(RE_y_URL, (m, b) => {
-            if (b.includes(mediaPrefix)) return m;
-            let id = `${mediaPrefix}${placeholders.length}__`, e = "";
-            if (b.includes('facebook')) {
-                e = `<iframe src="https://www.facebook.com/plugins/video.php?href=${encodeURIComponent(b)}&show_text=0&width=300" width="300" height="200" style="border:none;overflow:hidden" scrolling="no" frameborder="0" allowfullscreen onload="onMediaLoaded()" loading="lazy"></iframe>`;
-            } else if (RE_IS_YOUTUBE.test(b)) {
-                let vid = b.includes('watch?') ? getParameterByName('v', b) : b.replace('https://www.', '').replace('https://', '').replace('youtu.be/', '').replace('youtube.com/embed/', '').replace('youtube.com/shorts/', '').replace('youtube.com/live/', '').replace('&feature=share', '');
-                e = `<iframe class="media-preview" src="https://www.youtube.com/embed/${vid}" frameborder="0" allowfullscreen onload="onMediaLoaded()" loading="lazy"></iframe>`;
-            } else if (b.includes('.webm') || b.includes('.mp4')) {
-                e = `<video class="media-preview" autoplay loop muted playsinline src="${b}" onloadeddata="onMediaLoaded()"></video>`;
-            } else if (RE_IS_TWITTER_X.test(b)) {
-                let twUrl = b.replace('https://x.com', 'https://twitter.com');
-                e = `<div class="twitter-tweet-container" style="max-height:400px; height:400px; overflow:hidden;"><blockquote class="twitter-tweet"><a href="${twUrl}"></a></blockquote></div><script async src="https://platform.twitter.com/widgets.js" onload="onMediaLoaded()"><\/script>`;
-            } else {
-                e = `<a href="${b}" target="_blank" style="color:#58a6ff;">${b}</a>`;
-            }
-            placeholders.push(e);
-            return id;
-        });
-        a = a.replace(RE_a_TAG, (m, url) => {
-            let id = `${mediaPrefix}${placeholders.length}__`;
-            let safeUrl = url.trim().replace(/"/g, '&quot;');
-            let waveSvg = generateWaveformSvg(safeUrl);
-            placeholders.push(`<div class="wa-audio-player" data-url="${safeUrl}" data-state="paused">
-                <button class="wa-play-btn" onclick="toggleWaAudio(this)">
-                    <svg class="wa-icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                    <svg class="wa-icon-pause" viewBox="0 0 24 24" style="display:none;"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-                </button>
-                <span class="wa-duration">0:00</span>
-                <div class="wa-waveform">${waveSvg}</div>
-            </div>`);
-            return id;
-        });
-        a = a.replace(RE_HTTP_LINK, (match, space, url) => {
-            if (url.includes(mediaPrefix)) return match;
-            return space + `<a href="${url}" target="_blank" style="color:#58a6ff;">${url}</a>`;
-        });
-        let words = a.split(' ');
-        a = words.map(w => {
-            if (w.includes(mediaPrefix)) return w;
-            let src = altMap[w.toLowerCase()];
-            return src ? buildChatImageHtml(src, { emote: true, label: decodeChatImageAttribute(w) }) : w;
-        }).join(' ');
-        placeholders.forEach((html, i) => { a = a.replace(`${mediaPrefix}${i}__`, () => html); });
-        return escapedInput ? restoreChatHtml(a) : a;
-    } catch (e) { console.error('parseContent Error:', e); return escapedInput ? restoreChatHtml(str) : str; }
+        return ChatMessageFormat.renderContent(str, { escapedInput, altMap,
+            renderImage: buildChatImageHtml, renderAudio: buildChatAudioHtml, restoreHtml: restoreChatHtml });
+    } catch (err) {
+        console.error('parseContent Error:', err);
+        return escapedInput ? restoreChatHtml(String(str || '')) : escapeChatText(str || '');
+    }
 }
 function processRTag(str, depth = 0, visited = new Set()) {
     if (!str) return '';
     if (depth > MAX_RTAG_DEPTH) return '[遞迴引用達最大深度]';
+    if (depth === 0) quoteRenderBudget = 80;
     str = escapeChatText(str);
     return str.replace(/\[r\]([^,]+),([0-9]+)\[m\]/gi, (match, login, ts) => {
+        activeChatQuoteReferences?.add(chatReferenceKey(decodeChatImageAttribute(login), ts));
+        if (--quoteRenderBudget < 0) return '[引用內容過多]';
         const displayName = getUserDisplayName(login, login);
         const isSelf = (myLoginId && login === myLoginId);
         const mentionHtml = isSelf ? `<span class="mention-self-tag">@${escapeChatText(myDisplayName || displayName)}</span>` : `@${escapeChatText(displayName)}`;
-        let quotedMsg = msgCache[ts];
-        let foundContent = null;
-        if ((!quotedMsg || !quotedMsg.content) && login === myLoginId) {
-            let bestMatch = null; let bestDiff = Infinity;
-            const targetTs = parseInt(ts, 10);
-            if (!isNaN(targetTs)) {
-                for (let key in msgCache) {
-                    const m = msgCache[key];
-                    if (m && m.user && (m.user.login === myLoginId || m.user === myLoginId)) {
-                        const mTs = parseInt(m.timestamp, 10);
-                        if (!isNaN(mTs)) {
-                            const diff = Math.abs(mTs - targetTs);
-                            if (diff < bestDiff) { bestDiff = diff; bestMatch = m; }
-                        }
-                    }
-                }
-            }
-            if (bestMatch && bestMatch.content) foundContent = bestMatch.content;
-            if (!foundContent) return protectChatHtml(mentionHtml);
-        } else if (quotedMsg && quotedMsg.content) {
-            foundContent = quotedMsg.content;
-        } else { return protectChatHtml(mentionHtml); }
-        let quotedContent = foundContent;
+        const quotedMsg = getCachedChatReference(decodeChatImageAttribute(login), ts);
+        if (quotedMsg?.ambiguous) return protectChatHtml(`${mentionHtml}:[同時有多則留言，無法確定引用]`);
+        if (!quotedMsg || quotedMsg.deleted || !quotedMsg.content) {
+            requestChatReference(decodeChatImageAttribute(login), ts);
+            return protectChatHtml(mentionHtml);
+        }
+        const quotedContent = quotedMsg.content;
         const reference = `${login}:${ts}`;
         if (visited.has(reference) || quotedContent.includes(`[r]${login},${ts}[m]`)) {
             return protectChatHtml(`${mentionHtml}:[循環引用]`);
         }
         const nextVisited = new Set(visited);
         nextVisited.add(reference);
-        const parsedQuote = parseContent(processRTag(quotedContent, depth + 1, nextVisited), true);
-        return protectChatHtml(`<div class="quote-box" onclick="scrollToMsg('${ts}')"><svg width="17" height="17" viewBox="0 0 24 20" fill="currentColor" style="vertical-align: middle;"><path d="M9 10h2v2H9v-2Zm6 0h-2v2h2v-2Z"></path><path fill-rule="evenodd" d="m12 22-3-3H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 2 2h-4l-3 3Zm-2.172-5L12 19.172 14.172 17H19V5H5v12h4.828Z" clip-rule="evenodd"></path></svg> 引用${mentionHtml}:${parsedQuote}</div>`);
+        const quoteBody = ChatMessageFormat.prepareNativeBody(quotedContent, quotedMsg.ircMessage?.tags || '', {
+            renderImage: (url, options) => buildChatImageHtml(url, options), protectHtml: protectChatHtml
+        }).text;
+        const parsedQuote = parseContent(processRTag(quoteBody, depth + 1, nextVisited), true);
+        const quoteTarget = escapeChatText(`scrollToMsg(${JSON.stringify(quotedMsg.id || ts)})`);
+        return protectChatHtml(`<div class="quote-box" onclick="${quoteTarget}"><svg width="17" height="17" viewBox="0 0 24 20" fill="currentColor" style="vertical-align: middle;"><path d="M9 10h2v2H9v-2Zm6 0h-2v2h2v-2Z"></path><path fill-rule="evenodd" d="m12 22-3-3H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 2 2h-4l-3 3Zm-2.172-5L12 19.172 14.172 17H19V5H5v12h4.828Z" clip-rule="evenodd"></path></svg> 引用${mentionHtml}:${parsedQuote}</div>`);
     });
 }
 
@@ -2244,7 +2348,7 @@ async function fetchResourceJson(url, options = {}) {
 }
 function readResourceArray(key) {
     try {
-        const data = JSON.parse(localStorage.getItem(key) || '[]');
+        const data = JSON.parse(chatStorage.getItem(key) || '[]');
         return Array.isArray(data) ? data : [];
     } catch (err) { return []; }
 }
@@ -2446,35 +2550,35 @@ function insertTagOnly(s) { insertTextAtCursor(s); }
 window.addBTTV = () => {
     const url = $("#bttvUrl").val().trim();
     if(!url) return;
-    let saved = JSON.parse(localStorage.getItem('myBTTV')||'[]');
+    let saved = JSON.parse(chatStorage.getItem('myBTTV')||'[]');
     if(!saved.includes(url)){
         saved.push(url);
-        localStorage.setItem('myBTTV',JSON.stringify(saved));
+        chatStorage.setItem('myBTTV',JSON.stringify(saved));
         emojiLists["BTTV"].emojis.push({ alt: url.split('/').pop().split('?')[0], src: url });
         renderTabContent("BTTV");
     }
     $("#bttvUrl").val("");
 };
 window.deleteBTTV = (url) => {
-    let saved = JSON.parse(localStorage.getItem('myBTTV')||'[]');
+    let saved = JSON.parse(chatStorage.getItem('myBTTV')||'[]');
     saved = saved.filter(u=>u!==url);
-    localStorage.setItem('myBTTV',JSON.stringify(saved));
+    chatStorage.setItem('myBTTV',JSON.stringify(saved));
     emojiLists["BTTV"].emojis = emojiLists["BTTV"].emojis.filter(e=>e.src!==url);
     renderTabContent("BTTV");
 };
 window.addAudio = () => {
     const name = $("#audioName").val().trim(), url = $("#audioUrl").val().trim();
     if(!name||!url) return alert("請填寫完整");
-    let saved = JSON.parse(localStorage.getItem('myAudios')||'[]');
+    let saved = JSON.parse(chatStorage.getItem('myAudios')||'[]');
     saved.push({name,url});
-    localStorage.setItem('myAudios',JSON.stringify(saved));
+    chatStorage.setItem('myAudios',JSON.stringify(saved));
     audioLists["音訊"].audios = mergeAudioLists([], saved);
     renderTabContent("音訊");
 };
 window.deleteAudio = (i) => {
-    let saved = JSON.parse(localStorage.getItem('myAudios')||'[]');
+    let saved = JSON.parse(chatStorage.getItem('myAudios')||'[]');
     saved.splice(i,1);
-    localStorage.setItem('myAudios',JSON.stringify(saved));
+    chatStorage.setItem('myAudios',JSON.stringify(saved));
     audioLists["音訊"].audios = saved;
     renderTabContent("音訊");
 };
@@ -2728,17 +2832,18 @@ function sendMessage() {
         finalCmd = `PRIVMSG #${CHANNEL} :${val}`;
     }
     socket.send(finalCmd);
-    const selfMsgRecord = { content: val, user: { login: myLoginId, displayName: myDisplayName }, displayName: myDisplayName, badges: myBadgeStr, avatar: myAvatar, timestamp: Date.now() };
-    msgCache[selfTs] = selfMsgRecord;
+    const selfId = `local-${selfTs}`;
+    const selfMsgRecord = { content: val, user: { login: myLoginId, displayName: myDisplayName }, displayName: myDisplayName, badges: myBadgeStr, avatar: myAvatar, timestamp: Number(selfTs) };
+    rememberChatRecord(selfMsgRecord, selfId, selfId);
     addRecentUser({ login: myLoginId, displayName: myDisplayName, badges: myBadgeStr, avatar: myAvatar });
-    let line = `<div class="chat-line ts-${selfTs} id-${selfTs}" data-user-login="${myLoginId}" data-msg-ts="${selfTs}">
+    let line = `<div class="chat-line ts-${selfTs} id-${selfTs}" data-message-id="${selfId}" data-message-key="${selfId}" data-user-login="${escapeChatText(myLoginId)}" data-msg-ts="${selfTs}">
         <div class="reply-btn-group">
             <div class="reply-btn" onclick="replyNative('${myLoginId}','${selfTs}','${myDisplayName}')"><img src="./re2.png"></div>
             <div class="reply-btn2" onclick="insertRecursiveQuote('${myLoginId}','${selfTs}')" title="sk回覆格式">🔗</div>
         </div>
         <b class="self-name" style="color:${myColor}">${badgeHtml}${formatNameHtml(myDisplayName || myLoginId, myLoginId)}:</b> <span>${replyDisplay}${parseContent(processedContentForDisplay, true)}</span>
     </div>`;
-    appendMessageWithScroll(line);
+    appendMessageWithScroll(line, selfId);
     cancelReply();
     input.textContent = "";
 }
@@ -2767,120 +2872,319 @@ let historyHasLoaded = false;
 let oldestHistoryCursor = null;
 let historyRetryOlder = null;
 let hasMoreHistory = false;
+// API cursors are rm-received-ts, never Twitch's independent tmi-sent-ts clock.
+const HISTORY_PAGE_LIMIT = 800;
+let historyReceivedCheckpoint = 0;
+let historyRecovery = null;
+let olderHistoryQueue = [];
+let olderHistoryBoundary = null;
+let olderHistoryAnchor = null;
+let olderHistoryVisibleAnchorId = null;
+let olderHistoryBoundaryKeys = new Set();
+let olderHistoryRemoteMore = false;
+let historyRecoveryTimer = null;
+let historyServiceWarning = '';
+function historyReceivedTime(message) {
+    const value = Number(getTagValue(message.tags, 'rm-received-ts'));
+    return Number.isFinite(value) && value > 0 ? value : 0;
+}
+function historyEventKey(message) {
+    return chatMessageKey(message) || `${message.command}:${message.source}:${message.params.join(' ')}:${historyReceivedTime(message)}:${message.body}`;
+}
+function historyLogicalCount() {
+    return typeof getLogicalChatCount === 'function' ? getLogicalChatCount() : (document.getElementById('messages')?.children.length || 0);
+}
+function historyBufferedCount() {
+    return typeof getBufferedChatCount === 'function' ? getBufferedChatCount() : messageBuffer.length;
+}
+function historyMessageAlreadyPresent(message) {
+    const key = chatMessageKey(message);
+    return Boolean(key && (seenMessageIds.has(key) || (typeof chatMessageStore !== 'undefined' && chatMessageStore?.hasKey(key))));
+}
+function oldestLogicalHistoryIdentity() {
+    const first = document.getElementById('messages')?.firstElementChild;
+    if (!first) return null;
+    if (first.dataset.archivePage && chatVirtualizer) {
+        const item = chatVirtualizer.pages.get(first.dataset.archivePage)?.items[0];
+        return item?.id || item?.key || null;
+    }
+    return first.dataset.messageId || first.dataset.messageKey || null;
+}
+async function alignOlderHistoryToRetainedRows() {
+    const identity = oldestLogicalHistoryIdentity();
+    const cursor = getOldestRetainedHistoryCursor();
+    const changedIdentity = identity && identity !== olderHistoryVisibleAnchorId;
+    const advancedCursor = cursor !== null && olderHistoryAnchor !== null && cursor > olderHistoryAnchor;
+    if (!changedIdentity && !advancedCursor && (oldestHistoryCursor !== null || olderHistoryQueue.length)) return false;
+    if (!identity && cursor === null) throw new Error('目前沒有可對應的歷史留言起點');
+    if (cursor !== null) {
+        olderHistoryQueue = [];
+        oldestHistoryCursor = olderHistoryBoundary = olderHistoryAnchor = cursor;
+        olderHistoryBoundaryKeys.clear();
+        olderHistoryRemoteMore = true;
+    } else {
+        // A live IRC row has no service receive clock. Match its ID instead of
+        // guessing an API cursor from Twitch's unrelated send timestamp.
+        const result = await requestHistoryPage();
+        const anchor = result.events.find(message => historyEventKey(message) === identity || getTagValue(message.tags, 'id') === identity);
+        const received = anchor ? historyReceivedTime(anchor) : 0;
+        if (!received) {
+            historyServiceWarning = '歷史服務未能對應目前最早留言，暫未載入較早紀錄；可重試。';
+            throw new Error('目前最早留言未出現在歷史服務可用紀錄內');
+        }
+        for (const message of result.events) {
+            if (historyMessageAlreadyPresent(message) || !isDisplayableChatMessage(message)) renderChatMessage(message, true, false);
+        }
+        const available = result.events.filter(message => historyReceivedTime(message) <= received);
+        const pageEvents = result.allEvents.filter(message => historyReceivedTime(message) <= received);
+        seedOlderHistory(available, result.full, pageEvents);
+        oldestHistoryCursor = olderHistoryAnchor = received;
+        if (result.unavailable) historyServiceWarning = '歷史服務尚未完整連線，可能有未收錄留言；可重試。';
+        else historyServiceWarning = '';
+    }
+    olderHistoryVisibleAnchorId = identity;
+    return true;
+}
 function setHistoryStatus(text) {
     const status = document.getElementById('historyStatus');
-    if (status && status.textContent !== text) { status.textContent = text; status.title = text; }
+    const warning = typeof chatConnectionWarning === 'string' && chatConnectionWarning ? chatConnectionWarning : historyServiceWarning;
+    const display = warning ? `${warning} ${text}` : text;
+    if (status && status.textContent !== display) { status.textContent = display; status.title = display; }
 }
 function showPausedRetentionStatus() {
-    const count = (document.getElementById('messages')?.children.length || 0) + messageBuffer.length;
+    const count = historyLogicalCount() + historyBufferedCount();
     setHistoryStatus(`暫停移走舊留言（${count} 則）；按↓恢復上限。`);
 }
 function updateHistoryButton() {
     const button = document.getElementById('loadMoreHistoryBtn');
     if (!button) return;
-    const atCapacity = !retentionPaused && (document.getElementById('messages')?.children.length || 0) >= MAX_MESSAGES;
+    const atCapacity = !retentionPaused && historyLogicalCount() >= MAX_MESSAGES;
     const retry = historyRetryOlder !== null;
     const capacityBlocks = atCapacity && historyRetryOlder !== false;
     button.disabled = isFetchingHistory || capacityBlocks || (!retry && !hasMoreHistory);
     button.textContent = capacityBlocks ? '本頁已達保留上限' : retry ? '重試載入留言' : hasMoreHistory ? '載入更早留言' : '已載入可用歷史';
 }
 function loadMoreHistory() {
-    const older = historyRetryOlder ?? (oldestHistoryCursor !== null);
+    const older = historyRetryOlder ?? (historyHasLoaded && historyLogicalCount() > 0);
     if (older) pauseChatFollowing();
     return fetchRecentMessages(older);
 }
+function scheduleHistoryRecovery(delay = 15000) {
+    if (historyRecoveryTimer) clearTimeout(historyRecoveryTimer);
+    historyRecoveryTimer = setTimeout(() => {
+        historyRecoveryTimer = null;
+        if (hasJoinedChannel) fetchRecentMessages();
+    }, delay);
+}
+async function requestHistoryPage({ before = null, after = null } = {}) {
+    const query = new URLSearchParams({ limit: String(HISTORY_PAGE_LIMIT) });
+    if (before !== null) query.set('before', String(before));
+    if (after !== null && after > 0) query.set('after', String(after));
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    try {
+        const response = await fetch(`https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(CHANNEL)}?${query}`, { signal: controller.signal });
+        if (!response.ok) throw new Error(`歷史訊息服務回應 ${response.status}`);
+        const data = await response.json();
+        if (!Array.isArray(data.messages)) throw new Error('歷史訊息格式無效');
+        const allEvents = data.messages.flatMap(raw => typeof raw === 'string' ? raw.split(/\r?\n/) : [])
+            .map(parseIrcLine).filter(Boolean)
+            .filter(message => {
+                const received = historyReceivedTime(message);
+                return !received || ((after === null || received > after) && (before === null || received < before));
+            })
+            .sort((a, b) => historyReceivedTime(a) - historyReceivedTime(b));
+        const events = allEvents.filter(message => isChatEventForChannel(message));
+        // channel_not_joined is informational: use available records, but keep a retry checkpoint.
+        return { events, allEvents, full: data.messages.length >= HISTORY_PAGE_LIMIT, unavailable: Boolean(data.error_code || data.error) };
+    } finally { clearTimeout(timeoutId); }
+}
+function seedOlderHistory(events, full, allEvents = events) {
+    const unique = new Map();
+    events.forEach(message => unique.set(historyEventKey(message), message));
+    olderHistoryQueue = Array.from(unique.values());
+    const times = allEvents.map(historyReceivedTime).filter(Boolean);
+    olderHistoryBoundary = times.length ? Math.min(...times) : null;
+    olderHistoryBoundaryKeys = new Set(allEvents.filter(message => historyReceivedTime(message) === olderHistoryBoundary).map(historyEventKey));
+    olderHistoryRemoteMore = full;
+    hasMoreHistory = olderHistoryQueue.some(isDisplayableChatMessage) || full;
+}
+function takeOlderHistoryBatch(batchSize) {
+    // Keep the unused part of an API page so a 30-row boundary cannot drop same-ms records.
+    const selected = [];
+    let count = 0;
+    while (olderHistoryQueue.length && count < batchSize) {
+        const message = olderHistoryQueue.pop();
+        selected.push(message);
+        if (isDisplayableChatMessage(message) && !historyMessageAlreadyPresent(message)) count++;
+    }
+    selected.reverse();
+    return selected;
+}
 async function fetchRecentMessages(older = false) {
-    if (older && !retentionPaused && (document.getElementById('messages')?.children?.length || 0) >= MAX_MESSAGES) {
+    if (older && !retentionPaused && historyLogicalCount() >= MAX_MESSAGES) {
         setHistoryStatus(`本頁已達 ${MAX_MESSAGES} 則保留上限，停止載入較早留言。`);
         updateHistoryButton();
         return;
     }
     if (isFetchingHistory) {
-        pendingHistoryRefresh = true;
-        pendingOlderHistory ||= older;
+        if (older) pendingOlderHistory = true;
+        else pendingHistoryRefresh = true;
         return;
     }
-    if (older && oldestHistoryCursor === null) return;
+    if (older && oldestHistoryCursor === null && !olderHistoryQueue.length && !oldestLogicalHistoryIdentity()) return;
     isFetchingHistory = true;
     const button = document.getElementById('loadMoreHistoryBtn');
     if (button) button.disabled = true;
     const shouldScroll = autoScroll && !older;
-    const limit = older || !historyHasLoaded ? 100 : 800;
     const recovering = !older && historyHasLoaded;
-    const recoveryTimestamp = recovering ? latestChatTimestamp : 0;
     const requestUnreadResetVersion = unreadResetVersion;
-    const before = older ? `&before=${oldestHistoryCursor}` : '';
-    const after = recovering && recoveryTimestamp > 0 ? `&after=${recoveryTimestamp}` : '';
+    const requestVisibleAnchorId = oldestLogicalHistoryIdentity();
     setHistoryStatus(older ? '正在載入更早留言…' : '正在補回留言…');
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
     try {
-        const response = await fetch(`https://recent-messages.robotty.de/api/v2/recent-messages/${encodeURIComponent(CHANNEL)}?limit=${limit}${before}${after}`, { signal: controller.signal });
-        if (!response.ok) throw new Error(`歷史訊息服務回應 ${response.status}`);
-        const data = await response.json();
-        const rawEvents = Array.isArray(data.messages) ? data.messages : [];
-        const previousCursor = oldestHistoryCursor;
-        const parsedHistory = rawEvents
-            .flatMap(raw => typeof raw === 'string' ? raw.split(/\r?\n/) : [])
-            .map(parseIrcLine).filter(Boolean);
-        const history = parsedHistory
-            .filter(message => message && message.command === 'PRIVMSG' &&
-                message.params[0]?.toLowerCase() === `#${CHANNEL.toLowerCase()}`)
-            .sort((a, b) => Number(getTagValue(a.tags, 'tmi-sent-ts') || getTagValue(a.tags, 'rm-received-ts') || 0) -
-                Number(getTagValue(b.tags, 'tmi-sent-ts') || getTagValue(b.tags, 'rm-received-ts') || 0));
-        const unique = new Map();
-        history.forEach(message => unique.set(chatMessageKey(message) || message, message));
-        const available = Array.from(unique.values());
-        const remainingCapacity = retentionPaused ? Infinity : Math.max(0, MAX_MESSAGES - (document.getElementById('messages')?.children.length || 0) - messageBuffer.length);
-        const batchSize = older ? Math.min(CHAT_HISTORY_BATCH_SIZE, remainingCapacity) : CHAT_HISTORY_BATCH_SIZE;
-        const messages = recovering ? available.filter(message =>
-            Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts')) >= recoveryTimestamp
-        ) : batchSize ? available.slice(-batchSize) : [];
-        messages.forEach(message => {
-            const timestamp = Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts'));
-            const countAsNew = recovering && requestUnreadResetVersion === unreadResetVersion && timestamp >= unreadWatermark;
-            try { renderChatMessage(message, true, countAsNew); }
-            catch (err) { console.error('處理歷史訊息錯誤:', err); }
-        });
-        // 向前翻頁以實際顯示的最早留言為界，避免跳過未顯示的紀錄。
-        const cursorMessages = older && !remainingCapacity ? [] : messages.length ? messages : parsedHistory;
-        const cursors = cursorMessages.map(message => Number(getTagValue(message.tags, 'rm-received-ts') || getTagValue(message.tags, 'tmi-sent-ts')))
-            .filter(time => Number.isFinite(time) && time > 0);
-        if (!recovering) {
-            const retainedCursor = !older && !retentionPaused && (document.getElementById('messages')?.children.length || 0) >= MAX_MESSAGES ? getOldestRetainedHistoryCursor() : null;
-            if (retainedCursor !== null) oldestHistoryCursor = retainedCursor;
-            else if (cursors.length) oldestHistoryCursor = Math.min(oldestHistoryCursor ?? Infinity, ...cursors);
+        if (recovering) {
+            // This state survives failed requests and newer live messages/reconnections.
+            historyRecovery ||= { after: Math.max(0, historyReceivedCheckpoint - 1), before: null, newest: historyReceivedCheckpoint, boundaryKeys: new Set(), resetVersion: requestUnreadResetVersion };
+            const recovery = historyRecovery;
+            let completed = false;
+            let unavailable = false;
+            let paginationBlocked = false;
+            for (let pageNumber = 0; pageNumber < 12; pageNumber++) {
+                const result = await requestHistoryPage({ after: recovery.after, before: recovery.before });
+                unavailable ||= result.unavailable;
+                const events = result.events;
+                const times = result.allEvents.map(historyReceivedTime).filter(Boolean);
+                if (times.length) recovery.newest = Math.max(recovery.newest, ...times);
+                const fresh = events.filter(message => !recovery.boundaryKeys.has(historyEventKey(message)));
+                for (const message of fresh) {
+                    const key = chatMessageKey(message);
+                    // Retention removes rows, not their delivery history. A recovery
+                    // must not resurrect deliberately pruned messages; explicit older
+                    // paging still bypasses this ledger and can load them again.
+                    if (['PRIVMSG', 'USERNOTICE'].includes(message.command) && getTagValue(message.tags, 'rm-deleted') !== '1') {
+                        hydrateReceivedChatTimestamp(message, key);
+                        if (key && chatMessageStore?.wasDelivered && await chatMessageStore.wasDelivered(key)) continue;
+                    }
+                    const sent = Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts'));
+                    const countAsNew = recovery.resetVersion === unreadResetVersion && (!Number.isFinite(sent) || sent >= unreadWatermark);
+                    renderChatMessage(message, true, countAsNew);
+                }
+                if (!result.full) { completed = true; break; }
+                if (!times.length) { paginationBlocked = true; break; }
+                const boundary = Math.min(...times);
+                const nextBefore = boundary + 1; // API before is exclusive; overlap the millisecond.
+                if (recovery.before !== null && nextBefore >= recovery.before && !fresh.length) { paginationBlocked = true; break; }
+                recovery.before = nextBefore;
+                recovery.boundaryKeys = new Set(result.allEvents.filter(message => historyReceivedTime(message) === boundary).map(historyEventKey));
+            }
+            historyRetryOlder = null;
+            if (paginationBlocked) {
+                historyServiceWarning = '歷史服務分頁無法再前進，部分留言可能無法補回；可重試。';
+                historyRetryOlder = false;
+                historyRecovery = null;
+            } else if (completed && !unavailable) {
+                historyReceivedCheckpoint = recovery.newest;
+                historyRecovery = null;
+                historyServiceWarning = '';
+                scheduleHistoryRecovery(120000);
+            } else if (unavailable) {
+                // Recheck from the original checkpoint after the upstream listener recovers.
+                recovery.before = null;
+                recovery.boundaryKeys.clear();
+                historyServiceWarning = '歷史服務尚未完整連線，可能有未收錄留言；會稍後重試。';
+                historyRetryOlder = false;
+                scheduleHistoryRecovery();
+            } else scheduleHistoryRecovery(1000);
+        } else {
+            if (older) await alignOlderHistoryToRetainedRows();
+            let unavailable = false;
+            let firstPage = !historyHasLoaded;
+            let added = 0;
+            const selectedTimes = [];
+            const remainingCapacity = retentionPaused ? Infinity : Math.max(0, MAX_MESSAGES - historyLogicalCount() - historyBufferedCount());
+            const batchSize = Math.min(CHAT_HISTORY_BATCH_SIZE, remainingCapacity);
+            for (let pageNumber = 0; pageNumber < 12 && (firstPage || added < batchSize); pageNumber++) {
+                if (firstPage || !olderHistoryQueue.length) {
+                    if (!firstPage && !olderHistoryRemoteMore && olderHistoryBoundary !== null) break;
+                    const before = firstPage ? null : (olderHistoryBoundary ?? oldestHistoryCursor) + 1;
+                    const result = await requestHistoryPage({ before });
+                    unavailable ||= result.unavailable;
+                    const previousBoundary = olderHistoryBoundary;
+                    const previousKeys = olderHistoryBoundaryKeys;
+                    const events = result.events.filter(message => firstPage || !previousKeys.has(historyEventKey(message)));
+                    if (firstPage) {
+                        const times = result.allEvents.map(historyReceivedTime).filter(Boolean);
+                        historyReceivedCheckpoint = times.length ? Math.max(...times) : 0;
+                    }
+                    seedOlderHistory(events, result.full, result.allEvents);
+                    if (!firstPage && result.full && olderHistoryBoundary !== null && previousBoundary !== null && olderHistoryBoundary >= previousBoundary && !events.length) {
+                        historyServiceWarning = '歷史服務分頁無法再前進，部分留言可能無法補回。';
+                        olderHistoryRemoteMore = false;
+                        break;
+                    }
+                    firstPage = false;
+                }
+                if (!batchSize) break;
+                // An explicit return-to-latest may happen while the network awaits.
+                // Recheck capacity before consuming the page, not only at request start.
+                const currentCapacity = retentionPaused ? batchSize - added : Math.min(batchSize - added,
+                    Math.max(0, MAX_MESSAGES - historyLogicalCount() - historyBufferedCount()));
+                if (!currentCapacity) break;
+                const selected = takeOlderHistoryBatch(currentCapacity);
+                added += selected.filter(message => isDisplayableChatMessage(message) && !historyMessageAlreadyPresent(message)).length;
+                selectedTimes.push(...selected.map(historyReceivedTime).filter(Boolean));
+                selected.forEach(message => renderChatMessage(message, true, false));
+                if (!olderHistoryQueue.length && !olderHistoryRemoteMore) break;
+            }
+            if (chatVirtualizer) await chatVirtualizer.whenIdle();
+            const resetDuringOlderLoad = older && requestUnreadResetVersion !== unreadResetVersion;
+            const retainedCursor = !older && !retentionPaused && historyLogicalCount() >= MAX_MESSAGES ? getOldestRetainedHistoryCursor() : null;
+            if (resetDuringOlderLoad) {
+                const currentCursor = getOldestRetainedHistoryCursor();
+                if (currentCursor !== null) oldestHistoryCursor = currentCursor;
+                olderHistoryQueue = [];
+                olderHistoryBoundary = oldestHistoryCursor;
+                olderHistoryBoundaryKeys.clear();
+                olderHistoryRemoteMore = true;
+            } else if (retainedCursor !== null) {
+                oldestHistoryCursor = retainedCursor;
+                olderHistoryQueue = [];
+                olderHistoryBoundary = retainedCursor;
+                olderHistoryBoundaryKeys.clear();
+                olderHistoryRemoteMore = true;
+            } else if (selectedTimes.length) oldestHistoryCursor = Math.min(oldestHistoryCursor ?? Infinity, ...selectedTimes);
+            else if (!older && olderHistoryBoundary !== null) oldestHistoryCursor = Math.min(oldestHistoryCursor ?? Infinity, olderHistoryBoundary);
+            olderHistoryAnchor = oldestHistoryCursor;
+            const currentIdentity = oldestLogicalHistoryIdentity();
+            // Late initial responses and arrow resets cannot associate an old
+            // prefetched page with a newer raw-live row whose receive time is unknown.
+            olderHistoryVisibleAnchorId = (resetDuringOlderLoad || (!older && historyLogicalCount() >= MAX_MESSAGES && getOldestRetainedHistoryCursor() === null))
+                ? requestVisibleAnchorId : currentIdentity;
+            hasMoreHistory = olderHistoryQueue.some(isDisplayableChatMessage) || olderHistoryRemoteMore;
+            historyHasLoaded = true;
+            historyRetryOlder = unavailable ? false : null;
+            historyServiceWarning = unavailable ? '歷史服務尚未完整連線，可能有未收錄留言；會稍後重試。' : historyServiceWarning;
+            if (unavailable) scheduleHistoryRecovery();
+            else if (historyRecovery) scheduleHistoryRecovery(1000);
+            else scheduleHistoryRecovery(120000);
         }
-        historyHasLoaded = true;
-        historyRetryOlder = null;
-        const advanced = oldestHistoryCursor !== null && (previousCursor === null || oldestHistoryCursor < previousCursor);
-        if (!recovering && !(older && !remainingCapacity)) {
-            const hasUnshownMessages = !recovering && available.length > messages.length;
-            hasMoreHistory = oldestHistoryCursor !== null && !(older && (!advanced || (!hasUnshownMessages && rawEvents.length < limit)));
-        }
-        setHistoryStatus(older && !advanced ? '暫時沒有更早的可用留言。' : '留言已更新；可載入更早留言。');
+        setHistoryStatus(hasMoreHistory ? '留言已更新；可載入更早留言。' : '已載入目前可取得的歷史留言。');
         if (retentionPaused) showPausedRetentionStatus();
-        else if ((document.getElementById('messages')?.children?.length || 0) >= MAX_MESSAGES) {
-            setHistoryStatus(`目前保留 ${MAX_MESSAGES} 則；已達上限，停止載入較早留言。`);
-        }
+        else if (historyLogicalCount() >= MAX_MESSAGES) setHistoryStatus(`目前保留 ${MAX_MESSAGES} 則；已達上限，停止載入較早留言。`);
     } catch (err) {
         console.error('獲取歷史訊息失敗:', err);
         historyRetryOlder = older;
         setHistoryStatus('歷史載入失敗，即時訊息仍會繼續；可稍後再試。');
-        if (button) {
-            button.disabled = false;
-            button.textContent = '重試載入留言';
-        }
-    }
-    finally {
-        clearTimeout(timeoutId);
+        if (!older) scheduleHistoryRecovery();
+    } finally {
         isFetchingHistory = false;
         updateHistoryButton();
         if (pendingHistoryRefresh) {
             pendingHistoryRefresh = false;
-            const nextOlder = pendingOlderHistory;
+            fetchRecentMessages(false);
+        } else if (pendingOlderHistory) {
             pendingOlderHistory = false;
-            fetchRecentMessages(nextOlder);
+            fetchRecentMessages(true);
         }
     }
     if (shouldScroll && autoScroll) forceScrollToBottom();
@@ -2893,12 +3197,12 @@ function escapeChatText(value) {
         ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 }
 const trustedChatHtml = new Map();
+let quoteRenderBudget = 80;
 const chatHtmlPrefix = `__CHAT_${Math.random().toString(36).slice(2)}_`;
 let chatHtmlCounter = 0;
 function protectChatHtml(html) {
     const token = `${chatHtmlPrefix}${++chatHtmlCounter}__`;
     trustedChatHtml.set(token, html);
-    if (trustedChatHtml.size > 200) trustedChatHtml.delete(trustedChatHtml.keys().next().value);
     return token;
 }
 function restoreChatHtml(text) {
@@ -2924,20 +3228,16 @@ function parseIrcLine(line) {
     const command = match[3].toUpperCase();
     const middleParams = params.split(/ +/).filter(Boolean);
     // IRC 最後一個參數若沒有空格，可不加冒號，例如 PRIVMSG #channel 哇。
-    if (command === 'PRIVMSG' && bodyIndex === -1 && middleParams.length > 1) {
+    if (['PRIVMSG', 'USERNOTICE', 'CLEARCHAT', 'CLEARMSG'].includes(command) && bodyIndex === -1 && middleParams.length > 1) {
         body = middleParams.splice(1).join(' ');
     }
     return { tags: match[1] || '', source: match[2] || '', command, params: middleParams, body };
 }
 const seenMessageIds = new Set();
 function trimSeenMessageIds() {
-    if (retentionPaused || seenMessageIds.size <= 2000) return;
-    const retainedKeys = new Set(Array.from(document.querySelectorAll('#messages .chat-line'), row => row.dataset.messageKey || row.dataset.messageId));
-    messageBuffer.forEach(message => { if (message.key) retainedKeys.add(message.key); });
-    for (const key of seenMessageIds) {
-        if (seenMessageIds.size <= 2000) break;
-        if (!retainedKeys.has(key)) seenMessageIds.delete(key);
-    }
+    // Retained IDs also live in the disk-store index. Bound this extra recent
+    // network-deduplication window, even during a long reading pause.
+    while (seenMessageIds.size > 2000) seenMessageIds.delete(seenMessageIds.values().next().value);
 }
 let latestChatTimestamp = 0;
 let chatResourcesReady = false;
@@ -2948,32 +3248,158 @@ function chatMessageKey(message) {
     const ts = getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts');
     return id || (ts ? `${message.params[0]}:${message.source}:${ts}:${message.body}` : null);
 }
+function isChatEventForChannel(message) {
+    return ['PRIVMSG', 'USERNOTICE', 'CLEARMSG', 'CLEARCHAT'].includes(message.command) &&
+        message.params[0]?.toLowerCase() === `#${CHANNEL.toLowerCase()}`;
+}
+function isDisplayableChatMessage(message) {
+    return isChatEventForChannel(message) && ['PRIVMSG', 'USERNOTICE'].includes(message.command) && Boolean(message.body) &&
+        getTagValue(message.tags, 'rm-deleted') !== '1' && !isSuppressedChatMetadata({
+            id: chatMessageKey(message), login: message.command === 'USERNOTICE' ? getTagValue(message.tags, 'login') : message.source.split('!')[0],
+            timestamp: Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts'))
+        });
+}
+const deletedChatMessageIds = new Set();
+let chatClearedBefore = 0;
+const chatUserClearedBefore = new Map();
+function isSuppressedChatMetadata(item) {
+    return deletedChatMessageIds.has(item.id) ||
+        (item.timestamp > 0 && item.timestamp <= Math.max(chatClearedBefore, chatUserClearedBefore.get(String(item.login || '').toLowerCase()) || 0));
+}
+function dropCachedChatRecord(id) {
+    const record = cachedChatRecords.get(String(id));
+    if (!record) return;
+    cachedChatRecords.delete(String(id));
+    for (const alias of [String(id), String(record.timestamp)]) if (msgCache[alias] === record) delete msgCache[alias];
+    const reference = chatReferenceKey(record.user?.login || '', record.timestamp);
+    const matches = customQuoteIndex.get(reference);
+    matches?.delete(String(id));
+    if (!matches?.size) customQuoteIndex.delete(reference);
+}
+function applyChatModeration(message) {
+    const target = getTagValue(message.tags, 'target-msg-id');
+    if (message.command === 'CLEARMSG' && !target) return;
+    chatQuoteVersion++;
+    const login = String(message.body || '').toLowerCase();
+    const timestamp = Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts')) || Date.now();
+    const matches = item => target ? item.id === target : (!login || item.login?.toLowerCase() === login) && item.timestamp <= timestamp;
+    if (target) {
+        deletedChatMessageIds.add(target);
+        while (deletedChatMessageIds.size > 2000) deletedChatMessageIds.delete(deletedChatMessageIds.values().next().value);
+    } else if (login) {
+        chatUserClearedBefore.set(login, Math.max(chatUserClearedBefore.get(login) || 0, timestamp));
+    } else {
+        chatClearedBefore = Math.max(chatClearedBefore, timestamp);
+        for (const [name, cutoff] of chatUserClearedBefore) if (cutoff <= chatClearedBefore) chatUserClearedBefore.delete(name);
+    }
+    const viewport = captureChatViewport();
+    const forgotten = [];
+    document.querySelectorAll('#messages .chat-line').forEach(row => {
+        if (!matches({ id: row.dataset.messageId, login: row.dataset.userLogin, timestamp: Number(row.dataset.msgTs) })) return;
+        row.querySelectorAll('video').forEach(video => { video.pause(); mediaObserver.unobserve(video); });
+        forgotten.push(row.dataset.messageId);
+        row.remove();
+    });
+    messageBuffer = messageBuffer.filter(item => {
+        if (item.archiveId) {
+            const removed = item.items.filter(matches);
+            forgotten.push(...removed.map(metadata => metadata.id));
+            item.items = item.items.filter(metadata => !matches(metadata));
+            item.count = item.items.length;
+            if (!item.count) { chatMessageStore?.deletePage(item.archiveId).catch(() => {}); return false; }
+            return true;
+        }
+        const metadata = bufferEntryMetadata(item);
+        if (!matches(metadata)) return true;
+        forgotten.push(metadata.id);
+        return false;
+    });
+    for (const [id, record] of cachedChatRecords) {
+        if (matches({ id, login: record.user?.login, timestamp: record.timestamp }) && !forgotten.includes(id)) forgotten.push(id);
+    }
+    for (const id of forgotten) deletedChatMessageIds.add(id);
+    while (deletedChatMessageIds.size > 2000) deletedChatMessageIds.delete(deletedChatMessageIds.values().next().value);
+    for (const id of forgotten) dropCachedChatRecord(id);
+    chatMessageStore?.forget(forgotten);
+    const finish = () => {
+        restoreChatViewport(viewport);
+        refreshVisibleMessages();
+        if (autoScroll) forceScrollToBottom();
+        if (retentionPaused) showPausedRetentionStatus();
+    };
+    if (chatVirtualizer) chatVirtualizer.removeWhere(matches).then(removed => {
+        for (const item of removed) { deletedChatMessageIds.add(item.id); dropCachedChatRecord(item.id); }
+        while (deletedChatMessageIds.size > 2000) deletedChatMessageIds.delete(deletedChatMessageIds.values().next().value);
+        finish();
+    }).catch(err => console.warn('刪除暫存留言失敗:', err));
+    finish();
+}
+function bufferEntryMetadata(item) {
+    const id = item.id || item.html?.match(/data-message-id="([^"]*)"/)?.[1] || '';
+    return { id, key: item.key, timestamp: item.timestamp, login: item.login || item.html?.match(/data-user-login="([^"]*)"/)?.[1] || '' };
+}
 function renderChatMessage(message, historical = false, countAsNew = !historical) {
-    if (message.command !== "PRIVMSG" || message.params[0]?.toLowerCase() !== `#${CHANNEL.toLowerCase()}`) return;
+    if (!isChatEventForChannel(message)) return;
+    if (message.command === 'CLEARMSG' || message.command === 'CLEARCHAT') { applyChatModeration(message); return; }
+    if (getTagValue(message.tags, 'rm-deleted') === '1') {
+        const id = getTagValue(message.tags, 'id');
+        if (id) applyChatModeration({ ...message, command: 'CLEARMSG', tags: `${message.tags};target-msg-id=${id}`, body: '' });
+        return;
+    }
+    if (!isDisplayableChatMessage(message)) return;
     const timestamp = Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts'));
     if (Number.isFinite(timestamp) && timestamp > 0) latestChatTimestamp = Math.max(latestChatTimestamp, timestamp);
     const key = chatMessageKey(message);
-    if (key && seenMessageIds.has(key)) return;
-    let line;
-    try { line = buildChatMessageHtml(message, historical); }
-    catch (err) {
-        console.error('訊息格式轉換失敗，保留原文:', err);
-        const ts = getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts') || Date.now().toString();
-        const user = getTagValue(message.tags, 'display-name') || message.source.split('!')[0];
-        line = `<div class="chat-line" data-msg-ts="${escapeChatText(ts)}"><b>${escapeChatText(user)}:</b> <span>${escapeChatText(message.body)}</span></div>`;
-    }
+    hydrateReceivedChatTimestamp(message, key);
+    if (key && (deletedChatMessageIds.has(key) || seenMessageIds.has(key) || chatMessageStore?.hasKey(key) ||
+        (!historical && chatMessageStore?.recentlyDelivered?.(key)))) return;
+    let line = safeBuildChatMessageHtml(message, historical);
     if (key) line = line.replace(/^<div\b/, () => `<div data-message-key="${escapeChatText(key)}"`);
     if (key) seenMessageIds.add(key);
     try { appendMessageWithScroll(line, key); }
     catch (err) { if (key) seenMessageIds.delete(key); throw err; }
+    if (key) chatMessageStore?.rememberDelivery?.(key);
     if (!autoScroll && countAsNew) { unreadMessageCount++; updateUnreadCounter(); }
     trimSeenMessageIds();
 }
 
+function hydrateReceivedChatTimestamp(message, key) {
+    const received = Number(getTagValue(message.tags, 'rm-received-ts'));
+    if (!key || !Number.isFinite(received) || received <= 0) return;
+    const row = Array.from(document.querySelectorAll('#messages .chat-line')).find(element => element.dataset.messageId === key);
+    if (row) row.dataset.receivedTs = String(received);
+    const record = msgCache[key] || chatMessageStore?.getCached(key);
+    if (record && getTagValue(record.ircMessage?.tags || '', 'rm-received-ts') !== String(received)) {
+        rememberChatRecord({ ...record, ircMessage: message }, key, key);
+    }
+}
+function safeBuildChatMessageHtml(message, historical = false) {
+    try { return buildChatMessageHtml(message, historical); }
+    catch (err) {
+        console.error('訊息格式轉換失敗，保留原文:', err);
+        trustedChatHtml.clear();
+        activeChatQuoteReferences = null;
+        const ts = getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts') || String(Date.now());
+        const id = getTagValue(message.tags, 'id') || chatMessageKey(message) || ts;
+        const login = (message.command === 'USERNOTICE' ? '' : message.source.split('!')[0]) || getTagValue(message.tags, 'login') || '';
+        const user = getTagValue(message.tags, 'display-name') || login || 'User';
+        const references = Array.from(String(message.body).matchAll(/\[r\]([^,]+),([0-9]+)\[m\]/gi), match => chatReferenceKey(match[1], match[2]));
+        const parent = getTagValue(message.tags, 'reply-parent-msg-id');
+        if (parent) references.push(`id:${parent}`);
+        try { rememberChatRecord({ content: message.body, user: { login, displayName: user }, displayName: user,
+            timestamp: Number(ts), ircMessage: message }, id, chatMessageKey(message)); }
+        catch (cacheError) { console.warn('留言快取失敗，保留文字:', cacheError); }
+        return `<div class="chat-line fallback-msg ${historical ? 'historical-msg ' : ''}id-${escapeChatText(id)}" data-message-id="${escapeChatText(id)}" data-user-login="${escapeChatText(login)}" data-msg-ts="${escapeChatText(ts)}" data-received-ts="${escapeChatText(getTagValue(message.tags, 'rm-received-ts') || '')}" data-quote-version="${chatQuoteVersion}" data-quote-refs="${escapeChatText(JSON.stringify(references))}"><b>${escapeChatText(user)}:</b> <span>${escapeChatText(message.body)}</span></div>`;
+    }
+}
 function buildChatMessageHtml(message, historical = false) {
+    trustedChatHtml.clear();
+    activeChatQuoteReferences = new Set();
+    quoteRenderBudget = 80;
     const tags = message.tags;
     const rawMsg = message.body;
-    const nickFromSource = message.source.split("!")[0];
+    const nativeBody = ChatMessageFormat.prepareNativeBody(rawMsg, tags, { renderImage: buildChatImageHtml, protectHtml: protectChatHtml });
+    const nickFromSource = message.command === 'USERNOTICE' ? '' : message.source.split("!")[0];
     let msgId = getTagValue(tags, "id");
     let ts = getTagValue(tags, "tmi-sent-ts") || getTagValue(tags, "rm-received-ts") || Date.now().toString();
     let color = getTagValue(tags, "color") || "#9147ff";
@@ -2981,27 +3407,36 @@ function buildChatMessageHtml(message, historical = false) {
     let userLogin = nickFromSource || getTagValue(tags, "login") || "";
     let displayNameRaw = getTagValue(tags, "display-name");
     let user = displayNameRaw || userLogin || "User";
-    userCache[userLogin] = user;
+    rememberChatUser(userLogin, user);
     let msgRecord = {
         content: rawMsg, user: { login: userLogin, displayName: user }, displayName: user,
         badges: badgeStr, avatar: 'https://static-cdn.jtvnw.net/user-default-pictures-uv/75305d54-c7cc-40d1-bb9c-91fbe85943c7-profile_image-70x70.png',
         timestamp: parseInt(ts), ircMessage: message
     };
-    if (msgId) msgCache[msgId] = msgRecord;
-    msgCache[ts] = msgRecord;
+    rememberChatRecord(msgRecord, msgId || ts, chatMessageKey(message));
     addRecentUser({ login: userLogin, displayName: user, badges: badgeStr, avatar: msgRecord.avatar });
-    let replyHtml = "", displayMsg = rawMsg;
+    let replyHtml = "", displayMsg = nativeBody.text;
     let pUser = getTagValue(tags, "reply-parent-display-name");
     let pId = getTagValue(tags, "reply-parent-msg-id");
     let pBodyRaw = getTagValue(tags, "reply-parent-msg-body");
     if (pUser && pId) {
+        activeChatQuoteReferences.add(`id:${pId}`);
         let isMe = (pUser === myDisplayName || pUser === myLoginId);
-        let originalText = pBodyRaw ? pBodyRaw.replace(/\\([s:nr\\])/g, (_, char) =>
-            ({ s: ' ', ':': ';', n: '\n', r: '\r', '\\': '\\' })[char]) : "...";
+        const parentRecord = msgCache[pId] || chatMessageStore?.getCached(pId);
+        const parentDeleted = deletedChatMessageIds.has(pId);
+        if (!parentDeleted && !parentRecord) requestChatMessageById(pId);
+        let originalText = parentDeleted ? '[原留言已刪除]' : parentRecord?.content || (pBodyRaw ? pBodyRaw.replace(/\\([s:nr\\])/g, (_, char) =>
+            ({ s: ' ', ':': ';', n: '\n', r: '\r', '\\': '\\' })[char]) : "...");
+        if (!parentDeleted && parentRecord?.ircMessage) {
+            originalText = ChatMessageFormat.prepareNativeBody(originalText, parentRecord.ircMessage.tags, {
+                renderImage: buildChatImageHtml, protectHtml: protectChatHtml
+            }).text;
+        }
         let processed = processRTag(originalText, 0);
         let pBody = parseContent(processed, true);
         let userTagClass = isMe ? 'quote-user mention-self-tag' : 'quote-user';
-        replyHtml = `<div class="quote-box" onclick="scrollToMsg('${escapeChatText(pId)}')"><svg width="17" height="17" viewBox="0 0 24 20" fill="currentColor"><path d="M9 10h2v2H9v-2Zm6 0h-2v2h2v-2Z"></path><path fill-rule="evenodd" d="m12 22-3-3H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 2 2h-4l-3 3Zm-2.172-5L12 19.172 14.172 17H19V5H5v12h4.828Z" clip-rule="evenodd"></path></svg> 回覆<span class="${userTagClass}">@${escapeChatText(pUser)}:</span>${pBody}</div>`;
+        const nativeQuoteTarget = escapeChatText(`scrollToMsg(${JSON.stringify(pId)})`);
+        replyHtml = `<div class="quote-box" onclick="${nativeQuoteTarget}"><svg width="17" height="17" viewBox="0 0 24 20" fill="currentColor"><path d="M9 10h2v2H9v-2Zm6 0h-2v2h2v-2Z"></path><path fill-rule="evenodd" d="m12 22-3-3H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v12a2 2 0 0 1 2 2h-4l-3 3Zm-2.172-5L12 19.172 14.172 17H19V5H5v12h4.828Z" clip-rule="evenodd"></path></svg> 回覆<span class="${userTagClass}">@${escapeChatText(pUser)}:</span>${pBody}</div>`;
         const mentions = [pUser, getTagValue(tags, 'reply-parent-user-login')].filter(Boolean);
         const mention = mentions.find(name => displayMsg.toLowerCase().startsWith(`@${name.toLowerCase()} `));
         if (mention) displayMsg = displayMsg.substring(mention.length + 2);
@@ -3011,23 +3446,28 @@ function buildChatMessageHtml(message, historical = false) {
     let contentHtml = parseContent(displayMsg, true);
     let badgeHtml = renderBadges(badgeStr);
     const replyAction = escapeChatText(`replyNative(${JSON.stringify(userLogin)},${JSON.stringify(msgId || ts)},${JSON.stringify(user)})`);
-    let line = `<div class="chat-line ${historical ? 'historical-msg ' : ''}ts-${escapeChatText(ts)} id-${escapeChatText(msgId||ts)}" data-message-id="${escapeChatText(msgId || ts)}" data-user-login="${escapeChatText(userLogin)}" data-msg-ts="${escapeChatText(ts)}">
+    const quoteReferences = Array.from(activeChatQuoteReferences);
+    const recursiveAction = escapeChatText(`insertRecursiveQuote(${JSON.stringify(userLogin)},${JSON.stringify(ts)})`);
+    let line = `<div class="chat-line ${nativeBody.action ? 'action-msg ' : ''}${message.command === 'USERNOTICE' ? 'usernotice-msg ' : ''}${historical ? 'historical-msg ' : ''}ts-${escapeChatText(ts)} id-${escapeChatText(msgId||ts)}" data-message-id="${escapeChatText(msgId || ts)}" data-user-login="${escapeChatText(userLogin)}" data-msg-ts="${escapeChatText(ts)}" data-received-ts="${escapeChatText(getTagValue(tags, 'rm-received-ts') || '')}" data-quote-version="${chatQuoteVersion}" data-quote-refs="${escapeChatText(JSON.stringify(quoteReferences))}">
         <div class="reply-btn-group">
             <div class="reply-btn" onclick="${replyAction}"><img src="./re2.png"></div>
-            <div class="reply-btn2" onclick="insertRecursiveQuote('${userLogin}','${ts}')" title="插入引用代碼 [r]">🔗</div>
+            <div class="reply-btn2" onclick="${recursiveAction}" title="插入引用代碼 [r]">🔗</div>
         </div>
         <b style="color:${/^#[0-9a-f]{6}$/i.test(color) ? color : '#9147ff'}">${badgeHtml}${formatNameHtml(user, userLogin)}:</b> <span>${replyHtml}${contentHtml}</span>
     </div>`;
+    trustedChatHtml.clear();
+    activeChatQuoteReferences = null;
     return line;
 }
 
-function refreshVisibleMessages() {
+function refreshVisibleMessages(references = null) {
     const viewport = captureChatViewport();
     document.querySelectorAll('#messages .chat-line[data-message-id]').forEach(row => {
+        if (references && !Array.from(references).some(reference => row.dataset.quoteRefs?.includes(reference))) return;
         const record = msgCache[row.dataset.messageId];
         if (!record?.ircMessage) return;
         try {
-            const replacement = $(buildChatMessageHtml(record.ircMessage, row.classList.contains('historical-msg')));
+            const replacement = $(safeBuildChatMessageHtml(record.ircMessage, row.classList.contains('historical-msg')));
             if (row.dataset.messageKey) replacement.attr('data-message-key', row.dataset.messageKey);
             addTimestampsToElements(replacement);
             row.querySelectorAll('video').forEach(video => mediaObserver.unobserve(video));
@@ -3039,9 +3479,89 @@ function refreshVisibleMessages() {
     if (autoScroll) forceScrollToBottom();
 }
 
+function refreshInsertedChatQuotes(rows) {
+    let stale = false;
+    for (const row of rows) {
+        if (!row?.isConnected || !row.dataset.quoteRefs || Number(row.dataset.quoteVersion) === chatQuoteVersion) continue;
+        let references;
+        try { references = JSON.parse(row.dataset.quoteRefs); }
+        catch (_) { continue; }
+        if (!Array.isArray(references)) continue;
+        for (const reference of references) {
+            if (typeof reference !== 'string' || !reference) continue;
+            changedQuoteReferences.add(reference);
+            stale = true;
+        }
+    }
+    // A parent can finish loading while these rows wait for disk-backed insertion.
+    // Refresh after connection; an earlier RAF could not see the detached rows.
+    if (stale) scheduleQuoteRefresh();
+    return rows;
+}
+
+// Owned-socket timers also detect a TCP/WebSocket that is OPEN but no longer usable.
+let chatConnectionWarning = '';
+let chatSocketWatchdog = null;
+let chatSocketLastTraffic = 0;
+let chatSocketOpenedAt = 0;
+let chatSocketProbeAt = 0;
+let chatWasOffline = false;
+const CHAT_CONNECT_TIMEOUT = 20000;
+const CHAT_IDLE_PROBE_DELAY = 60000;
+const CHAT_PROBE_TIMEOUT = 20000;
+function showChatConnectionWarning(text) {
+    chatConnectionWarning = text;
+    document.getElementById('status').textContent = text || (ACCESS_TOKEN ? `連線至 ${CHANNEL}` : `匿名觀看 ${CHANNEL}`);
+    if (retentionPaused) showPausedRetentionStatus();
+    else setHistoryStatus(text ? '聊天室連線狀態：' : '聊天室已連線。');
+}
+function clearChatWatchdog() {
+    if (chatSocketWatchdog) clearInterval(chatSocketWatchdog);
+    chatSocketWatchdog = null;
+}
+function checkChatLiveness() {
+    if (navigator.onLine === false) {
+        chatWasOffline = true;
+        showChatConnectionWarning('網絡離線，恢復後會重新連線並補回可用留言。');
+        return;
+    }
+    const currentSocket = socket;
+    if (!currentSocket) { if (!isConnecting && navigator.onLine !== false) startChat(); return; }
+    const now = Date.now();
+    if (currentSocket.readyState === WebSocket.CONNECTING || !hasJoinedChannel) {
+        if (now - chatSocketOpenedAt >= CHAT_CONNECT_TIMEOUT) {
+            showChatConnectionWarning('聊天室連線逾時，正在重新連線…');
+            startChat(true);
+        }
+        return;
+    }
+    if (currentSocket.readyState !== WebSocket.OPEN) { startChat(true); return; }
+    if (chatSocketProbeAt && now - chatSocketProbeAt >= CHAT_PROBE_TIMEOUT) {
+        showChatConnectionWarning('聊天室連線沒有回應，正在重新連線…');
+        startChat(true);
+    } else if (!chatSocketProbeAt && now - chatSocketLastTraffic >= CHAT_IDLE_PROBE_DELAY) {
+        chatSocketProbeAt = now;
+        try { currentSocket.send('PING :chat-watchdog'); }
+        catch (err) { startChat(true); }
+    }
+}
+function resumeChatConnection() {
+    if (document.hidden || navigator.onLine === false) return;
+    if (chatWasOffline) { chatWasOffline = false; startChat(true); return; }
+    checkChatLiveness();
+    if (hasJoinedChannel && chatResourcesReady) fetchRecentMessages();
+}
+window.addEventListener('online', resumeChatConnection);
+window.addEventListener('offline', () => { chatWasOffline = true; showChatConnectionWarning('網絡離線，恢復後會重新連線並補回可用留言。'); });
+window.addEventListener('pageshow', resumeChatConnection);
+window.addEventListener('focus', resumeChatConnection);
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkChatLiveness();
+});
 function startChat(forceRestart = false) {
     if (!forceRestart && isConnecting) return;
     if (!forceRestart && socket && socket.readyState === WebSocket.OPEN) return;
+    clearChatWatchdog();
     if (socket) {
         const previousSocket = socket;
         socket = null;
@@ -3050,13 +3570,17 @@ function startChat(forceRestart = false) {
     }
     isConnecting = true;
     hasJoinedChannel = false;
-    clearReconnectTimer();
+    chatSocketOpenedAt = chatSocketLastTraffic = Date.now();
+    chatSocketProbeAt = 0;
+    clearReconnectTimer(false);
     const ownedSocket = new WebSocket('wss://irc-ws.chat.twitch.tv:443');
     socket = ownedSocket;
+    chatSocketWatchdog = setInterval(() => { if (socket === ownedSocket) checkChatLiveness(); }, 5000);
     ownedSocket.onopen = () => {
         if (socket !== ownedSocket) return;
         isConnecting = false;
-        clearReconnectTimer();
+        chatSocketLastTraffic = Date.now();
+        clearReconnectTimer(false);
         ownedSocket.send('CAP REQ :twitch.tv/tags twitch.tv/commands');
         let pass, nick;
         if (ACCESS_TOKEN) {
@@ -3070,28 +3594,29 @@ function startChat(forceRestart = false) {
         ownedSocket.send(`PASS ${pass}`);
         ownedSocket.send(`NICK ${nick}`);
         ownedSocket.send(`JOIN #${CHANNEL}`);
-        let statusMsg = ACCESS_TOKEN ? `連線至 ${CHANNEL}` : `匿名觀看 ${CHANNEL}`;
-        document.getElementById('status').innerHTML = statusMsg;
+        showChatConnectionWarning('正在加入聊天室…');
         document.getElementById('msginput').disabled = !ACCESS_TOKEN;
         document.getElementById('sendbtn').disabled = false;
         hasJoinedChannel = false;
         needsHistoryRefresh = true;
     };
-    ownedSocket.onerror = (err) => {
+    ownedSocket.onerror = () => {
         if (socket !== ownedSocket) return;
-        document.getElementById('status').textContent = '連線錯誤，即將重連...';
+        showChatConnectionWarning('聊天室連線錯誤，正在重連…');
     };
     ownedSocket.onclose = (event) => {
         if (socket !== ownedSocket) return;
+        clearChatWatchdog();
         isConnecting = false;
         hasJoinedChannel = false;
         socket = null;
         scheduleReconnect();
-        document.getElementById('status').textContent = `已斷線 (${event.code})，重連中...`;
+        showChatConnectionWarning(`聊天室已斷線（${event.code}），正在重連…`);
     };
     ownedSocket.onmessage = (e) => {
         if (socket !== ownedSocket) return;
-        // 一個 WebSocket frame 可能包含多個 IRC 命令，逐行處理並隔離錯誤。
+        chatSocketLastTraffic = Date.now();
+        chatSocketProbeAt = 0;
         String(e.data).split(/\r?\n/).forEach(data => {
             try {
                 if (socket !== ownedSocket) return;
@@ -3102,9 +3627,14 @@ function startChat(forceRestart = false) {
                     switchToAnonymousChat();
                     return;
                 }
+                if (message.command === 'NOTICE' && /msg_channel_suspended|msg_banned|msg_room_not_found/.test(message.tags)) {
+                    showChatConnectionWarning('目前無法加入此聊天室，會重試；即時留言可能暫停。');
+                }
                 if (['JOIN', 'ROOMSTATE', '366'].includes(message.command) &&
                     message.params.some(param => param.toLowerCase() === `#${CHANNEL.toLowerCase()}`)) {
+                    const newlyJoined = !hasJoinedChannel;
                     hasJoinedChannel = true;
+                    if (newlyJoined) { clearReconnectTimer(); showChatConnectionWarning(''); }
                     if (chatResourcesReady && needsHistoryRefresh) {
                         needsHistoryRefresh = false;
                         fetchRecentMessages();
@@ -3114,6 +3644,7 @@ function startChat(forceRestart = false) {
                     ownedSocket.send(`PONG :${message.body || message.params[0] || 'tmi.twitch.tv'}`);
                     return;
                 }
+                if (message.command === 'PONG') return;
                 if (message.command === 'RECONNECT') {
                     ownedSocket.close();
                     scheduleReconnect();
@@ -3123,7 +3654,7 @@ function startChat(forceRestart = false) {
                     const badgeTag = getTagValue(message.tags, 'badges');
                     if (badgeTag) {
                         myBadges = badgeTag;
-                        localStorage.setItem('twitch_my_badges', badgeTag);
+                        chatStorage.setItem('twitch_my_badges', badgeTag);
                         updateBadgeCarousel();
                     }
                     const colorTag = getTagValue(message.tags, 'color');
@@ -3138,7 +3669,7 @@ function startChat(forceRestart = false) {
 
 // ===================== 登入與初始化 =====================
 function checkLogin() {
-    const saved = localStorage.getItem('twitch_token');
+    const saved = chatStorage.getItem('twitch_token');
     if (saved) {
         ACCESS_TOKEN = saved.replace('oauth:', '');
         fetchUserInfo(ACCESS_TOKEN);
@@ -3153,7 +3684,7 @@ function loginWithPopup() {
     const check = setInterval(() => {
         if (!popup.closed) return;
         clearInterval(check);
-        const token = localStorage.getItem('twitch_token');
+        const token = chatStorage.getItem('twitch_token');
         if (token) {
             ACCESS_TOKEN = token.replace('oauth:', '');
             fetchUserInfo(ACCESS_TOKEN);
@@ -3163,8 +3694,8 @@ function loginWithPopup() {
 let userInfoRequestId = 0;
 function switchToAnonymousChat() {
     userInfoRequestId++;
-    localStorage.removeItem('twitch_token');
-    localStorage.removeItem('twitch_my_badges');
+    chatStorage.removeItem('twitch_token');
+    chatStorage.removeItem('twitch_my_badges');
     ACCESS_TOKEN = '';
     myLoginId = myDisplayName = myAvatar = myBadges = '';
     myColor = '#9147ff';
@@ -3265,13 +3796,14 @@ function setupEmojiPanelDrag() {
 
 // ===================== 初始化應用 =====================
 async function initApp() {
+    initializeChatStorage();
     // 先套用媒體大小設定（避免畫面閃爍）
     applyMediaSizeFromStorage();
 
     if (location.hash.includes('access_token=')) {
         const token = new URLSearchParams(location.hash.slice(1)).get('access_token');
         if (token) {
-            localStorage.setItem('twitch_token', 'oauth:' + token);
+            chatStorage.setItem('twitch_token', 'oauth:' + token);
             if (window.opener) window.close();
             else {
                 history.replaceState(null, null, location.pathname);
@@ -3319,13 +3851,13 @@ initApp();
 // ===================== 設定與樣式管理 =====================
 function openSettings() {
     $('#channelInput').val(CHANNEL);
-    const savedTheme = localStorage.getItem('chat_theme') || 'default';
+    const savedTheme = chatStorage.getItem('chat_theme') || 'default';
     $('#themeSelect').val(savedTheme);
     $('#showUsernameToggle').prop('checked', showUsernameInChat);
     $('#showTimestampToggle').prop('checked', showTimestamp);
     // 載入媒體大小設定
-    let imgH = parseInt(localStorage.getItem('chat_img_max_height'), 10);
-    let videoH = parseInt(localStorage.getItem('chat_video_max_height'), 10);
+    let imgH = parseInt(chatStorage.getItem('chat_img_max_height'), 10);
+    let videoH = parseInt(chatStorage.getItem('chat_video_max_height'), 10);
     if (isNaN(imgH) || imgH < 20) imgH = DEFAULT_IMG_MAX_HEIGHT;
     if (isNaN(videoH) || videoH < 20) videoH = DEFAULT_VIDEO_MAX_HEIGHT;
     $('#imgMaxHeightInput').val(imgH);
@@ -3335,22 +3867,22 @@ function openSettings() {
 function closeSettings() { $('#settingsPanel').hide(); }
 function changeChannelBtn() {
     const newChannel = $('#channelInput').val().trim();
-    if (newChannel) { localStorage.setItem('twitch_channel', newChannel); location.reload(); }
+    if (newChannel) { chatStorage.setItem('twitch_channel', newChannel); location.reload(); }
 }
 function changeTheme(theme) {
     const viewport = captureChatViewport();
-    localStorage.setItem('chat_theme', theme);
+    chatStorage.setItem('chat_theme', theme);
     applyTheme(theme);
     restoreChatViewport(viewport);
     forceScrollToBottom();
 }
 function toggleShowUsername(enabled) {
-    localStorage.setItem('chat_show_username', enabled ? 'true' : 'false');
+    chatStorage.setItem('chat_show_username', enabled ? 'true' : 'false');
     showUsernameInChat = enabled;
     location.reload();
 }
 function toggleShowTimestamp(enabled) {
-    localStorage.setItem('chat_show_timestamp', enabled ? 'true' : 'false');
+    chatStorage.setItem('chat_show_timestamp', enabled ? 'true' : 'false');
     showTimestamp = enabled;
     document.body.classList.toggle('hide-timestamps', !enabled);
     if (enabled) {
@@ -3370,7 +3902,7 @@ function applyTheme(theme) {
 }
 
 $(document).ready(function() {
-    const savedTheme = localStorage.getItem('chat_theme') || 'discord';
+    const savedTheme = chatStorage.getItem('chat_theme') || 'discord';
     applyTheme(savedTheme);
     if (!showTimestamp) document.body.classList.add('hide-timestamps');
     const msgContainer = document.getElementById('messages');
