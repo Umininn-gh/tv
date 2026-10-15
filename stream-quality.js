@@ -1,4 +1,4 @@
-/* Twitch-managed quality by default; size-aware quality is an explicit opt-in. */
+/* Initialize Twitch Auto once; size-aware quality is an explicit opt-in. */
 (function (root) {
     'use strict';
 
@@ -89,6 +89,8 @@
         let started = false;
         let disposed = false;
         let ready = false;
+        let initialAutoRequested = false;
+        let initializingAuto = false;
         let player = null;
         let fallback = null;
         let observer = null;
@@ -387,8 +389,8 @@
             if (disposed || !ready || !player || !wrapper.isConnected) return false;
             if (!sizeAwareQuality) {
                 if (updateContext(readPlayerSize())) return false;
-                // Do not send even setQuality('auto'): changing quality during a
-                // platform transition may interrupt it. Leave selection to Twitch.
+                // After the initial READY reset, leave selection to Twitch.
+                // Later quality commands can interrupt a platform transition.
                 wrapper.dataset.streamQuality = 'auto';
                 setMode('auto');
                 stopHealthChecks();
@@ -541,6 +543,15 @@
                     if (disposed) return;
                     ready = true;
                     if (mutedDirty) { publicCall('setMuted', desiredMuted); mutedDirty = false; }
+                    if (!sizeAwareQuality && !initialAutoRequested) {
+                        // Clear a remembered manual selection once, before startup.
+                        // Mark first: SDK commands may synchronously emit events.
+                        // Never retry on PLAYING/ONLINE, resize or recovery.
+                        initialAutoRequested = true;
+                        initializingAuto = true;
+                        publicCall('setQuality', 'auto');
+                        initializingAuto = false;
+                    }
                     refreshMetadata();
                     scheduleStartupPlayback();
                 };
@@ -599,7 +610,9 @@
                         contextPauseObserved = true;
                         return;
                     }
-                    if (ownQualitySwitch) return;
+                    // Ignore only synchronous PAUSE caused by the initial SDK
+                    // command; later manual pauses retain their usual meaning.
+                    if (initializingAuto || ownQualitySwitch) return;
                     playbackPaused = true;
                     resumeEligible = false;
                     cancelStartup();
