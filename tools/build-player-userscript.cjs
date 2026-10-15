@@ -5,9 +5,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const RELEASE_VERSION = '1.0.1';
+const RELEASE_VERSION = '1.0.2';
 const FILENAME = 'umininn-tv-player.user.js';
 const META_FILENAME = 'umininn-tv-player.meta.js';
+const DISTRIBUTION_URL = 'https://umininn-gh.github.io/tv/userscript/';
+const UPDATE_URL = DISTRIBUTION_URL + META_FILENAME;
+const DOWNLOAD_URL = DISTRIBUTION_URL + FILENAME;
 const SITE_MATCHES = Object.freeze([
     'https://umininn-gh.github.io/tv/', 'https://umininn-gh.github.io/tv/?*',
     'https://umininn-gh.github.io/tv/index.html*', 'https://umininn-gh.github.io/tv/admin.html*'
@@ -73,6 +76,8 @@ function metadata(matches) {
         '// @version      ' + RELEASE_VERSION,
         '// @description  在 Umininn TV 控制播放器音量、靜音及恢復播放。',
         '// @homepageURL  https://umininn-gh.github.io/tv/',
+        '// @updateURL    ' + UPDATE_URL,
+        '// @downloadURL  ' + DOWNLOAD_URL,
         ...matches.map(match => '// @match        ' + match),
         '// @run-at       document-idle',
         '// @sandbox      DOM',
@@ -140,14 +145,16 @@ function buildUserscript(options = {}) {
     const scriptPath = path.join(outputRoot, FILENAME);
     const metaPath = path.join(outputRoot, META_FILENAME);
     const distributionPath = path.join(projectRoot, 'userscript', FILENAME);
+    const distributionMetaPath = path.join(projectRoot, 'userscript', META_FILENAME);
     assertOutputDirectory(outputRoot);
-    for (const filename of [scriptPath, metaPath, distributionPath]) assertRegularDestination(filename);
+    for (const filename of [scriptPath, metaPath, distributionPath, distributionMetaPath]) assertRegularDestination(filename);
     const header = script.slice(0, script.indexOf('// ==/UserScript==') + '// ==/UserScript=='.length) + '\n';
     fs.mkdirSync(outputRoot, { recursive: true });
     fs.writeFileSync(scriptPath, script, 'utf8');
     fs.writeFileSync(metaPath, header, 'utf8');
     fs.writeFileSync(distributionPath, script, 'utf8');
-    return { version: RELEASE_VERSION, scriptPath, metaPath, distributionPath, files: SOURCE_FILES.length, bytes: Buffer.byteLength(script) };
+    fs.writeFileSync(distributionMetaPath, header, 'utf8');
+    return { version: RELEASE_VERSION, scriptPath, metaPath, distributionPath, distributionMetaPath, files: SOURCE_FILES.length, bytes: Buffer.byteLength(script) };
 }
 
 if (require.main === module) {
@@ -158,4 +165,4 @@ if (require.main === module) {
     catch (error) { console.error(error.message); process.exitCode = 1; }
 }
 
-module.exports = { RELEASE_VERSION, FILENAME, META_FILENAME, SITE_MATCHES, SOURCE_FILES, renderUserscript, buildUserscript };
+module.exports = { RELEASE_VERSION, FILENAME, META_FILENAME, UPDATE_URL, DOWNLOAD_URL, SITE_MATCHES, SOURCE_FILES, renderUserscript, buildUserscript };

@@ -1,6 +1,10 @@
 # Umininn TV 播放器控制 Userscript
 
-版本：1.0.1。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+版本：1.0.2。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+
+## 1.0.2 自動更新
+
+腳本使用 GitHub Pages 的固定更新網址。每部電腦、每個瀏覽器先安裝或更新至這版一次，並允許管理器自動檢查及安裝更新，之後便無須每次重新貼上。已開啟的觀看頁在更新後重新整理才會使用新版；各瀏覽器不會同時即時切換。
 
 ## 1.0.1 載入等待修正
 
@@ -14,13 +18,13 @@
 
 1. 在各個要使用的瀏覽器安裝 [Tampermonkey](https://www.tampermonkey.net/)。已使用 Violentmonkey 的 Firefox 亦可使用同一份腳本。
 2. 停用舊的「Umininn TV 播放器控制」擴充功能，以及其他相同用途的舊腳本。
-3. 在首頁「台務 → userscript」開啟腳本視窗，按「複製」。在 Tampermonkey 控制台按「新增腳本」，刪除預設範本，貼入**全部內容**並按 Ctrl+S 儲存。亦可直接使用 `umininn-tv-player.user.js` 檔案的內容。確認腳本已啟用。[官方安裝方法](https://www.tampermonkey.net/faq.php?q=Q102)
+3. 在首頁「台務 → userscript」開啟腳本視窗，按「安裝／更新」，再在 Tampermonkey 的安裝畫面確認。亦可直接開啟 [線上安裝網址](https://umininn-gh.github.io/tv/userscript/umininn-tv-player.user.js)。已安裝舊版時，使用同一個腳本的更新畫面，避免建立重複腳本。確認腳本已啟用。[官方安裝方法](https://www.tampermonkey.net/faq.php?q=Q102)
 4. Chrome／Edge 如顯示需要執行權限，在 Tampermonkey 的擴充功能詳細資料開啟「允許使用者指令碼／Allow User Scripts」；較舊版本按管理器提示開啟開發人員模式。[官方權限說明](https://www.tampermonkey.net/faq.php?q=Q209)
 5. 確認腳本管理器可在本站及腳本列出的播放器網域執行，重新整理 Umininn TV，登入並開始觀看。
 
-Violentmonkey 可從工具列「＋」開啟新腳本編輯器，貼入完整內容後儲存。[官方說明](https://violentmonkey.github.io/guide/creating-a-userscript/)
+如管理器未攔截安裝連結，仍可按「複製全部」，在管理器新增腳本的編輯器刪除預設範本，貼入完整內容並儲存。已有舊版時，在原腳本編輯器取代全部內容；不要另外新增一份。Violentmonkey 亦可使用相同網址或從工具列「＋」開啟新腳本編輯器。[官方說明](https://violentmonkey.github.io/guide/creating-a-userscript/)
 
-本機安裝不需要先發佈網站。日後若將 `.user.js` 部署到 HTTPS 網址，開啟該網址也可觸發腳本管理器的安裝畫面；目前交付的是本機檔案，沒有聲稱線上安裝網址已部署。
+這個一次性的安裝／更新步驟須在每部電腦、每個瀏覽器完成；沒有依賴管理器帳戶同步。
 
 ## 使用
 
@@ -34,9 +38,13 @@ Violentmonkey 可從工具列「＋」開啟新腳本編輯器，貼入完整內
 
 ## 更新
 
-在腳本管理器打開**已安裝的同一個腳本**，用新版 `.user.js` 的完整內容取代並儲存，再重新整理網站。保留檔案內的 `@name` 和 `@namespace`，不要另外建立重複的腳本。開發者發行更新時提高 `@version`。
+確認 Tampermonkey 的更新檢查週期不是「永不／Never」，並允許腳本自動更新。如管理器提供「自動安裝／Automatic installation」設定，亦要開啟，否則可能只檢查及提示新版。新版 Tampermonkey 將更新檢查與自動安裝分開處理。[官方更新記錄](https://www.tampermonkey.net/changelog.php?locale=en&more=true&show=dhdg)
 
-目前未配置線上自動更新來源，不會默認從尚未部署的網址取回腳本。`.meta.js` 只是版本標頭，安裝時應使用完整 `.user.js`。
+之前手動貼入或在管理器修改過的腳本，可能未啟用自動更新；請先從上面的線上安裝網址完成一次安裝／更新，再確認設定。之後集中修改程式庫並發佈，避免在各瀏覽器的腳本編輯器另作修改。需要立即更新時，可在管理器手動檢查更新，或再次開啟安裝網址。更新完成後重新整理觀看頁。
+
+腳本標頭的 `@updateURL` 指向 [版本標頭](https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js)，`@downloadURL` 指向 [完整腳本](https://umininn-gh.github.io/tv/userscript/umininn-tv-player.user.js)。管理器檢查 `@version`，發現較新版本時下載完整腳本。[Tampermonkey 更新標頭說明](https://www.tampermonkey.net/documentation.php?q=update_url)
+
+開發者修改來源後，須提高 `tools/build-player-userscript.cjs` 的 `RELEASE_VERSION`，重新建置，提交產出的 `.user.js`、`.meta.js` 及來源，再部署 GitHub Pages。只改程式碼而不提高版本，不會觸發管理器自動更新。保留 `@name` 和 `@namespace`，讓管理器識別為同一個腳本。`.meta.js` 只有版本標頭，安裝請使用完整 `.user.js`。
 
 ## 網站的聲音偏好同步
 
@@ -57,7 +65,7 @@ node tools/build-player-userscript.cjs
 node --test "tests/player-userscript-*.test.cjs" "tests/player-extension-*.test.cjs"
 ```
 
-建置把 `browser-extension/shared/` 的媒體、Twitch 及恢復流程和控制介面，與 `userscript/transport.js`、`bootstrap.js` 合成單一檔案。不要手動修改產出的 `.user.js`；修改來源後重新建置。輸出是本資料夾的發行檔，以及 `outputs/player-userscript/` 的相同副本與 `.meta.js`。
+建置把 `browser-extension/shared/` 的媒體、Twitch 及恢復流程和控制介面，與 `userscript/transport.js`、`bootstrap.js` 合成單一檔案。不要手動修改產出的 `.user.js` 或 `.meta.js`；修改來源後提高版本並重新建置。輸出是本資料夾的發行檔及版本標頭，以及 `outputs/player-userscript/` 的相同副本。
 
 瀏覽器整合測試可選用 `UMININN_BROWSER_TESTS=1` 執行，需可用的 Playwright 與相應瀏覽器引擎。預設 Chromium／Edge；設定 `UMININN_BROWSER_ENGINE=firefox` 可測 Firefox。測試把實際腳本注入網站／跨來源播放器模型，驗證真實 `postMessage` 及 HTML 媒體控制；這不等於已在 Tampermonkey／Violentmonkey 或三款瀏覽器實際安裝，也不代表所有外站直播已驗證。
 

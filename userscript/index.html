@@ -12,8 +12,12 @@
     <main class="viewer">
         <header class="viewer-header">
             <h1>userscript</h1>
-            <button id="copy-userscript" type="button" disabled>複製全部</button>
+            <div class="viewer-actions">
+                <a id="install-userscript" class="install-link" href="./umininn-tv-player.user.js">安裝／更新</a>
+                <button id="copy-userscript" type="button" disabled>複製全部</button>
+            </div>
         </header>
+        <p class="viewer-hint">每個瀏覽器安裝一次，並開啟 Tampermonkey 自動更新及自動安裝。更新按管理器設定的週期進行，之後重新整理觀看頁。</p>
         <label for="userscript-source">umininn-tv-player.user.js</label>
         <textarea id="userscript-source" readonly spellcheck="false" wrap="off"
             autocapitalize="off" autocomplete="off" aria-busy="true"

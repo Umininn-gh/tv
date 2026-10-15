@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const {
-    RELEASE_VERSION, FILENAME, META_FILENAME, SITE_MATCHES, SOURCE_FILES, renderUserscript, buildUserscript
+    RELEASE_VERSION, FILENAME, META_FILENAME, UPDATE_URL, DOWNLOAD_URL, SITE_MATCHES, SOURCE_FILES, renderUserscript, buildUserscript
 } = require('../tools/build-player-userscript.cjs');
 
 const root = path.resolve(__dirname, '..');
@@ -32,7 +32,8 @@ function fixture(t) {
         fs.writeFileSync(filename, source);
     }
     fs.writeFileSync(path.join(directory, 'userscript', 'private-not-packaged.js'), 'SECRET_FIXTURE');
-    return { root: directory, output: path.join(directory, 'outputs', 'player-userscript'), distribution: path.join(directory, 'userscript', FILENAME) };
+    return { root: directory, output: path.join(directory, 'outputs', 'player-userscript'),
+        distribution: path.join(directory, 'userscript', FILENAME), distributionMeta: path.join(directory, 'userscript', META_FILENAME) };
 }
 
 function parseHeader(script) {
@@ -54,11 +55,15 @@ test('installable header has production site/player matches and minimum sandbox 
     assert.deepEqual(header.get('version'), [RELEASE_VERSION]);
     assert.deepEqual(header.get('namespace'), ['https://umininn-gh.github.io/tv/']);
     assert.deepEqual(header.get('homepageURL'), ['https://umininn-gh.github.io/tv/']);
+    assert.equal(UPDATE_URL, 'https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js');
+    assert.equal(DOWNLOAD_URL, 'https://umininn-gh.github.io/tv/userscript/umininn-tv-player.user.js');
+    assert.deepEqual(header.get('updateURL'), [UPDATE_URL]);
+    assert.deepEqual(header.get('downloadURL'), [DOWNLOAD_URL]);
     assert.deepEqual(header.get('match'), [...SITE_MATCHES, ...expectedPlayers]);
     assert.deepEqual(header.get('run-at'), ['document-idle']);
     assert.deepEqual(header.get('sandbox'), ['DOM']);
     assert.deepEqual(header.get('inject-into'), ['content']);
-    for (const key of ['grant', 'require', 'resource', 'connect', 'noframes', 'updateURL', 'downloadURL']) assert.equal(header.has(key), false, key);
+    for (const key of ['grant', 'require', 'resource', 'connect', 'noframes']) assert.equal(header.has(key), false, key);
     assert.ok(header.get('match').every(match => match.startsWith('https://') && !/localhost|127\.0\.0\.1|<all_urls>/.test(match)));
 });
 
@@ -94,17 +99,20 @@ test('build emits identical install file and tracked distribution plus header-on
     assert.equal(result.version, RELEASE_VERSION);
     assert.equal(result.files, SOURCE_FILES.length);
     assert.equal(result.distributionPath, context.distribution);
+    assert.equal(result.distributionMetaPath, context.distributionMeta);
     assert.deepEqual(fs.readdirSync(context.output).sort(), [META_FILENAME, FILENAME].sort());
     const first = fs.readFileSync(result.scriptPath);
     assert.deepEqual(fs.readFileSync(result.distributionPath), first);
     assert.equal(result.bytes, first.length);
     const meta = fs.readFileSync(result.metaPath, 'utf8');
+    assert.equal(fs.readFileSync(result.distributionMetaPath, 'utf8'), meta);
     assert.ok(meta.endsWith('// ==/UserScript==\n'));
     assert.deepEqual(parseHeader(meta), parseHeader(first.toString('utf8')));
     assert.equal(meta.includes('(function'), false);
     buildUserscript({ projectRoot: context.root });
     assert.deepEqual(fs.readFileSync(result.scriptPath), first);
     assert.deepEqual(fs.readFileSync(result.distributionPath), first);
+    assert.equal(fs.readFileSync(result.distributionMetaPath, 'utf8'), meta);
 });
 
 test('missing or invalid source aborts before writing distribution or output', t => {
@@ -114,10 +122,12 @@ test('missing or invalid source aborts before writing distribution or output', t
     assert.throws(() => buildUserscript({ projectRoot: context.root }), /ENOENT/);
     assert.equal(fs.existsSync(context.output), false);
     assert.equal(fs.existsSync(context.distribution), false);
+    assert.equal(fs.existsSync(context.distributionMeta), false);
     fs.writeFileSync(filename, 'function broken(');
     assert.throws(() => buildUserscript({ projectRoot: context.root }), SyntaxError);
     assert.equal(fs.existsSync(context.output), false);
     assert.equal(fs.existsSync(context.distribution), false);
+    assert.equal(fs.existsSync(context.distributionMeta), false);
 });
 
 test('metadata generation rejects broadened production matching rules', t => {
@@ -142,6 +152,22 @@ test('unexpected output and unsafe destinations cannot overwrite earlier files',
     for (const outputRoot of [context.root, path.dirname(context.root), path.join(context.root, 'userscript'), path.join(context.root, 'browser-extension', 'bundle')]) {
         assert.throws(() => buildUserscript({ projectRoot: context.root, outputRoot }), /separate from source/);
     }
+});
+
+test('unsafe metadata destination aborts before replacing either published update file', t => {
+    const context = fixture(t);
+    const result = buildUserscript({ projectRoot: context.root });
+    const publishedScript = fs.readFileSync(result.distributionPath);
+    const outputScript = fs.readFileSync(result.scriptPath);
+    const outputMeta = fs.readFileSync(result.metaPath);
+    fs.unlinkSync(result.distributionMetaPath);
+    fs.mkdirSync(result.distributionMetaPath);
+    fs.appendFileSync(path.join(context.root, 'userscript', 'transport.js'), '\nvoid "changed source";');
+    assert.throws(() => buildUserscript({ projectRoot: context.root }), /Unsafe file destination/);
+    assert.deepEqual(fs.readFileSync(result.distributionPath), publishedScript);
+    assert.deepEqual(fs.readFileSync(result.scriptPath), outputScript);
+    assert.deepEqual(fs.readFileSync(result.metaPath), outputMeta);
+    assert.deepEqual(fs.readdirSync(result.distributionMetaPath), []);
 });
 
 function directoryLink(t, target, link) {
@@ -169,8 +195,10 @@ test('build rejects linked project sources and output ancestors', t => {
     assert.deepEqual(fs.readdirSync(redirected), []);
 });
 
-test('checked-in installable script exactly matches the current sources', () => {
+test('checked-in installable script and update metadata exactly match the current sources', () => {
     const rendered = renderUserscript({ projectRoot: root });
     const shipped = fs.readFileSync(path.join(root, 'userscript', FILENAME), 'utf8');
     assert.equal(shipped, rendered);
+    const shippedMetadata = fs.readFileSync(path.join(root, 'userscript', META_FILENAME), 'utf8');
+    assert.equal(shippedMetadata, rendered.slice(0, rendered.indexOf('// ==/UserScript==') + '// ==/UserScript=='.length) + '\n');
 });

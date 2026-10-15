@@ -4,9 +4,9 @@
 
 ## 播放器控制 Userscript
 
-自用版改用單一可安裝腳本，Chrome、Edge、Firefox 共用 [umininn-tv-player.user.js](userscript/umininn-tv-player.user.js)。安裝 Tampermonkey 後新增腳本，貼入檔案完整內容並儲存，再重新整理網站。更新無須 Mozilla 簽署。安裝前停用舊的播放器控制擴充功能。
+自用版改用單一可安裝腳本，Chrome、Edge、Firefox 共用 [umininn-tv-player.user.js](userscript/umininn-tv-player.user.js)。安裝 Tampermonkey 後開啟 [安裝／更新網址](https://umininn-gh.github.io/tv/userscript/umininn-tv-player.user.js)，在管理器確認，再重新整理網站。更新無須 Mozilla 簽署。安裝前停用舊的播放器控制擴充功能。
 
-首頁「台務 → userscript」會開啟簡單視窗，讀取這份腳本的完整內容，可按「複製」或在文字框內自行選取複製。
+首頁「台務 → userscript」會開啟簡單視窗，可按「安裝／更新」，亦保留完整內容文字框及「複製全部」。每部電腦、每個瀏覽器先安裝或更新至 1.0.2 一次，並允許 Tampermonkey 自動檢查及安裝更新，之後按設定的週期從 GitHub Pages 取得新版；更新後重新整理觀看頁。開發者修改來源後提高版本、重新建置並部署，使用者不用再次貼上。
 
 保留全部／逐台音量、靜音、手動恢復，以及開始觀看後逐台偵測恢復。安裝、更新、權限與測試限制見 [Userscript 說明](userscript/README.zh-HK.md)。
 
