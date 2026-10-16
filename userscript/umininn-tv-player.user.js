@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.3
-// @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，並隱藏 AngelThump 的 Patreon 橫幅。
+// @version      1.0.4
+// @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
 // @downloadURL  https://umininn-gh.github.io/tv/userscript/umininn-tv-player.user.js
@@ -29,7 +29,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.3",
+        userscriptVersion: "1.0.4",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -924,7 +924,7 @@
     // Source: userscript/angelthump-logo.js
     scope.UmininnAngelThump = (function (globalThis) {
         const module = { exports: {} };
-/* Hide only AngelThump's Patreon banner; leave its player and controls intact. */
+/* Hide AngelThump's Patreon banner and settle its initial controls without changing media. */
 (function (root) {
     'use strict';
     const STYLE_ID = 'umininn-angelthump-logo-style';
@@ -950,7 +950,64 @@
         style.id = STYLE_ID;
         style.textContent = `${SELECTOR} { display: none !important; }`;
         container.appendChild(style);
-        return { dispose() { style.remove(); } };
+        let disposed = false, initialChecked = false, keyboardUsed = false, needsKeyboardReveal = false;
+
+        function playerFor(video) {
+            const surface = video?.parentElement;
+            return video?.tagName === 'VIDEO' && surface?.tagName === 'DIV' &&
+                surface.getAttribute('tabindex') === '-1' ? surface : null;
+        }
+        function sendMouse(surface, type) {
+            // React synthesizes onMouseLeave from mouseout, rather than mouseleave.
+            surface.dispatchEvent(new win.MouseEvent(type, { bubbles: true, relatedTarget: null }));
+        }
+        function settleInitial(video) {
+            if (disposed || initialChecked || !video || video.paused || video.ended || video.readyState < 2) return;
+            const surface = playerFor(video);
+            if (!surface) return;
+            initialChecked = true;
+            doc.removeEventListener?.('playing', onPlaying, true);
+            const focused = doc.activeElement;
+            // The platform focuses this wrapper on mount. Only descendant focus
+            // represents an active control; do not blur or steal either focus.
+            if (keyboardUsed || surface.matches(':hover') || focused && focused !== surface && surface.contains(focused) ||
+                surface.querySelector('[role="menu"], [role="menuitem"]')) return;
+            sendMouse(surface, 'mouseout');
+            needsKeyboardReveal = true;
+        }
+        function onPlaying(event) { settleInitial(event.target); }
+        function onKeyDown(event) {
+            if (disposed || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+            for (const video of doc.querySelectorAll?.('video') || []) {
+                const surface = playerFor(video);
+                if (!surface || !surface.contains(event.target) && !(event.key === 'Tab' && event.target === doc.body)) continue;
+                keyboardUsed = true;
+                // React commits mousemove updates asynchronously. The first Tab
+                // after our initial hide reveals controls without escaping the
+                // player; the next Tab keeps native focus navigation.
+                const revealWithTab = needsKeyboardReveal && event.key === 'Tab' &&
+                    (event.target === surface || event.target === doc.body);
+                needsKeyboardReveal = false;
+                if (revealWithTab) event.preventDefault();
+                // Reveal through the platform's handler so its normal idle timer
+                // and all playback shortcuts continue to work.
+                sendMouse(surface, 'mousemove');
+                break;
+            }
+        }
+        doc.addEventListener?.('playing', onPlaying, true);
+        doc.addEventListener?.('keydown', onKeyDown, true);
+        for (const video of doc.querySelectorAll?.('video') || []) {
+            settleInitial(video);
+            if (initialChecked) break;
+        }
+        return { dispose() {
+            if (disposed) return;
+            disposed = true;
+            doc.removeEventListener?.('playing', onPlaying, true);
+            doc.removeEventListener?.('keydown', onKeyDown, true);
+            style.remove();
+        } };
     }
 
     const api = { createLogoController };
