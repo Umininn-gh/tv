@@ -477,6 +477,7 @@ let enlargedPlayerFocus = null;
 let playerGeometry = null;
 let pendingPlayerGeometry = null;
 let playerPositionEditor = null;
+let playerNameOverlay = null;
 let playerGrid = null;
 let globalMutedPreference = null;
 let globalAudioFeedbackTimer = null;
@@ -732,6 +733,7 @@ function updatePlayerLayout({ force = false } = {}) {
                 savePlayerEnlargement();
             } else activePlayers.forEach(entry => { getPlayerElement(entry).style.gridArea = ''; });
             playerPositionEditor?.layoutChanged?.();
+            playerNameOverlay?.refresh();
         }
     });
     const previousFocus = playerGeometry?.items.find(item => item.span > 1);
@@ -775,6 +777,7 @@ function applyPlayerSize(next) {
     try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(preferredPlayerOrder)); } catch (_) {}
     savePlayerEnlargement();
     playerPositionEditor?.refresh();
+    playerNameOverlay?.refresh();
     return true;
 }
 
@@ -814,6 +817,7 @@ function swapPlayerPositions(sourceKey, targetKey) {
     preferredPlayerOrder = visualKeys.concat(preferredPlayerOrder.filter(key => !visualKeys.includes(key))).slice(0, 256);
     try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(preferredPlayerOrder)); } catch (_) {}
     playerPositionEditor?.refresh();
+    playerNameOverlay?.refresh();
     return true;
 }
 
@@ -831,6 +835,7 @@ function resetPlayerPositions() {
     keys.forEach((key, index) => { getPlayerElement(activePlayers.get(key)).style.order = String(index); });
     updatePlayerLayout();
     playerPositionEditor?.refresh();
+    playerNameOverlay?.refresh();
 }
 
 function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
@@ -857,6 +862,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
         container.innerHTML = `<div style="color:var(--label-2); text-align:center; padding:2rem;">${emptyMessage}</div>`;
         updatePlayerLayout();
         playerPositionEditor?.refresh();
+        playerNameOverlay?.refresh();
         return;
     }
     const unsyncedAudio = [];
@@ -897,10 +903,11 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     updateGlobalAudioButton();
     if (unsyncedAudio.length) showGlobalAudioFeedback({ muted, unsupported: unsyncedAudio, reloaded: 0 });
     playerPositionEditor?.refresh();
+    playerNameOverlay?.refresh();
 }
 
 function pruneActivePlayers() {
-    if (!activePlayers.size) return;
+    if (!activePlayers.size) { playerNameOverlay?.refresh(); return; }
     const available = new Map(channels.map(channel => [ChannelList.channelKey(channel), channel]));
     activePlayers.forEach((entry, key) => {
         if (available.has(key)) entry.channel = available.get(key);
@@ -908,6 +915,7 @@ function pruneActivePlayers() {
     if (currentDisplayChannel) currentDisplayChannel = available.get(ChannelList.channelKey(currentDisplayChannel)) || null;
     const remaining = getPlayerPositionKeys().map(key => available.get(key)).filter(Boolean);
     if (remaining.length !== activePlayers.size) syncActivePlayers(remaining);
+    else playerNameOverlay?.refresh();
 }
 
 function displaySingleChannel(channel) {
@@ -916,8 +924,7 @@ function displaySingleChannel(channel) {
 
 /* ------------------------ 多台觀看 ------------------------ */
 function watchSelectedChannels() {
-    const selectionDiv = document.getElementById("channel-selection");
-    if (selectionDiv) selectionDiv.style.display = "none";
+    setChannelSelectionVisible(false);
     const checkboxes = document.querySelectorAll("#channel-options input:checked");
     const selected = Array.from(checkboxes).map(cb => ({
         id: cb.value, platform: cb.dataset.platform, name: cb.dataset.name || ""
@@ -927,6 +934,12 @@ function watchSelectedChannels() {
         .filter(Boolean);
 
     syncActivePlayers(fullSelected, '未選擇任何頻道');
+}
+
+function setChannelSelectionVisible(visible) {
+    const panel = document.getElementById('channel-selection');
+    if (panel) panel.style.display = visible ? 'block' : 'none';
+    playerNameOverlay?.setVisible(visible);
 }
 
 /* =============== 頻道儲存 / 載入 =============== */
@@ -1278,8 +1291,8 @@ function toggleChannelSelection() {
     const div = document.getElementById("channel-selection");
     if (div.style.display === "none") {
         generateChannelOptions();
-        div.style.display = "block";
-    } else div.style.display = "none";
+        setChannelSelectionVisible(true);
+    } else setChannelSelectionVisible(false);
 }
 
 /* ------------------------ 看更台：播放器搬位模式 ------------------------ */
@@ -1450,7 +1463,7 @@ function toggleChannelSelection() {
 
     function open(nextMode) {
         if (activePlayers.size < 2) return;
-        document.getElementById('channel-selection').style.display = 'none';
+        setChannelSelectionVisible(false);
         mode = nextMode;
         layer.dataset.mode = mode;
         instructions.textContent = mode === 'enlarge' ? '點播放器放大；「縮小一格」逐級縮小，最低 1×1；Esc 保留佈局' : '拖曳或點選兩格交換；方向鍵搬位，Esc 完成';
@@ -1588,6 +1601,99 @@ function toggleChannelSelection() {
     window.addEventListener('pagehide', () => close(false));
     playerPositionEditor = { refresh, close, layoutChanged: scheduleLayout };
     refresh();
+})();
+
+/* Player names belong to a sibling layer so live iframes stay connected. */
+(function initPlayerNameOverlay() {
+    const pane = document.getElementById('multi-stream-container');
+    const wrapper = document.getElementById('multi-stream-container-wrapper');
+    const panel = document.getElementById('channel-selection');
+    if (!pane || !wrapper || !panel) return;
+    const layer = document.createElement('div');
+    layer.id = 'player-name-overlay';
+    layer.hidden = true;
+    layer.setAttribute('aria-hidden', 'true');
+    wrapper.appendChild(layer);
+    const labels = new Map();
+    const observed = new Set();
+    let opened = false;
+    let frame = null;
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+    const mutations = new MutationObserver(schedule);
+
+    function render() {
+        if (!opened) return;
+        const items = Array.from(activePlayers, ([key, entry]) => ({ key, name: entry.channel.name, element: getPlayerElement(entry) }));
+        // The initial OK player predates a channel selection and is outside the map.
+        const initial = !items.length && pane.querySelector('#MyFrame');
+        if (initial) {
+            let name = '目前播放器';
+            try {
+                const path = new URL(initial.src).pathname;
+                name = channels.find(channel => channel.platform === 'ok' &&
+                    new URL(PLATFORMS.ok.buildUrl(channel, false)).pathname === path)?.name || name;
+            } catch (_) {}
+            items.push({ key: 'initial-player', name, element: initial });
+        }
+        const bounds = wrapper.getBoundingClientRect();
+        const visible = items.filter(item => item.element.isConnected).map(item => ({ ...item, rect: item.element.getBoundingClientRect() }));
+        const keys = new Set(visible.map(item => item.key));
+        for (const [key, cell] of labels) if (!keys.has(key)) { cell.remove(); labels.delete(key); }
+        const elements = new Set([pane, wrapper, ...visible.map(item => item.element)]);
+        for (const element of observed) if (!elements.has(element)) { observer?.unobserve(element); observed.delete(element); }
+        for (const element of elements) if (!observed.has(element)) { observer?.observe(element); observed.add(element); }
+        for (const { key, name, rect } of visible) {
+            let cell = labels.get(key);
+            if (!cell) {
+                cell = document.createElement('div');
+                cell.className = 'player-name-cell';
+                cell.dataset.playerKey = key;
+                const badge = document.createElement('span');
+                badge.className = 'player-name-label';
+                cell.appendChild(badge);
+                layer.appendChild(cell);
+                labels.set(key, cell);
+            }
+            if (cell.firstChild.textContent !== name) cell.firstChild.textContent = name;
+            cell.style.left = `${rect.left - bounds.left - wrapper.clientLeft + wrapper.scrollLeft}px`;
+            cell.style.top = `${rect.top - bounds.top - wrapper.clientTop + wrapper.scrollTop}px`;
+            cell.style.width = `${rect.width}px`;
+            cell.style.height = `${rect.height}px`;
+        }
+        layer.hidden = !visible.length;
+    }
+    function schedule() {
+        if (!opened || frame !== null) return;
+        frame = requestAnimationFrame(() => { frame = null; render(); });
+    }
+    function setVisible(visible) {
+        if (visible === opened) { if (visible) schedule(); return; }
+        opened = visible;
+        if (visible) {
+            render();
+            // Detect async error/retry replacements without inspecting iframe contents.
+            mutations.observe(pane, { childList: true, subtree: true });
+            window.addEventListener('resize', schedule);
+        } else {
+            layer.hidden = true;
+            observer?.disconnect();
+            observed.clear();
+            mutations.disconnect();
+            window.removeEventListener('resize', schedule);
+            if (frame !== null) cancelAnimationFrame(frame);
+            frame = null;
+        }
+    }
+    function syncVisibility() {
+        setVisible(!panel.hidden && getComputedStyle(panel).display !== 'none');
+    }
+    // Also cover future menu visibility changes outside the shared open/close helper.
+    const visibilityObserver = new MutationObserver(syncVisibility);
+    visibilityObserver.observe(panel, { attributes: true, attributeFilter: ['style', 'hidden', 'class'] });
+    playerNameOverlay = { setVisible, refresh: schedule };
+    window.addEventListener('pagehide', () => setVisible(false));
+    window.addEventListener('pageshow', syncVisibility);
+    syncVisibility();
 })();
 
 function toggleChannelMenu() {

@@ -471,6 +471,42 @@
             transition: none;
         }
 
+        /* 看更台開啟時顯示台名；覆蓋層不攔截播放器操作。 */
+        #player-name-overlay {
+            position: absolute;
+            inset: 0;
+            z-index: 10;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        #player-name-overlay[hidden] { display: none; }
+        .player-name-cell {
+            position: absolute;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 0;
+            min-height: 0;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        .player-name-label {
+            max-width: calc(100% - 12px);
+            max-height: 100%;
+            padding: 6px 12px;
+            border-radius: 8px;
+            background: rgba(0, 0, 0, .62);
+            color: #fff;
+            font-size: clamp(12px, 1.3vw, 20px);
+            font-weight: 700;
+            line-height: 1.35;
+            text-align: center;
+            overflow-wrap: anywhere;
+            overflow: hidden;
+            text-shadow: 0 1px 3px #000;
+            pointer-events: none;
+        }
+
         /* 搬位操作層獨立於播放器，交換位置不會重載直播。 */
         #player-position-editor {
             position: absolute;
@@ -1237,7 +1273,7 @@
     </style>
     <link rel="stylesheet" href="./login.css">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261016-stable-grid"></script>
+    <script defer src="./login.js?v=20261016-player-names"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">

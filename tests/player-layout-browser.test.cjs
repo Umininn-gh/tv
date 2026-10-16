@@ -30,10 +30,11 @@ test.before(async () => {
     const read = file => fs.readFileSync(path.join(root, file), 'utf8');
     const source=read('tv-app.js');
     const coreEnd=source.indexOf('/* =============== 頻道儲存 / 載入');
+    const selectionStart=source.indexOf('function toggleChannelSelection()');
     const editorStart=source.indexOf('(function initPlayerPositionEditor()');
     const editorEnd=source.indexOf('\nfunction toggleChannelMenu()',editorStart);
-    assert.ok(coreEnd>0&&editorStart>coreEnd&&editorEnd>editorStart,'reviewed production core/editor seams must exist');
-    appScript=source.slice(0,coreEnd)+'\n'+source.slice(editorStart,editorEnd)+'\n'+fixtureApp;
+    assert.ok(coreEnd>0&&selectionStart>coreEnd&&editorStart>selectionStart&&editorEnd>editorStart,'reviewed production core/selection/editor seams must exist');
+    appScript=source.slice(0,coreEnd)+'\n'+source.slice(selectionStart,editorEnd)+'\n'+fixtureApp;
     layoutScript=read('player-layout.js');geometryScript=read('player-geometry.js');channelScript=read('channel-list.js');performanceScript=read('stream-performance.js');
     css=[...read('index.html').matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match=>match[1]).join('\n');
     console.log(`Player layout model: ${engine} ${browser.version()} (production CSS/app sections; all network intercepted; no live platform).`);
@@ -60,6 +61,14 @@ window.readMedia=function(saved){const video=saved.video;return {same:video.isCo
  source:video.currentSrc,time:video.currentTime,actions:{...saved.actions}}};`;
 
 const fixtureApp=`
+// Keep the production selection toggle and watch command, but fill only local
+// checkboxes; status providers/metadata/network are outside this closed model.
+function generateChannelOptions(){
+ const options=document.getElementById('channel-options');options.replaceChildren();
+ for(const channel of channels){const input=document.createElement('input');input.type='checkbox';input.hidden=true;
+ input.value=channel.id;input.dataset.platform=channel.platform;input.dataset.name=channel.name;
+ input.checked=activePlayers.has(ChannelList.channelKey(channel));options.appendChild(input)}
+}
 window.fixture={elements:[],entries:[],keys:[],frames:[],removals:0,frameSources:0};
 fixture.mount=function(){
  const pane=document.getElementById('multi-stream-container');
@@ -128,8 +137,8 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     },{storageSeed,denyStorage,origin:new URL(siteUrl).origin});
     const navigations=new Map(),blocked=[];
     const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body data-fixture-players="${players}">
-    <div style="height:30px;flex:none"><button id="more-channels-btn">看更台</button><button id="adjust-player-positions">調整位置</button><button id="enlarge-player">放大模式</button><button id="reset-player-positions">重設</button><button id="toggle-all-audio">聲音</button></div>
-    <div id="channel-selection" style="display:none"></div><div id="multi-stream-container-wrapper" style="flex:none;width:${width}px;height:${height}px;min-height:0"><div id="multi-stream-container" class="video-wrapper"></div></div>
+    <div style="height:30px;flex:none"><button id="more-channels-btn" onclick="toggleChannelSelection()">看更台</button><button id="adjust-player-positions">調整位置</button><button id="enlarge-player">放大模式</button><button id="reset-player-positions">重設</button><button id="toggle-all-audio">聲音</button></div>
+    <div id="channel-selection" style="display:none"><div id="channel-options"></div><button id="fixture-watch-selected" onclick="watchSelectedChannels()">開始觀看</button></div><div id="multi-stream-container-wrapper" style="flex:none;width:${width}px;height:${height}px;min-height:0"><div id="multi-stream-container" class="video-wrapper"></div></div>
     <script src="/instrument.js"></script><script src="/channel-list.js"></script><script src="/stream-performance.js"></script><script src="/player-geometry.js"></script><script src="/player-layout.js"></script><script src="/fixture-app.js"></script></body></html>`;
     const child=`<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0"><video id="frame-video" loop muted playsinline preload="auto" src="/silent.wav" style="width:100%;height:100%"></video><script>${instrument}\ninstrumentMedia(document.getElementById('frame-video'));</script></body></html>`;
     await context.route('**/*',route=>{
@@ -798,4 +807,105 @@ test('restoring an enlargement before the pane has a usable size preserves its a
     assert.deepEqual(reselected.logical,expected.logical);assertGeometry(reselected.state,{overlay:true});assertFits(reselected.grid);
     assert.equal(await hidden.page.evaluate(()=>Boolean(playerGeometry.deferredFocus)),false,'the first visible layout finishes the deferred anchor commit');
     assert.deepEqual(hidden.errors,[]);assert.deepEqual(hidden.blocked,[]);
+});
+
+async function nameGeometry(f){
+    return f.page.evaluate(()=>{
+        const layer=document.getElementById('player-name-overlay');
+        const rect=element=>{const r=element.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height}};
+        return {hidden:layer.hidden,sibling:layer.parentElement===document.getElementById('multi-stream-container-wrapper'),
+            pointerEvents:getComputedStyle(layer).pointerEvents,
+            cells:Array.from(layer.querySelectorAll('.player-name-cell'),cell=>{
+                const key=cell.dataset.playerKey,entry=activePlayers.get(key),label=cell.querySelector('.player-name-label');
+                return {key,name:entry?.channel.name,text:label.textContent,cell:rect(cell),label:rect(label),player:entry?rect(getPlayerElement(entry)):null,
+                    background:getComputedStyle(label).backgroundColor,pointerEvents:getComputedStyle(label).pointerEvents};
+            })};
+    });
+}
+async function waitNames(f,count=5){
+    await f.page.waitForFunction(count=>{
+        const layer=document.getElementById('player-name-overlay');if(!layer||layer.hidden)return false;
+        const cells=Array.from(layer.querySelectorAll('.player-name-cell'));if(cells.length!==count)return false;
+        return cells.every(cell=>{
+            const entry=activePlayers.get(cell.dataset.playerKey),label=cell.querySelector('.player-name-label');if(!entry||label.textContent!==entry.channel.name)return false;
+            const actual=getPlayerElement(entry).getBoundingClientRect(),overlay=cell.getBoundingClientRect(),badge=label.getBoundingClientRect();
+            return ['left','top','right','bottom'].every(side=>Math.abs(actual[side]-overlay[side])<.65)&&
+                Math.abs((badge.left+badge.right-actual.left-actual.right)/2)<.65&&Math.abs((badge.top+badge.bottom-actual.top-actual.bottom)/2)<.65;
+        });
+    },count);
+    return nameGeometry(f);
+}
+function assertNameGeometry(value){
+    assert.equal(value.hidden,false);assert.equal(value.sibling,true);assert.equal(value.pointerEvents,'none');
+    for(const item of value.cells){
+        assert.equal(item.text,item.name);assert.equal(item.pointerEvents,'none');
+        for(const side of ['left','top','right','bottom'])assert.ok(Math.abs(item.cell[side]-item.player[side])<.65,`${item.key}: ${side}`);
+        assert.ok(Math.abs((item.label.left+item.label.right-item.player.left-item.player.right)/2)<.65);
+        assert.ok(Math.abs((item.label.top+item.label.bottom-item.player.top-item.player.bottom)/2)<.65);
+        assert.ok(item.label.left>=item.cell.left-.65&&item.label.right<=item.cell.right+.65,'long labels stay inside their player');
+    }
+}
+
+test('channel-name overlays follow the real menu lifecycle and native/iframe center clicks pass through without changing media',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f);
+    assert.equal((await nameGeometry(f)).hidden,true);
+    await f.page.locator('#more-channels-btn').click();assertNameGeometry(await waitNames(f));
+    const nativePoint=await f.page.evaluate(()=>{
+        const video=document.getElementById('native-4');window.nameNativeClicks=0;
+        video.addEventListener('click',event=>{nameNativeClicks++;event.preventDefault()});
+        const r=video.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===video};
+    });assert.equal(nativePoint.hit,true,'the label center must hit the native player');
+    await f.page.mouse.click(nativePoint.x,nativePoint.y);assert.equal(await f.page.evaluate(()=>nameNativeClicks),1);
+    await f.frames[1].evaluate(()=>{window.nameFrameClicks=0;document.addEventListener('click',event=>{nameFrameClicks++;event.preventDefault()},true)});
+    const framePoint=await f.page.locator('#frame-3').evaluate(frame=>{const r=frame.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===frame}});
+    assert.equal(framePoint.hit,true,'the label center must hit the iframe');await f.page.mouse.click(framePoint.x,framePoint.y);
+    assert.equal(await f.frames[1].evaluate(()=>nameFrameClicks),1,'the actual click reaches the cross-origin document');
+    await f.page.locator('#more-channels-btn').click();assert.equal((await nameGeometry(f)).hidden,true);
+    await f.page.locator('#more-channels-btn').click();await waitNames(f);
+    await f.page.locator('#fixture-watch-selected').click();assert.equal((await nameGeometry(f)).hidden,true,'start watching closes names immediately');
+    await f.page.locator('#more-channels-btn').click();await waitNames(f);
+    await f.page.locator('#adjust-player-positions').click();assert.equal((await nameGeometry(f)).hidden,true,'move mode closes the selection names');
+    await f.page.keyboard.press('Escape');await f.page.locator('#more-channels-btn').click();await waitNames(f);
+    await f.page.locator('#enlarge-player').click();assert.equal((await nameGeometry(f)).hidden,true,'enlarge mode closes the selection names');
+    await f.page.keyboard.press('Escape');await assertContinuity(f,before);
+});
+
+test('channel-name centers track enlarged sizes, same-pane swaps, reset and mobile resize using the actual player bounds',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    await f.page.evaluate(key=>{enlargePlayer(key);enlargePlayer(key)},keys[0]);await waitSpan(f,keys[0],3);
+    await f.page.locator('#more-channels-btn').click();const initial=await waitNames(f);assertNameGeometry(initial);
+    const pane=await f.page.evaluate(()=>{const r=document.getElementById('multi-stream-container').getBoundingClientRect();return [r.width,r.height]});
+    await f.page.evaluate(keys=>swapPlayerPositions(keys[3],keys[4]),keys);const swapped=await waitNames(f);assertNameGeometry(swapped);
+    assert.deepEqual(await f.page.evaluate(()=>{const r=document.getElementById('multi-stream-container').getBoundingClientRect();return [r.width,r.height]}),pane);
+    const oldCell=initial.cells.find(cell=>cell.key===keys[3]).cell,newCell=swapped.cells.find(cell=>cell.key===keys[3]).cell;
+    assert.ok(Math.abs(oldCell.left-newCell.left)>1||Math.abs(oldCell.top-newCell.top)>1,'same-size swapping must move the corresponding name');
+    await f.page.evaluate(()=>resetPlayerPositions());assertNameGeometry(await waitNames(f));assert.equal((await geometry(f)).layout,null);
+    await f.page.setViewportSize({width:375,height:900});await settlePane(f,350,780);assertNameGeometry(await waitNames(f));
+    await f.page.setViewportSize({width:1600,height:1200});await settlePane(f,1300,1000);assertNameGeometry(await waitNames(f));
+    await assertContinuity(f,before);
+});
+
+test('channel-name text is safely renamed without rebuilding players and follows asynchronous error-node replacement',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f);
+    await f.page.locator('#more-channels-btn').click();await waitNames(f);
+    const longName='<img src="x" onerror="window.nameFixtureXss=1"> & 「台名」 '+ '繁體 🎮 '.repeat(180);
+    await f.page.evaluate(name=>{channels[0]={...channels[0],name};pruneActivePlayers()},longName);
+    const renamed=await waitNames(f);assertNameGeometry(renamed);
+    assert.equal(renamed.cells.find(cell=>cell.key==='m3u8|layout-0').text,longName);
+    assert.equal(await f.page.locator('#player-name-overlay img, #player-name-overlay script').count(),0);
+    assert.equal(await f.page.evaluate(()=>window.nameFixtureXss),undefined);await assertContinuity(f,before);
+    // Real async failure replacement changes resource.element; a later width
+    // change proves the replacement, rather than its disconnected old video,
+    // was added to the overlay's ResizeObserver subscription.
+    await f.page.evaluate(()=>setTimeout(()=>replacePlayerWithError(fixture.entries[1].resource,'本地非同步播放失敗'),20));
+    await f.page.waitForFunction(()=>fixture.entries[1].resource.element.tagName==='DIV');assertNameGeometry(await waitNames(f));
+    await f.page.evaluate(()=>{fixture.entries[1].resource.element.style.width='72%'});const replaced=await waitNames(f);assertNameGeometry(replaced);
+    const after=await snapshot(f);
+    assert.deepEqual(after.main.map(stable),before.main.map((media,index)=>({...stable(media),...(index===1?{same:false}:{})})));
+    assert.deepEqual(after.frames.map(frame=>({id:frame.id,media:frame.media.map(stable)})),before.frames.map(frame=>({id:frame.id,media:frame.media.map(stable)})));
+    assert.deepEqual(await f.page.evaluate(()=>fixture.identity()),{elements:false,entries:true,windows:true,removals:1,frameSources:0,loads:[1,1]});
+    assert.ok([...f.navigations.values()].every(count=>count===1));assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
+    await f.page.locator('#more-channels-btn').click();assert.equal((await nameGeometry(f)).hidden,true);
+    await f.page.evaluate(()=>{fixture.entries[1].resource.element.style.width='60%'});
+    await f.page.locator('#more-channels-btn').click();assertNameGeometry(await waitNames(f));
 });
