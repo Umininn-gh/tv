@@ -175,11 +175,12 @@
     }
     function createFrameClient(options) {
         const win = options.window, config = options.config, media = options.media, twitch = options.twitch;
+        const angelthump = options.angelthump;
         const parent = win.parent;
         let location;
         try { location = new URL(win.location.href); } catch (_) { return { dispose() {} }; }
         if (!parent || parent === win || location.protocol !== 'https:' || !config.isPlayerUrl(location.href)) return { dispose() {} };
-        let disposed = false, suspended = false, controller = null, unsubscribe = null, reportTimer = null;
+        let disposed = false, suspended = false, controller = null, unsubscribe = null, reportTimer = null, logo = null;
         let parentOrigin = null, identity = null, lastResult = null, active = 0, generation = 0;
         let boundSession = null, highestSequence = 0;
         function approvedParent(event) { return event.source === parent && win.parent === parent && config.isSiteOrigin(event.origin); }
@@ -205,6 +206,9 @@
             catch (error) { native.dispose(); throw error; }
             lastResult = safeResult(controller.getState());
             unsubscribe = controller.subscribe(report);
+            // Apply cosmetic changes only after this direct parent is approved.
+            try { logo = angelthump?.createLogoController({ document: win.document, location: win.location }) || null; }
+            catch (_) { /* Cosmetic failure must not interrupt playback controls. */ }
         }
         function onMessage(event) {
             if (disposed || suspended || !approvedParent(event)) return;
@@ -241,6 +245,8 @@
             if (reportTimer !== null) win.clearTimeout(reportTimer);
             reportTimer = null;
             unsubscribe?.(); unsubscribe = null;
+            try { logo?.dispose(); } catch (_) { /* Keep media cleanup independent. */ }
+            logo = null;
             controller?.dispose(); controller = null;
             identity = null; lastResult = null; parentOrigin = null; active = 0; boundSession = null; highestSequence = 0;
         }

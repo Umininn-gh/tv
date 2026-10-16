@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.2
-// @description  在 Umininn TV 控制播放器音量、靜音及恢復播放。
+// @version      1.0.3
+// @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，並隱藏 AngelThump 的 Patreon 橫幅。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
 // @downloadURL  https://umininn-gh.github.io/tv/userscript/umininn-tv-player.user.js

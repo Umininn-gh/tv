@@ -47,7 +47,7 @@
         controller.start();
     } else {
         client = scope.UmininnUserscript.createFrameClient({ window: win, config,
-            media: scope.UmininnMedia, twitch: scope.UmininnTwitch });
+            media: scope.UmininnMedia, twitch: scope.UmininnTwitch, angelthump: scope.UmininnAngelThump });
     }
     function onPageHide(event) {
         if (event.persisted) return;

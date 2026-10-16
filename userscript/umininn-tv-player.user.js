@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.2
-// @description  在 Umininn TV 控制播放器音量、靜音及恢復播放。
+// @version      1.0.3
+// @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，並隱藏 AngelThump 的 Patreon 橫幅。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
 // @downloadURL  https://umininn-gh.github.io/tv/userscript/umininn-tv-player.user.js
@@ -29,7 +29,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.2",
+        userscriptVersion: "1.0.3",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -921,6 +921,45 @@
         return module.exports;
     })(scope);
 
+    // Source: userscript/angelthump-logo.js
+    scope.UmininnAngelThump = (function (globalThis) {
+        const module = { exports: {} };
+/* Hide only AngelThump's Patreon banner; leave its player and controls intact. */
+(function (root) {
+    'use strict';
+    const STYLE_ID = 'umininn-angelthump-logo-style';
+    const SELECTOR = [
+        'https://patreon.com/join/angelthump', 'https://patreon.com/join/angelthump/',
+        'https://www.patreon.com/join/angelthump', 'https://www.patreon.com/join/angelthump/'
+    ].map(href => `a[href="${href}"]`).join(',\n');
+
+    function createLogoController(options = {}) {
+        const doc = options.document;
+        const win = doc?.defaultView;
+        const noop = { dispose() {} };
+        if (!win || !win.parent || win.parent === win) return noop;
+        let url;
+        try { url = new URL(options.location?.href || options.location || win.location.href); }
+        catch (_) { return noop; }
+        if (url.protocol !== 'https:' || url.hostname !== 'player.angelthump.com' || url.pathname !== '/' ||
+            url.username || url.password || url.port && url.port !== '443') return noop;
+        const container = doc.head || doc.documentElement;
+        if (!container || doc.getElementById(STYLE_ID)) return noop;
+        // CSS also covers late React mounts, without observing or polling video state.
+        const style = doc.createElement('style');
+        style.id = STYLE_ID;
+        style.textContent = `${SELECTOR} { display: none !important; }`;
+        container.appendChild(style);
+        return { dispose() { style.remove(); } };
+    }
+
+    const api = { createLogoController };
+    root.UmininnAngelThump = api;
+    if (typeof module === 'object' && module.exports) module.exports = api;
+})(globalThis);
+        return module.exports;
+    })(scope);
+
     // Source: browser-extension/site-ui.js
     scope.UmininnSite = (function (globalThis) {
         const module = { exports: {} };
@@ -1691,11 +1730,12 @@
     }
     function createFrameClient(options) {
         const win = options.window, config = options.config, media = options.media, twitch = options.twitch;
+        const angelthump = options.angelthump;
         const parent = win.parent;
         let location;
         try { location = new URL(win.location.href); } catch (_) { return { dispose() {} }; }
         if (!parent || parent === win || location.protocol !== 'https:' || !config.isPlayerUrl(location.href)) return { dispose() {} };
-        let disposed = false, suspended = false, controller = null, unsubscribe = null, reportTimer = null;
+        let disposed = false, suspended = false, controller = null, unsubscribe = null, reportTimer = null, logo = null;
         let parentOrigin = null, identity = null, lastResult = null, active = 0, generation = 0;
         let boundSession = null, highestSequence = 0;
         function approvedParent(event) { return event.source === parent && win.parent === parent && config.isSiteOrigin(event.origin); }
@@ -1721,6 +1761,9 @@
             catch (error) { native.dispose(); throw error; }
             lastResult = safeResult(controller.getState());
             unsubscribe = controller.subscribe(report);
+            // Apply cosmetic changes only after this direct parent is approved.
+            try { logo = angelthump?.createLogoController({ document: win.document, location: win.location }) || null; }
+            catch (_) { /* Cosmetic failure must not interrupt playback controls. */ }
         }
         function onMessage(event) {
             if (disposed || suspended || !approvedParent(event)) return;
@@ -1757,6 +1800,8 @@
             if (reportTimer !== null) win.clearTimeout(reportTimer);
             reportTimer = null;
             unsubscribe?.(); unsubscribe = null;
+            try { logo?.dispose(); } catch (_) { /* Keep media cleanup independent. */ }
+            logo = null;
             controller?.dispose(); controller = null;
             identity = null; lastResult = null; parentOrigin = null; active = 0; boundSession = null; highestSequence = 0;
         }
@@ -1834,7 +1879,7 @@
         controller.start();
     } else {
         client = scope.UmininnUserscript.createFrameClient({ window: win, config,
-            media: scope.UmininnMedia, twitch: scope.UmininnTwitch });
+            media: scope.UmininnMedia, twitch: scope.UmininnTwitch, angelthump: scope.UmininnAngelThump });
     }
     function onPageHide(event) {
         if (event.persisted) return;

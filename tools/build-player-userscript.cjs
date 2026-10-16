@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const RELEASE_VERSION = '1.0.2';
+const RELEASE_VERSION = '1.0.3';
 const FILENAME = 'umininn-tv-player.user.js';
 const META_FILENAME = 'umininn-tv-player.meta.js';
 const DISTRIBUTION_URL = 'https://umininn-gh.github.io/tv/userscript/';
@@ -20,6 +20,7 @@ const MODULES = Object.freeze([
     ['browser-extension/shared/media-controller.js', 'UmininnMedia'],
     ['browser-extension/shared/player-recovery.js', 'UmininnRecovery'],
     ['browser-extension/shared/twitch-controller.js', 'UmininnTwitch'],
+    ['userscript/angelthump-logo.js', 'UmininnAngelThump'],
     ['browser-extension/site-ui.js', 'UmininnSite'],
     ['userscript/transport.js', 'UmininnUserscript']
 ].map(entry => Object.freeze(entry)));
@@ -74,7 +75,7 @@ function metadata(matches) {
         '// @name         Umininn TV 播放器控制（Userscript）',
         '// @namespace    https://umininn-gh.github.io/tv/',
         '// @version      ' + RELEASE_VERSION,
-        '// @description  在 Umininn TV 控制播放器音量、靜音及恢復播放。',
+        '// @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，並隱藏 AngelThump 的 Patreon 橫幅。',
         '// @homepageURL  https://umininn-gh.github.io/tv/',
         '// @updateURL    ' + UPDATE_URL,
         '// @downloadURL  ' + DOWNLOAD_URL,

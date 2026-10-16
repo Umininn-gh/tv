@@ -1,6 +1,12 @@
 # Umininn TV 播放器控制 Userscript
 
-版本：1.0.2。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+版本：1.0.3。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+
+## 1.0.3 AngelThump 橫幅修正
+
+在本站觀看 AngelThump 時，腳本收到已核准父頁的探測後，在該播放器文件加上一份樣式，只隱藏指向 AngelThump Patreon 加入頁的連結。初始載入、稍後出現及 React 重新建立的「Become a patron」橫幅都會隱藏，不用先把滑鼠移入再移出；播放、暫停、音量、畫質及原有控制列不變。
+
+這項處理不需要新增權限、後端代理或背景輪詢，不會改用 Patreon 伺服器、不會重載影片，也不會套用到直接開啟的 AngelThump 分頁、其他播放器或未核准網站。離開播放器文件時移除樣式；從瀏覽器快取返回後，重新收到核准探測才套用。更新至 1.0.3 後，重新整理觀看頁生效。
 
 ## 1.0.2 自動更新
 
@@ -65,10 +71,12 @@ node tools/build-player-userscript.cjs
 node --test "tests/player-userscript-*.test.cjs" "tests/player-extension-*.test.cjs"
 ```
 
-建置把 `browser-extension/shared/` 的媒體、Twitch 及恢復流程和控制介面，與 `userscript/transport.js`、`bootstrap.js` 合成單一檔案。不要手動修改產出的 `.user.js` 或 `.meta.js`；修改來源後提高版本並重新建置。輸出是本資料夾的發行檔及版本標頭，以及 `outputs/player-userscript/` 的相同副本。
+建置把 `browser-extension/shared/` 的媒體、Twitch 及恢復流程和控制介面，與 `userscript/angelthump-logo.js`、`transport.js`、`bootstrap.js` 合成單一檔案。不要手動修改產出的 `.user.js` 或 `.meta.js`；修改來源後提高版本並重新建置。輸出是本資料夾的發行檔及版本標頭，以及 `outputs/player-userscript/` 的相同副本。
 
 瀏覽器整合測試可選用 `UMININN_BROWSER_TESTS=1` 執行，需可用的 Playwright 與相應瀏覽器引擎。預設 Chromium／Edge；設定 `UMININN_BROWSER_ENGINE=firefox` 可測 Firefox。測試把實際腳本注入網站／跨來源播放器模型，驗證真實 `postMessage` 及 HTML 媒體控制；這不等於已在 Tampermonkey／Violentmonkey 或三款瀏覽器實際安裝，也不代表所有外站直播已驗證。
 
 2026-10-16，1.0.0 驗證：Userscript 的封裝及通訊測試 28 項通過，1 項符號連結測試因 Windows 權限略過；無頭 Edge 瀏覽器模型測試 4／4 通過，包括實際 HTML 媒體音量、靜音、恢復播放、跨來源訊息、移除／重新建立播放器、錯誤來源拒絕、重複安裝防護及登入後掛載。
 
 2026-10-16，1.0.1 驗證：共享播放器、就緒排程、封裝及通訊等回歸測試 170 項通過，7 項因選用瀏覽器測試／Windows 符號連結權限略過。Firefox 153 引擎的 6／6 模型測試通過；Chromium 155 的 5／5 共用模型測試通過，另略過 Firefox 專屬自動播放政策測試。空影片會等待遲來的 Play，播放後不再重複點擊；Firefox 嚴格封鎖自動播放時會如實回報拒絕或尚未確認，不會當作恢復成功，親自在 iframe 按 Play 則能播放。這些仍屬本地模型，未驗證 Firefox Tampermonkey 與真實 Twitch 的組合。
+
+2026-10-16，1.0.3 驗證：回歸測試 183 項通過，16 項因選用瀏覽器測試／Windows 符號連結權限略過。另行啟用 AngelThump 專屬模型，Chrome 155.0.8059.82、Edge 155.0.4283.45、Playwright Firefox 153.0 各 3／3 通過，沒有略過；驗證實際打包腳本、跨來源核准探測、精確連結、延遲及重新掛載、影片與控制項保留，以及模擬 pagehide／pageshow 清理。內建瀏覽器亦使用正式 Logo 和修正模組，確認隱藏及重建後原影片仍播放、移除樣式可還原。這些是本地模型，未在真實 AngelThump 直播及 Tampermonkey／Violentmonkey 組合安裝驗證，亦不代表已驗證瀏覽器真正採用 bfcache 的條件。
