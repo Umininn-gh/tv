@@ -6,7 +6,8 @@
     const SWITCH_GAIN = 0.06;
     const RESIZE_DELAY = 180;
 
-    function choose({ count, width, height, columnGap = 0, rowGap = 0, previous, force = false }) {
+    function choose({ count, width, height, columnGap = 0, rowGap = 0, previous, force = false,
+        preserveColumns = false }) {
         count = Number.isFinite(Number(count)) ? Math.max(0, Math.floor(Number(count))) : 0;
         if (!count) return { count: 0, columns: 1, rows: 1, area: 0 };
         const measure = columns => {
@@ -23,6 +24,7 @@
             const columns = validPrevious ? oldColumns : Math.max(1, Math.ceil(Math.sqrt(count)));
             return { count, columns, rows: Math.ceil(count / columns), area: 0 };
         }
+        if (validPrevious && preserveColumns) return measure(oldColumns);
         let best = measure(1);
         for (let columns = 2; columns <= count; columns++) {
             const candidate = measure(columns);
@@ -37,7 +39,8 @@
         return best;
     }
 
-    function observe(pane, { getCount, getTrackCount = getCount, calculate = choose, onChange = () => {} }) {
+    function observe(pane, { getCount, getTrackCount = getCount, calculate = choose,
+        stabilizeResize = false, onChange = () => {} }) {
         const view = pane.ownerDocument?.defaultView;
         let current = null;
         let timer = null;
@@ -45,6 +48,8 @@
         let disposed = false;
         let lastColumnGap;
         let lastRowGap;
+        let reference = null;
+        let pendingForce = false;
         const observer = view?.ResizeObserver ? new view.ResizeObserver(schedule) : null;
 
         function clearPending() {
@@ -52,7 +57,8 @@
             timer = null;
         }
         function update({ force = false } = {}) {
-            if (disposed || suspended) return;
+            if (disposed) return;
+            if (suspended) { pendingForce ||= force; return; }
             clearPending();
             const style = view?.getComputedStyle(pane);
             const number = value => parseFloat(value) || 0;
@@ -68,10 +74,25 @@
             const fittedStyle = view?.getComputedStyle(pane);
             const columnGap = gap(fittedStyle?.columnGap, width);
             const rowGap = gap(fittedStyle?.rowGap, height);
+            const usable = width > 0 && height > 0;
+            const validPrevious = Number.isInteger(current?.columns) && current.columns > 0;
+            const withinBand = (value, original) => Math.abs(value - original) <=
+                Math.max(2, Math.min(32, original * .05));
+            const small = usable && reference && withinBand(width, reference.width) && withinBand(height, reference.height);
+            const computedForce = Boolean(force || count !== current?.count || pendingForce);
+            // Hidden panes still process logical changes; defer choosing tracks
+            // for those changes until there is a useful measurement again.
+            if (!usable && computedForce) pendingForce = true;
             const next = calculate({ count, width, height, columnGap, rowGap, previous: current,
-                force: force || count !== current?.count });
+                force: computedForce,
+                preserveColumns: validPrevious && (!usable || Boolean(stabilizeResize && !computedForce && small)) });
+            if (usable) {
+                if (!reference || computedForce || !small) reference = { width, height };
+                pendingForce = false;
+            }
             const changed = next.columns !== current?.columns || next.rows !== current?.rows ||
                 JSON.stringify(next.items) !== JSON.stringify(current?.items) ||
+                Boolean(next.deferredFocus) !== Boolean(current?.deferredFocus) ||
                 columnGap !== lastColumnGap || rowGap !== lastRowGap;
             current = next;
             lastColumnGap = columnGap;

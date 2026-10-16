@@ -80,6 +80,9 @@ fixture.mount=function(){
    const entry={channel,element,resource,muted:true,failed:false};const key=ChannelList.channelKey(channel);activePlayers.set(key,entry);
    fixture.elements.push(element);fixture.entries.push(entry);fixture.keys.push(key);
  });
+ for(let index=5;index<Number(document.body.dataset.fixturePlayers||5);index++){
+   const channel={id:'layout-'+index,platform:'at',name:'本地佔位 '+index};channels.push(channel);fixture.addPlaceholder(channel);
+ }
  new MutationObserver(records=>{for(const record of records)for(const node of record.removedNodes)if(fixture.elements.includes(node))fixture.removals++}).observe(pane,{childList:true});
  fixture.frames.forEach(frame=>frame.window=frame.element.contentWindow);
  syncActivePlayers(channels);
@@ -114,7 +117,7 @@ fixture.grid=function(){const pane=document.getElementById('multi-stream-contain
 };
 fixture.mount();fixture.initialGrid=fixture.grid();fixture.initialGeometry=fixture.geometry();`;
 
-async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false}={}){
+async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5}={}){
     const context=await browser.newContext({viewport,serviceWorkers:'block'});t.after(()=>context.close());
     if(storageSeed||denyStorage)await context.addInitScript(({storageSeed,denyStorage,origin})=>{
         if(location.origin!==origin)return;
@@ -124,7 +127,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
         });
     },{storageSeed,denyStorage,origin:new URL(siteUrl).origin});
     const navigations=new Map(),blocked=[];
-    const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body>
+    const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body data-fixture-players="${players}">
     <div style="height:30px;flex:none"><button id="more-channels-btn">看更台</button><button id="adjust-player-positions">調整位置</button><button id="enlarge-player">放大模式</button><button id="reset-player-positions">重設</button><button id="toggle-all-audio">聲音</button></div>
     <div id="channel-selection" style="display:none"></div><div id="multi-stream-container-wrapper" style="flex:none;width:${width}px;height:${height}px;min-height:0"><div id="multi-stream-container" class="video-wrapper"></div></div>
     <script src="/instrument.js"></script><script src="/channel-list.js"></script><script src="/stream-performance.js"></script><script src="/player-geometry.js"></script><script src="/player-layout.js"></script><script src="/fixture-app.js"></script></body></html>`;
@@ -201,6 +204,29 @@ function allSpans(state){return Object.fromEntries(state.players.map(({key})=>[k
 function withoutFocus(order,key){return order.filter(item=>item!==key)}
 async function waitSingleCells(f){
     await f.page.waitForFunction(()=>!playerGeometry?.items.some(item=>item.span>1));return geometry(f);
+}
+function logicalLayout(state,grid){
+    return {columns:state.layout?.columns||grid.columns,rows:state.layout?.rows||grid.rows,order:state.order,
+        items:state.layout?.items.map(({key,row,column,span})=>({key,row,column,span})).sort((a,b)=>a.key.localeCompare(b.key))||null,
+        areas:state.players.map(({key,area})=>({key,area})).sort((a,b)=>a.key.localeCompare(b.key))};
+}
+async function readLayout(f){const state=await geometry(f),grid=await f.page.evaluate(()=>fixture.grid());return {state,grid,logical:logicalLayout(state,grid)}}
+async function settlePane(f,width,height){
+    await f.page.evaluate(({width,height})=>fixture.resize(width,height),{width,height});
+    // Exercise the real 180 ms ResizeObserver debounce, including an animation
+    // frame before its delivery; direct update() calls would miss timer races.
+    await f.page.waitForTimeout(240);
+}
+async function seventeenPlayers(f){
+    await f.page.evaluate(()=>{
+        const pane=document.getElementById('multi-stream-container');document.getElementById('multi-stream-container-wrapper').style.padding='0';pane.style.border='0';
+        for(let index=5;index<17;index++){
+            const channel={id:'layout-'+index,platform:'at',name:'本地佔位 '+index};channels.push(channel);fixture.addPlaceholder(channel);
+        }
+        fixture.resize(1508,948);syncActivePlayers(channels);
+    });
+    await f.page.waitForFunction(()=>activePlayers.size===17&&fixture.grid().width===1508&&fixture.grid().height===948);
+    await f.page.locator('#enlarge-player').click();return f.page.evaluate(()=>fixture.keys[0]);
 }
 async function capture(f,name){
     if(!process.env.UMININN_BROWSER_SCREENSHOTS)return;
@@ -678,4 +704,98 @@ test('switching the enlarged focus after a column change preserves the current v
     assert.deepEqual(withoutFocus(changed.order,keys[0]),withoutFocus(resized.order,keys[0]),'changing focus cannot restore an old internal order after a resize');
     assert.equal(spans(changed)[keys[4]],1);assertGeometry(changed,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));
     await assertContinuity(f,before);
+});
+
+test('size actions optimize seventeen players immediately and small pane changes preserve the resulting geometry',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948}),before=await snapshot(f),key=await seventeenPlayers(f);
+    assert.equal((await f.page.evaluate(()=>fixture.grid())).columns,4);
+    const immediate=await f.page.evaluate(key=>{
+        enlargePlayer(key);enlargePlayer(key);return {state:fixture.geometry(),grid:fixture.grid()};
+    },key);
+    assert.equal(immediate.state.layout.items.find(item=>item.key===key).span,3);
+    assert.equal(immediate.grid.columns,5,'the grow action chooses the five-column grid before a resize callback');assert.equal(immediate.grid.rows,5);
+    assertGeometry(immediate.state,{overlay:true});assertFits(immediate.grid);
+    const grown=logicalLayout(immediate.state,immediate.grid);
+    for(const [width,height]of [[1509,949],[1507,947],[1528,968],[1488,928],[1508,948]]){
+        await settlePane(f,width,height);const value=await readLayout(f);
+        assert.deepEqual(value.logical,grown,`a small ${width}x${height} pane change cannot repack the grown grid`);assertGeometry(value.state,{overlay:true});assertFits(value.grid);
+    }
+    await capture(f,'stable-resize17');
+    const partial=await f.page.evaluate(key=>{shrinkPlayer(key);return {state:fixture.geometry(),grid:fixture.grid()}},key);
+    assert.equal(partial.grid.columns,4,'the shrink action immediately reclaims the fifth column');assert.equal(partial.grid.rows,5);
+    assert.equal(spans(partial.state)[key],2);assertGeometry(partial.state,{overlay:true});
+    const shrunk=logicalLayout(partial.state,partial.grid);
+    for(const [width,height]of [[1509,947],[1528,928],[1488,968],[1508,948]]){
+        await settlePane(f,width,height);const value=await readLayout(f);assert.deepEqual(value.logical,shrunk);assertGeometry(value.state,{overlay:true});assertFits(value.grid);
+    }
+    await f.page.locator('.player-position-shrink').click();const normal=await readLayout(f);
+    assert.equal(normal.state.layout,null);assert.equal(normal.state.saved,null);assert.deepEqual(normal.state.order,partial.state.order);
+    for(const [width,height]of [[1509,949],[1528,968],[1488,928],[1508,948]]){
+        await settlePane(f,width,height);const value=await readLayout(f);assert.deepEqual(value.logical,normal.logical,'the final shrink also establishes a stable uniform grid');assertFits(value.grid);
+    }
+    await assertContinuity(f,before);
+});
+
+test('tiny resize increments eventually adapt after a meaningful cumulative pane change instead of moving the stability reference forever',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948}),before=await snapshot(f),key=await seventeenPlayers(f);
+    await f.page.evaluate(key=>{enlargePlayer(key);enlargePlayer(key)},key);const initial=await readLayout(f);assert.equal(initial.grid.columns,5);
+    // Each 30 px step is inside the 32 px band at these widths. Anchoring the
+    // band to the last decision, rather than every observation, must still allow
+    // the accumulated 990 px difference to select the wider seven-column grid.
+    for(let step=1;step<=33;step++)await settlePane(f,1508+step*30,948);
+    const wide=await readLayout(f);assert.equal(wide.grid.columns,7);assert.equal(wide.grid.rows,4);
+    assert.deepEqual(withoutFocus(wide.state.order,key),withoutFocus(initial.state.order,key));assertGeometry(wide.state,{overlay:true});assertFits(wide.grid);
+    await settlePane(f,1508,948);const returned=await readLayout(f);assert.equal(returned.grid.columns,5);assert.equal(returned.grid.rows,5);
+    assertGeometry(returned.state,{overlay:true});assertFits(returned.grid);await assertContinuity(f,before);
+});
+
+test('size actions bypass the small resize band and pending resize work, then hidden and portrait panes recover with the same live players',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948}),before=await snapshot(f),key=await seventeenPlayers(f);
+    await f.page.evaluate(key=>enlargePlayer(key),key);assert.equal((await f.page.evaluate(()=>fixture.grid())).columns,4);
+    await settlePane(f,1528,968);
+    const forced=await f.page.evaluate(key=>{enlargePlayer(key);return {state:fixture.geometry(),grid:fixture.grid()}},key);
+    assert.equal(forced.grid.columns,5,'an explicit size action optimizes even inside the resize stability band');assert.equal(forced.grid.rows,5);
+    const rapid=await f.page.evaluate(key=>{
+        fixture.resize(1510,950);enlargePlayer(key);shrinkPlayer(key);return {state:fixture.geometry(),grid:fixture.grid()};
+    },key);
+    assert.equal(spans(rapid.state)[key],3);assert.equal(rapid.grid.columns,5);assert.equal(rapid.grid.rows,5);
+    await f.page.waitForTimeout(300);const settled=await readLayout(f);
+    assert.deepEqual(settled.logical,logicalLayout(rapid.state,rapid.grid),'a pending resize cannot undo a newer grow/shrink action');assertGeometry(settled.state,{overlay:true});assertFits(settled.grid);
+    await settlePane(f,0,0);
+    const hidden=await f.page.evaluate(key=>{enlargePlayer(key);return fixture.geometry()},key);
+    assert.equal(spans(hidden)[key],4);assert.ok(Number.isInteger(hidden.layout.columns)&&hidden.layout.columns>=4);
+    assert.ok(Number.isInteger(hidden.layout.rows)&&hidden.layout.rows>=4);
+    await settlePane(f,1528,968);const revealed=await readLayout(f);assert.equal(revealed.grid.columns,6);assert.equal(revealed.grid.rows,6);
+    assertGeometry(revealed.state,{overlay:true});assertFits(revealed.grid);
+    await settlePane(f,320,1100);const portrait=await readLayout(f);assert.equal(portrait.grid.columns,4);assert.equal(portrait.grid.rows,8);
+    assert.equal(spans(portrait.state)[key],4);assertGeometry(portrait.state,{overlay:true});assertFits(portrait.grid);
+    await settlePane(f,1528,968);const restored=await readLayout(f);assert.equal(restored.grid.columns,6);assert.equal(restored.grid.rows,6);
+    assertGeometry(restored.state,{overlay:true});assertFits(restored.grid);await assertContinuity(f,before);
+});
+
+test('restoring an enlargement before the pane has a usable size preserves its anchor until the visible layout can optimize it',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const key='m3u8|layout-0',storageSeed={playerEnlargementLayout:JSON.stringify({
+        version:1,columns:13,focus:{key,span:3,row:0,column:10}
+    })};
+    const direct=await fixture(t,{width:3000,height:500,viewport:{width:3200,height:900},players:17,storageSeed});
+    const expected=await readLayout(direct),expectedFocus=expected.state.layout.items.find(item=>item.key===key);
+    assert.equal(expectedFocus.column,6);assert.equal(expected.grid.columns,9);assertGeometry(expected.state);assertFits(expected.grid);
+    const hidden=await fixture(t,{width:0,height:0,viewport:{width:3200,height:900},players:17,storageSeed}),before=await snapshot(hidden);
+    assert.equal((await hidden.page.evaluate(()=>fixture.grid())).width,0);assert.equal((await hidden.page.evaluate(()=>fixture.grid())).height,0);
+    assert.equal(JSON.parse((await geometry(hidden)).saved).focus.column,10,'an unmeasured pane cannot overwrite the saved horizontal anchor');
+    await settlePane(hidden,3000,500);const revealed=await readLayout(hidden);
+    assert.deepEqual(revealed.logical,expected.logical,'initially hidden and directly visible restores must produce the same key positions');
+    await hidden.page.locator('#enlarge-player').click();assertGeometry(await geometry(hidden),{overlay:true});assertFits(revealed.grid);
+    await assertContinuity(hidden,before);
+    // Removing this player intentionally disposes its native media. A fresh
+    // local placeholder lets us test restoring the same channel preference,
+    // without asking a platform renderer to establish a real connection.
+    await hidden.page.evaluate(key=>syncActivePlayers(channels.filter(channel=>ChannelList.channelKey(channel)!==key)),key);
+    await settlePane(hidden,0,0);
+    await hidden.page.evaluate(()=>{fixture.addPlaceholder(channels[0]);syncActivePlayers(channels)});
+    assert.equal(JSON.parse((await geometry(hidden)).saved).focus.column,6,'reselecting a dormant focus while hidden cannot clamp its saved anchor to the previous normal grid');
+    await settlePane(hidden,3000,500);const reselected=await readLayout(hidden);
+    assert.deepEqual(reselected.logical,expected.logical);assertGeometry(reselected.state,{overlay:true});assertFits(reselected.grid);
+    assert.equal(await hidden.page.evaluate(()=>Boolean(playerGeometry.deferredFocus)),false,'the first visible layout finishes the deferred anchor commit');
+    assert.deepEqual(hidden.errors,[]);assert.deepEqual(hidden.blocked,[]);
 });

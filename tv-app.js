@@ -679,10 +679,11 @@ function getPlayerElement(entry) {
     return entry.resource ? entry.resource.element : entry.element;
 }
 
-function updatePlayerLayout() {
+function updatePlayerLayout({ force = false } = {}) {
     const pane = document.getElementById('multi-stream-container');
     if (!pane) return;
     if (!playerGrid) playerGrid = PlayerLayout.observe(pane, {
+        stabilizeResize: true,
         getCount: () => activePlayers.size,
         getTrackCount: () => {
             const focus = activePlayers.size > 1 && activePlayers.has(enlargedPlayerFocus?.key) ? enlargedPlayerFocus : null;
@@ -695,19 +696,33 @@ function updatePlayerLayout() {
                 pendingPlayerGeometry = null;
                 return PlayerLayout.choose(options);
             }
+            if (!(options.width > 0 && options.height > 0)) {
+                // A hidden fallback grid must not overwrite the saved anchor.
+                // Keep pending size/restore intent until there is a real pane.
+                const columns = Math.max(focus.span, Math.min(Math.max(pendingPlayerGeometry?.columns || 0,
+                    options.previous?.columns || 0, focus.column + focus.span), focus.span + keys.length - 1));
+                return { ...PlayerGeometry.build({ keys, columns, focus }), count: keys.length, deferredFocus: true };
+            }
             let next;
-            if (pendingPlayerGeometry) {
+            if (pendingPlayerGeometry?.intent === 'size' || pendingPlayerGeometry?.intent === 'restore') {
+                // Explicit sizing and reopening settle on the best grid immediately.
+                pendingPlayerGeometry = null;
+                next = PlayerGeometry.choose({ ...options, keys, focus, force: true });
+            } else if (pendingPlayerGeometry) {
                 // A saved grid may have come from a much larger selection.
                 const columns = Math.max(focus.span, Math.min(pendingPlayerGeometry.columns, focus.span + keys.length - 1));
                 next = PlayerGeometry.build({ keys, columns, focus });
                 pendingPlayerGeometry = null;
+            } else if (options.preserveColumns && options.previous?.columns >= focus.span &&
+                options.previous.columns <= focus.span + keys.length - 1) {
+                next = PlayerGeometry.build({ keys, columns: options.previous.columns, focus });
             } else next = PlayerGeometry.choose({ ...options, keys, focus });
             return { ...next, count: keys.length };
         },
         onChange(next) {
             playerGeometry = next.items ? next : null;
             if (playerGeometry) {
-                enlargedPlayerFocus = playerGeometry.items.find(item => item.span > 1) || enlargedPlayerFocus;
+                if (!next.deferredFocus) enlargedPlayerFocus = playerGeometry.items.find(item => item.span > 1) || enlargedPlayerFocus;
                 const visual = [...next.items].sort((a, b) => a.row - b.row || a.column - b.column);
                 visual.forEach((item, index) => {
                     const element = getPlayerElement(activePlayers.get(item.key));
@@ -719,7 +734,10 @@ function updatePlayerLayout() {
             playerPositionEditor?.layoutChanged?.();
         }
     });
-    playerGrid.update();
+    const previousFocus = playerGeometry?.items.find(item => item.span > 1);
+    const activeFocus = activePlayers.size > 1 && activePlayers.has(enlargedPlayerFocus?.key) ? enlargedPlayerFocus : null;
+    const contextChanged = previousFocus?.key !== activeFocus?.key || previousFocus?.span !== activeFocus?.span;
+    playerGrid.update({ force: force || contextChanged });
     // A retry may replace one player while keeping exactly the same geometry.
     if (playerGeometry) playerGeometry.items.forEach(item => {
         const entry = activePlayers.get(item.key);
@@ -739,7 +757,7 @@ function savePlayerEnlargement() {
     try {
         if (!enlargedPlayerFocus) localStorage.removeItem(PLAYER_ENLARGEMENT_STORAGE_KEY);
         else localStorage.setItem(PLAYER_ENLARGEMENT_STORAGE_KEY, JSON.stringify({
-            version: 1, columns: playerGeometry?.columns || pendingPlayerGeometry?.columns || 1, focus: enlargedPlayerFocus
+            version: 1, columns: pendingPlayerGeometry?.columns || playerGeometry?.columns || 1, focus: enlargedPlayerFocus
         }));
     } catch (_) {}
 }
@@ -750,8 +768,8 @@ function applyPlayerSize(next) {
         getPlayerElement(activePlayers.get(item.key)).style.order = String(index);
     });
     enlargedPlayerFocus = next.items.find(item => item.span > 1) || null;
-    pendingPlayerGeometry = enlargedPlayerFocus ? next : null;
-    updatePlayerLayout();
+    pendingPlayerGeometry = enlargedPlayerFocus ? { ...next, intent: 'size' } : null;
+    updatePlayerLayout({ force: true });
     const keys = getPlayerPositionKeys();
     preferredPlayerOrder = keys.concat(preferredPlayerOrder.filter(saved => !keys.includes(saved))).slice(0, 256);
     try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(preferredPlayerOrder)); } catch (_) {}
@@ -791,7 +809,7 @@ function swapPlayerPositions(sourceKey, targetKey) {
     }
     // Change only CSS order: moving connected iframe nodes would restart playback.
     keys.forEach((key, index) => { getPlayerElement(activePlayers.get(key)).style.order = String(index); });
-    if (pendingPlayerGeometry) { updatePlayerLayout(); savePlayerEnlargement(); }
+    if (pendingPlayerGeometry) { updatePlayerLayout({ force: true }); savePlayerEnlargement(); }
     const visualKeys = getPlayerPositionKeys();
     preferredPlayerOrder = visualKeys.concat(preferredPlayerOrder.filter(key => !visualKeys.includes(key))).slice(0, 256);
     try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(preferredPlayerOrder)); } catch (_) {}
@@ -1285,7 +1303,7 @@ function toggleChannelSelection() {
             Number.isInteger(focus.column) && focus.column >= 0 && focus.column <= 512 &&
             Number.isInteger(saved.columns) && saved.columns >= focus.span && saved.columns <= 768) {
             enlargedPlayerFocus = { key: focus.key, span: focus.span, row: focus.row, column: focus.column };
-            pendingPlayerGeometry = { columns: saved.columns };
+            pendingPlayerGeometry = { columns: saved.columns, intent: 'restore' };
         }
     } catch (_) {}
 
