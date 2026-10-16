@@ -37,7 +37,7 @@
         return best;
     }
 
-    function observe(pane, { getCount, onChange = () => {} }) {
+    function observe(pane, { getCount, getTrackCount = getCount, calculate = choose, onChange = () => {} }) {
         const view = pane.ownerDocument?.defaultView;
         let current = null;
         let timer = null;
@@ -62,14 +62,16 @@
             const count = getCount();
             // Gaps must also fit when many players share an extremely thin pane.
             // CSS retains the normal em-based gap whenever there is enough room.
-            pane.style.setProperty?.('--player-grid-gap-x-limit', `${width / (2 * Math.max(1, count))}px`);
-            pane.style.setProperty?.('--player-grid-gap-y-limit', `${height / (2 * Math.max(1, count))}px`);
+            const tracks = Math.max(1, getTrackCount());
+            pane.style.setProperty?.('--player-grid-gap-x-limit', `${width / (2 * tracks)}px`);
+            pane.style.setProperty?.('--player-grid-gap-y-limit', `${height / (2 * tracks)}px`);
             const fittedStyle = view?.getComputedStyle(pane);
             const columnGap = gap(fittedStyle?.columnGap, width);
             const rowGap = gap(fittedStyle?.rowGap, height);
-            const next = choose({ count, width, height, columnGap, rowGap, previous: current,
+            const next = calculate({ count, width, height, columnGap, rowGap, previous: current,
                 force: force || count !== current?.count });
             const changed = next.columns !== current?.columns || next.rows !== current?.rows ||
+                JSON.stringify(next.items) !== JSON.stringify(current?.items) ||
                 columnGap !== lastColumnGap || rowGap !== lastRowGap;
             current = next;
             lastColumnGap = columnGap;
