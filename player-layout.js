@@ -1,0 +1,120 @@
+/* Fit every player inside the available pane without touching its media. */
+(function (root) {
+    'use strict';
+
+    const ASPECT = 16 / 9;
+    const SWITCH_GAIN = 0.06;
+    const RESIZE_DELAY = 180;
+
+    function choose({ count, width, height, columnGap = 0, rowGap = 0, previous, force = false }) {
+        count = Number.isFinite(Number(count)) ? Math.max(0, Math.floor(Number(count))) : 0;
+        if (!count) return { count: 0, columns: 1, rows: 1, area: 0 };
+        const measure = columns => {
+            const rows = Math.max(1, Math.ceil(count / columns));
+            const cellWidth = Math.max(0, (width - columnGap * (columns - 1)) / columns);
+            const cellHeight = Math.max(0, (height - rowGap * (rows - 1)) / rows);
+            const videoWidth = Math.min(cellWidth, cellHeight * ASPECT);
+            return { count, columns, rows, area: videoWidth * videoWidth / ASPECT };
+        };
+        const oldColumns = previous?.columns;
+        const validPrevious = Number.isInteger(oldColumns) && oldColumns >= 1 && oldColumns <= Math.max(1, count);
+        // A hidden/zero-sized pane cannot provide a useful measurement yet.
+        if (!(width > 0 && height > 0)) {
+            const columns = validPrevious ? oldColumns : Math.max(1, Math.ceil(Math.sqrt(count)));
+            return { count, columns, rows: Math.ceil(count / columns), area: 0 };
+        }
+        let best = measure(1);
+        for (let columns = 2; columns <= count; columns++) {
+            const candidate = measure(columns);
+            const difference = candidate.area - best.area;
+            if (difference > 0.01 || (Math.abs(difference) <= 0.01 &&
+                candidate.columns * candidate.rows < best.columns * best.rows)) best = candidate;
+        }
+        if (!force && validPrevious) {
+            const current = measure(oldColumns);
+            if (best.area <= current.area * (1 + SWITCH_GAIN)) return current;
+        }
+        return best;
+    }
+
+    function observe(pane, { getCount, onChange = () => {} }) {
+        const view = pane.ownerDocument?.defaultView;
+        let current = null;
+        let timer = null;
+        let suspended = false;
+        let disposed = false;
+        let lastColumnGap;
+        let lastRowGap;
+        const observer = view?.ResizeObserver ? new view.ResizeObserver(schedule) : null;
+
+        function clearPending() {
+            if (timer !== null) view.clearTimeout(timer);
+            timer = null;
+        }
+        function update({ force = false } = {}) {
+            if (disposed || suspended) return;
+            clearPending();
+            const style = view?.getComputedStyle(pane);
+            const number = value => parseFloat(value) || 0;
+            const width = Math.max(0, (pane.clientWidth || 0) - number(style?.paddingLeft) - number(style?.paddingRight));
+            const height = Math.max(0, (pane.clientHeight || 0) - number(style?.paddingTop) - number(style?.paddingBottom));
+            const gap = (value, dimension) => String(value).endsWith('%') ? number(value) * dimension / 100 : number(value);
+            const count = getCount();
+            // Gaps must also fit when many players share an extremely thin pane.
+            // CSS retains the normal em-based gap whenever there is enough room.
+            pane.style.setProperty?.('--player-grid-gap-x-limit', `${width / (2 * Math.max(1, count))}px`);
+            pane.style.setProperty?.('--player-grid-gap-y-limit', `${height / (2 * Math.max(1, count))}px`);
+            const fittedStyle = view?.getComputedStyle(pane);
+            const columnGap = gap(fittedStyle?.columnGap, width);
+            const rowGap = gap(fittedStyle?.rowGap, height);
+            const next = choose({ count, width, height, columnGap, rowGap, previous: current,
+                force: force || count !== current?.count });
+            const changed = next.columns !== current?.columns || next.rows !== current?.rows ||
+                columnGap !== lastColumnGap || rowGap !== lastRowGap;
+            current = next;
+            lastColumnGap = columnGap;
+            lastRowGap = rowGap;
+            if (!changed) return;
+            pane.style.gridTemplateColumns = `repeat(${next.columns}, minmax(0, 1fr))`;
+            pane.style.gridTemplateRows = `repeat(${next.rows}, minmax(0, 1fr))`;
+            onChange(next);
+        }
+        function schedule() {
+            if (disposed || suspended) return;
+            clearPending();
+            timer = view.setTimeout(() => { timer = null; update(); }, RESIZE_DELAY);
+        }
+        function suspend() {
+            suspended = true;
+            clearPending();
+            observer?.disconnect();
+        }
+        function resume() {
+            if (disposed) return;
+            suspended = false;
+            observer?.observe(pane);
+            update();
+        }
+        observer?.observe(pane);
+        // ResizeObserver also covers chat-divider changes without a window resize.
+        if (!observer) view?.addEventListener('resize', schedule);
+        view?.addEventListener('pagehide', suspend);
+        view?.addEventListener('pageshow', resume);
+        return {
+            update,
+            getColumns: () => current?.columns || 1,
+            destroy() {
+                disposed = true;
+                clearPending();
+                observer?.disconnect();
+                view?.removeEventListener('resize', schedule);
+                view?.removeEventListener('pagehide', suspend);
+                view?.removeEventListener('pageshow', resume);
+            }
+        };
+    }
+
+    const api = { choose, observe };
+    if (typeof module === 'object' && module.exports) module.exports = api;
+    else root.PlayerLayout = api;
+})(typeof globalThis === 'object' ? globalThis : this);

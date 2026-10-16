@@ -473,6 +473,7 @@ const playerResources = new WeakMap();
 const PLAYER_POSITION_STORAGE_KEY = 'playerPositionOrder';
 let preferredPlayerOrder = [];
 let playerPositionEditor = null;
+let playerGrid = null;
 let globalMutedPreference = null;
 let globalAudioFeedbackTimer = null;
 const statusScheduler = StreamPerformance.createStatusScheduler({ maxConcurrent: 4, cacheMs: 30000 });
@@ -673,6 +674,16 @@ function getPlayerElement(entry) {
     return entry.resource ? entry.resource.element : entry.element;
 }
 
+function updatePlayerLayout() {
+    const pane = document.getElementById('multi-stream-container');
+    if (!pane) return;
+    if (!playerGrid) playerGrid = PlayerLayout.observe(pane, {
+        getCount: () => activePlayers.size,
+        onChange: () => playerPositionEditor?.layoutChanged?.()
+    });
+    playerGrid.update();
+}
+
 function getPlayerPositionKeys() {
     return Array.from(activePlayers.keys()).sort((a, b) =>
         Number(getPlayerElement(activePlayers.get(a)).style.order) -
@@ -722,14 +733,11 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     }
     const count = selected.length;
     const muted = getGlobalMuted(count);
-    const cols = Math.max(1, Math.ceil(Math.sqrt(count)));
-    const rows = Math.max(1, Math.ceil(count / cols));
-    container.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-    container.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
     currentDisplayChannel = count === 1 ? selected[0] : null;
     updateGlobalAudioButton();
     if (!count) {
         container.innerHTML = `<div style="color:var(--label-2); text-align:center; padding:2rem;">${emptyMessage}</div>`;
+        updatePlayerLayout();
         playerPositionEditor?.refresh();
         return;
     }
@@ -767,6 +775,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
         visible.style.order = String(index);
     });
     activePlayers.forEach(entry => entry.resource?.twitch?.refresh());
+    updatePlayerLayout();
     updateGlobalAudioButton();
     if (unsyncedAudio.length) showGlobalAudioFeedback({ muted, unsupported: unsyncedAudio, reloaded: 0 });
     playerPositionEditor?.refresh();
@@ -1324,7 +1333,7 @@ function toggleChannelSelection() {
         event.preventDefault();
         const keys = getPlayerPositionKeys();
         const index = keys.indexOf(button.dataset.playerKey);
-        const columns = Math.ceil(Math.sqrt(keys.length));
+        const columns = playerGrid?.getColumns() || 1;
         const column = index % columns;
         let target = index;
         if (event.key === 'ArrowLeft' && column > 0) target--;
@@ -1379,7 +1388,7 @@ function toggleChannelSelection() {
         if (drag && event.pointerId === drag.id) cancelPointer();
     });
     window.addEventListener('pagehide', () => close(false));
-    playerPositionEditor = { refresh, close };
+    playerPositionEditor = { refresh, close, layoutChanged: scheduleLayout };
     refresh();
 })();
 

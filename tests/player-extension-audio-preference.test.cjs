@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ChannelList = require('../channel-list.js');
 const StreamPerformance = require('../stream-performance.js');
+const PlayerLayout = require('../player-layout.js');
 
 const root = path.join(__dirname, '..');
 const read = name => fs.readFileSync(path.join(root, name), 'utf8');
@@ -44,7 +45,7 @@ function siteFixture(admin = false) {
     }
     const context = vm.createContext({ window, location: { hostname: 'umininn-gh.github.io', origin: 'https://umininn-gh.github.io' },
         document: { getElementById: id => id === 'multi-stream-container' ? pane : id === 'channel-selection' ? selection : null,
-            createElement: tag => new Element(tag) }, Hls, ChannelList, StreamPerformance, queueMicrotask, console, URL });
+            createElement: tag => new Element(tag) }, Hls, ChannelList, StreamPerformance, PlayerLayout, queueMicrotask, console, URL });
     let source = read(admin ? 'admin.html' : 'tv-app.js');
     source = admin
         ? source.slice(source.indexOf('        // ======================== 全域變數'), source.indexOf('        // ======================== 載入 Twitch 憑證'))
