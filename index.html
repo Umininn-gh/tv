@@ -911,11 +911,11 @@
             user-select: none;
             -webkit-user-select: none;
             touch-action: manipulation;
-            transition: background-color .16s ease, box-shadow .16s ease, transform .12s ease;
+            transition: background-color .16s ease, box-shadow .16s ease;
         }
 
         #channel-options .channel-option-label:active {
-            transform: scale(.955);
+            filter: brightness(1.15);
         }
 
         #channel-options .channel-option-label.live,
@@ -933,20 +933,33 @@
 
         #channel-options input:checked + .channel-option-label {
             background: rgba(10, 132, 255, .22) !important;
+            border-color: var(--blue) !important;
             box-shadow: inset 0 0 0 1.5px var(--blue);
             color: var(--label) !important;
         }
 
-        #channel-options input:checked + .channel-option-label::after {
-            content: "✓";
+        #channel-options .channel-option-label::after {
+            content: "";
             position: absolute;
-            top: 4px;
-            right: 7px;
-            font-size: .6rem;
+            top: 6px;
+            right: 6px;
+            width: 16px;
+            height: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 1.5px solid var(--label-2);
+            border-radius: 4px;
+            background: var(--bg-1);
+            font-size: 12px;
             font-weight: 800;
-            color: var(--blue);
             line-height: 1;
         }
+        #channel-options input:checked + .channel-option-label::after { content: "✓"; color: #fff; background: var(--blue); border-color: var(--blue); }
+        #channel-options input:focus-visible + .channel-option-label { outline: 2px solid var(--blue); outline-offset: 3px; }
+        #channel-options .channel-option-label > span { pointer-events: none; }
+        .channel-selection-help { color: var(--label-2); font-size: .72rem; line-height: 1.5; margin-bottom: 8px; }
+        #channel-selection-summary { font-size: .78rem; margin-bottom: 8px; }
 
         .channel-option-icon {
             font-size: 1.05rem;
@@ -1284,7 +1297,7 @@
     </style>
     <link rel="stylesheet" href="./login.css">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261016-player-names"></script>
+    <script defer src="./login.js?v=20261016-selection-hitfix"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">
@@ -1404,7 +1417,9 @@
 
     <div id="channel-selection" style="display: none;">
         <h3>📡 選擇要同時觀看的台：</h3>
-        <div id="channel-options"></div>
+        <p id="channel-selection-help" class="channel-selection-help">藍色 ✓ 代表已選；綠色代表直播中。按「開始觀看」才會套用選擇。</p>
+        <p id="channel-selection-summary" role="status" aria-live="polite">已選 0 台</p>
+        <div id="channel-options" role="group" aria-label="選擇要同時觀看的台" aria-describedby="channel-selection-help"></div>
         <button onclick="watchSelectedChannels()" style="background: #9147ff; color: #000; font-weight: 600;">▶️ 開始觀看</button>
         <button onclick="checkAllLiveChannels()" style="background: var(--green); color: #000; font-weight: 600;">所有在線頻道</button>
         <div class="channel-selection-actions">

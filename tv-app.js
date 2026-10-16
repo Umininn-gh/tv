@@ -465,6 +465,8 @@ let TWITCH_TOKEN = "";
 let TWITCH_CLIENT_ID = "";
 let channels = [];
 let channelStatuses = {};
+const channelOptionControls = new Map();
+let channelOptionSequence = 0;
 let currentHLSInstances = [];
 let currentFLVInstances = [];
 let currentDisplayChannel = null;
@@ -1175,12 +1177,10 @@ function updateMenuButtonStatus(channel) {
 }
 
 function updateChannelOptionLabel(channel) {
-    const statusKey = `${channel.platform}_${channel.id}`;
-    const idSafe = statusKey.replace(/[^a-zA-Z0-9]/g, '_');
-    const label = document.getElementById(`status-label-${idSafe}`);
-    if (!label) return;
-    label.className = "channel-option-label";
-    applyStatusClass(label, channelStatuses[statusKey] || 'unknown');
+    const control = channelOptionControls.get(ChannelList.channelKey(channel));
+    if (!control) return;
+    applyStatusClass(control.label, channelStatuses[`${channel.platform}_${channel.id}`] || 'unknown');
+    updateChannelSelectionSummary();
 }
 
 function updateUIForChannel(channel) {
@@ -1219,72 +1219,96 @@ function fetchAllStatuses(options) {
     return Promise.all(channels.map(ch => fetchStatus(ch, options)));
 }
 
+function updateChannelSelectionSummary() {
+    const summary = document.getElementById('channel-selection-summary');
+    if (!summary) return;
+    const inputs = Array.from(document.querySelectorAll('#channel-options input[type="checkbox"]'));
+    const selected = inputs.filter(input => input.checked);
+    const hideOffline = Boolean(document.getElementById('toggleNotLive')?.checked);
+    const hidden = hideOffline ? selected.filter(input => channelStatuses[`${input.dataset.platform}_${input.value}`] === 'not-live').length : 0;
+    summary.textContent = '已選 ' + selected.length + ' / ' + inputs.length + ' 台' + (hidden ? '（其中 ' + hidden + ' 台已隱藏）' : '');
+}
+
+function createChannelOptionControl() {
+    const cell = document.createElement('div');
+    cell.className = 'channel-option-cell';
+    const input = document.createElement('input');
+    input.type = 'checkbox';
+    input.id = 'channel-choice-' + (++channelOptionSequence);
+    input.addEventListener('change', updateChannelSelectionSummary);
+    const label = document.createElement('label');
+    label.className = 'channel-option-label';
+    label.htmlFor = input.id;
+    const icon = document.createElement('span');
+    icon.className = 'channel-option-icon';
+    const name = document.createElement('span');
+    name.className = 'channel-option-name';
+    label.appendChild(icon);
+    label.appendChild(name);
+    cell.appendChild(input);
+    cell.appendChild(label);
+    return { cell, input, label, icon, name };
+}
+
 function generateChannelOptions({ preserveSelection = false } = {}) {
-    const container = document.getElementById("channel-options");
+    const container = document.getElementById('channel-options');
     if (!container) return;
-    const previous = new Map();
-    if (preserveSelection) {
-        container.querySelectorAll('input[type="checkbox"]').forEach(input => {
-            previous.set(ChannelList.channelKey({ name: input.dataset.name || 'channel', platform: input.dataset.platform, id: input.value }), input.checked);
-        });
-    }
     const panel = document.getElementById('channel-selection');
     const scrollTop = panel ? panel.scrollTop : 0;
-    container.innerHTML = "";
-    const frag = document.createDocumentFragment();
-
-    channels.forEach(ch => {
-        const statusKey = `${ch.platform}_${ch.id}`;
-        const idSafe = statusKey.replace(/[^a-zA-Z0-9]/g, '_');
-        const icon = platformIcon(ch.platform);
-
-        const cell = document.createElement("div");
-        cell.className = "channel-option-cell";
-        cell.innerHTML = `
-            <input type="checkbox"
-                   value="${escapeHtml(ch.id)}"
-                   data-platform="${ch.platform}"
-                   data-name="${escapeHtml(ch.name)}"
-                   ${(previous.has(ChannelList.channelKey(ch)) ? previous.get(ChannelList.channelKey(ch)) : activePlayers.has(ChannelList.channelKey(ch))) ? 'checked' : ''}
-                   id="chk_${idSafe}">
-            <label class="channel-option-label"
-                   id="status-label-${idSafe}"
-                   for="chk_${idSafe}"
-                   title="${escapeHtml(ch.name)}">
-                <span class="channel-option-icon">${icon}</span>
-                <span class="channel-option-name">${escapeHtml(ch.name)}</span>
-            </label>`;
-        frag.appendChild(cell);
-    });
-    container.appendChild(frag);
-    channels.forEach(ch => updateChannelOptionLabel(ch));
-	if (preserveSelection && panel) panel.scrollTop = scrollTop;
-	fetchAllStatuses();
+    const available = new Set(channels.map(channel => ChannelList.channelKey(channel)));
+    for (const [key, control] of channelOptionControls) {
+        if (!available.has(key)) { control.cell.remove(); channelOptionControls.delete(key); }
+    }
+    const seen = new Set();
+    let next = container.firstElementChild;
+    for (const channel of channels) {
+        const key = ChannelList.channelKey(channel);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        let control = channelOptionControls.get(key);
+        const retained = Boolean(control && control.cell.parentNode === container);
+        if (!retained) {
+            control = createChannelOptionControl();
+            channelOptionControls.set(key, control);
+        }
+        const { cell, input, label, icon, name } = control;
+        input.value = channel.id;
+        input.dataset.platform = channel.platform;
+        input.dataset.name = channel.name;
+        if (!preserveSelection || !retained) input.checked = activePlayers.has(key);
+        label.title = channel.name;
+        icon.textContent = platformIcon(channel.platform);
+        name.textContent = channel.name;
+        applyStatusClass(label, channelStatuses[`${channel.platform}_${channel.id}`] || 'unknown');
+        // Keep unchanged controls connected: a background list refresh must not
+        // replace the checkbox or label between pointer-down and pointer-up.
+        if (cell !== next) container.insertBefore(cell, next);
+        else next = next.nextElementSibling;
+    }
+    if (preserveSelection && panel) panel.scrollTop = scrollTop;
+    updateChannelSelectionSummary();
+    fetchAllStatuses();
 }
 
 function checkAllLiveChannels() {
-    channels.forEach(ch => {
-        const statusKey = `${ch.platform}_${ch.id}`;
-        const status = channelStatuses[statusKey] || 'unknown';
-        const idSafe = statusKey.replace(/[^a-zA-Z0-9]/g, '_');
-        const chk = document.getElementById(`chk_${idSafe}`);
-        if (chk) chk.checked = (status === 'live');
+    document.querySelectorAll('#channel-options input[type="checkbox"]').forEach(input => {
+        input.checked = channelStatuses[`${input.dataset.platform}_${input.value}`] === 'live';
     });
+    updateChannelSelectionSummary();
 }
 
 function selectAllChannelSelection() {
     const hideOffline = Boolean(document.getElementById('toggleNotLive')?.checked);
-    document.querySelectorAll("#channel-options input[type='checkbox']").forEach(chk => {
-        const status = channelStatuses[`${chk.dataset.platform}_${chk.value}`] || 'unknown';
-        // Match the hide-offline filter: only confirmed offline channels vanish.
-        chk.checked = !hideOffline || status !== 'not-live';
+    document.querySelectorAll('#channel-options input[type="checkbox"]').forEach(input => {
+        const status = channelStatuses[`${input.dataset.platform}_${input.value}`] || 'unknown';
+        input.checked = !hideOffline || status !== 'not-live';
     });
+    updateChannelSelectionSummary();
 }
 
 function clearAllChannelSelection() {
-    document.querySelectorAll("#channel-options input[type='checkbox']").forEach(chk => {
-        chk.checked = false;
-    });
+    document.querySelectorAll('#channel-options input[type="checkbox"]').forEach(input => { input.checked = false; });
+    updateChannelSelectionSummary();
 }
 
 function toggleChannelSelection() {
@@ -1808,7 +1832,7 @@ function confirmDeleteChannels() {
         displaySingleChannel(null);
     }
     const selectionDiv = document.getElementById("channel-selection");
-    if (selectionDiv && selectionDiv.style.display !== "none") generateChannelOptions();
+    if (selectionDiv && selectionDiv.style.display !== "none") generateChannelOptions({ preserveSelection: true });
     if (document.getElementById('channel-menu').style.display === 'block') {
         toggleChannelMenu();
         setTimeout(() => toggleChannelMenu(), 100);
@@ -1848,6 +1872,7 @@ function showUserscript() {
     apply(toggle.checked);
     toggle.addEventListener('change', (e) => {
         apply(e.target.checked);
+        updateChannelSelectionSummary();
         localStorage.setItem('hideNotLiveToggle', e.target.checked);
     });
 })();
