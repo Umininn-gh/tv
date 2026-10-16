@@ -3,8 +3,14 @@
 <head>
     <meta name="referrer" content="no-referrer">
     <meta charset="UTF-8">
-    <!-- An invisible title prevents browsers from substituting the page URL. -->
+    <!-- Chromium accepts this title; Firefox desktop needs its label-length handling. -->
     <title>&#8203;</title>
+    <script>
+        if (/Firefox\/\d+/.test(navigator.userAgent) && !/Android|Mobile/.test(navigator.userAgent)) {
+            // Firefox checks the full title, then limits the displayed label to 256 characters.
+            document.title = '\u200B'.repeat(256) + '.';
+        }
+    </script>
     <link rel="icon" type="image/png" sizes="32x32" href="./assets/mother-head-32.png?v=20261016">
     <link rel="icon" type="image/png" sizes="256x256" href="./assets/mother-head.png?v=20261016">
     <meta name="referrer" content="no-referrer">
