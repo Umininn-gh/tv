@@ -197,6 +197,11 @@ function assertGeometry(state,{overlay=false}={}){
     }
 }
 function spans(state){return Object.fromEntries(state.layout.items.map(({key,span})=>[key,span]))}
+function allSpans(state){return Object.fromEntries(state.players.map(({key})=>[key,state.layout?.items.find(item=>item.key===key)?.span||1]))}
+function withoutFocus(order,key){return order.filter(item=>item!==key)}
+async function waitSingleCells(f){
+    await f.page.waitForFunction(()=>!playerGeometry?.items.some(item=>item.span>1));return geometry(f);
+}
 async function capture(f,name){
     if(!process.env.UMININN_BROWSER_SCREENSHOTS)return;
     const directory=path.resolve(process.env.UMININN_BROWSER_SCREENSHOTS);fs.mkdirSync(directory,{recursive:true});
@@ -396,7 +401,11 @@ test('enlargement survives selection changes, stays saved while its channel is h
     const removed=await waitSpan(f,key,2);assert.equal(removed.layout.items.length,5);assertGeometry(removed,{overlay:true});await assertContinuity(f,before);
     await f.page.evaluate(key=>{channels=channels.filter(channel=>ChannelList.channelKey(channel)!==key);syncActivePlayers(channels)},key);
     assert.ok(!(await geometry(f)).layout?.items.some(item=>item.span>1));
-    assert.equal(JSON.parse(await f.page.evaluate(()=>localStorage.getItem('playerEnlargementLayout'))).focus.key,key,'hidden channel preferences remain saved like the preferred position order');
+    const hiddenSaved=await f.page.evaluate(()=>localStorage.getItem('playerEnlargementLayout'));
+    assert.equal(JSON.parse(hiddenSaved).focus.key,key,'hidden channel preferences remain saved like the preferred position order');
+    assert.equal(await f.page.locator('.player-position-shrink').isDisabled(),true);
+    assert.equal(await f.page.evaluate(key=>shrinkPlayer(key),key),false);
+    assert.equal(await f.page.evaluate(()=>localStorage.getItem('playerEnlargementLayout')),hiddenSaved,'an unavailable shrink cannot discard the hidden size preference');
     assertFits(await f.page.evaluate(()=>fixture.grid()));
     await f.page.locator('.player-position-reset').click();
     assert.equal(await f.page.evaluate(()=>localStorage.getItem('playerEnlargementLayout')),null);
@@ -412,6 +421,9 @@ test('a failed native player keeps its enlarged grid area and matching move over
     assert.equal((await geometry(f)).players.find(player=>player.key===key).area,area);
     await f.page.keyboard.press('Escape');await f.page.locator('#adjust-player-positions').click();
     const state=await geometry(f);assert.deepEqual(state.layout,enlarged.layout);assertGeometry(state,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));
+    await f.page.locator('#enlarge-player').click();await f.page.locator('.player-position-shrink').click();
+    const shrunk=await waitSingleCells(f);assert.equal(shrunk.saved,null);assert.equal(shrunk.players.find(player=>player.key===key).area,'');
+    assert.equal(await f.page.evaluate(()=>fixture.entries[0].resource.element.textContent),'本地模擬播放失敗');assertFits(await f.page.evaluate(()=>fixture.grid()));
     assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
 });
 
@@ -499,7 +511,8 @@ test('zero and one selected player close both editors, then reselecting the save
     await f.page.locator('#adjust-player-positions').click();assertGeometry(await geometry(f),{overlay:true});
     await f.page.evaluate(()=>syncActivePlayers([savedFixtureChannels[0]]));
     assert.equal((await geometry(f)).opened,false);assert.equal((await geometry(f)).layout,null);assertFits(await f.page.evaluate(()=>fixture.grid()));
-    assert.equal(await f.page.locator('#adjust-player-positions').isDisabled(),true);assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
+    assert.equal(await f.page.locator('#adjust-player-positions').isDisabled(),true);assert.equal(await f.page.locator('.player-position-shrink').isDisabled(),true);
+    assert.equal(await f.page.evaluate(key=>shrinkPlayer(key),key),false);assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
 });
 
 test('replacing a selected channel at unchanged player count refreshes enlarged geometry and editor targets',{skip:!enabled,timeout:30000},async t=>{
@@ -545,5 +558,124 @@ test('canceled or interrupted drags cannot swap players or leak an enlargement i
     await positionCell(f,keys[0]).press('ArrowDown');
     assert.deepEqual((await geometry(f)).layout,enlarged.layout,'arrow navigation in enlarge mode cannot grow or move a player');
     await f.page.locator('#adjust-player-positions').click();assert.deepEqual(spans(await geometry(f)),spans(enlarged));
+    await assertContinuity(f,before);
+});
+
+test('shrinking steps from three cells to two to one without resetting moved order, and regrowing starts at two',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    await f.page.locator('#adjust-player-positions').click();assert.equal(await f.page.locator('.player-position-shrink').isHidden(),true);
+    await positionCell(f,keys[0]).click();await positionCell(f,keys[1]).click();
+    await f.page.locator('#enlarge-player').click();const shrink=f.page.locator('.player-position-shrink');
+    assert.equal(await shrink.isVisible(),true);assert.equal(await shrink.isDisabled(),true,'there is no enlarged focus yet');
+    await positionCell(f,keys[4]).click();await waitSpan(f,keys[4],2);
+    await positionCell(f,keys[4]).click();const grown=await waitSpan(f,keys[4],3),order=grown.order;
+    assert.notDeepEqual(order,keys,'the shrink operation starts from a manually changed layout');
+    assert.deepEqual(await f.page.evaluate(keys=>[shrinkPlayer(keys[2]),shrinkPlayer('at|missing-player')],keys),[false,false],'only the active enlarged focus can shrink');
+    assert.deepEqual((await geometry(f)).layout,grown.layout);
+    assert.equal(await shrink.isEnabled(),true);
+    await shrink.click();const partial=await waitSpan(f,keys[4],2);
+    assert.deepEqual(withoutFocus(partial.order,keys[4]),withoutFocus(order,keys[4]));assertGeometry(partial,{overlay:true});
+    assert.deepEqual(allSpans(partial),Object.fromEntries(keys.map(key=>[key,key===keys[4]?2:1])),'only the current focus changes size');
+    assert.equal(JSON.parse(partial.saved).focus.span,2);assertFits(await f.page.evaluate(()=>fixture.grid()));
+    await capture(f,'shrink-desktop');
+    await shrink.click();const normal=await waitSingleCells(f);
+    assert.deepEqual(normal.order,partial.order,'returning to one cell retains the current manual order');assert.equal(normal.saved,null);
+    assert.deepEqual(allSpans(normal),Object.fromEntries(keys.map(key=>[key,1])));assert.equal(await shrink.isDisabled(),true);
+    const savedOrder=await f.page.evaluate(()=>localStorage.getItem('playerPositionOrder'));assert.ok(savedOrder,'shrinking cannot clear the saved player order');
+    assert.deepEqual(JSON.parse(savedOrder).slice(0,5),partial.order);
+    const result=await f.page.evaluate(key=>{document.querySelector('.player-position-shrink').click();return shrinkPlayer(key)},keys[4]);
+    assert.equal(result,false,'the public action also rejects a shrink below one cell');assert.deepEqual((await geometry(f)).order,partial.order);
+    await positionCell(f,keys[4]).click();const regrown=await waitSpan(f,keys[4],2);assertGeometry(regrown,{overlay:true});
+    assert.equal(await shrink.isEnabled(),true);assertFits(await f.page.evaluate(()=>fixture.grid()));await assertContinuity(f,before);
+});
+
+test('a partial shrink survives Esc and reload, while the shrink control stays exclusive to enlarge mode',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]);
+    await f.page.locator('#enlarge-player').click();await positionCell(f,key).click();await waitSpan(f,key,2);
+    await positionCell(f,key).click();await waitSpan(f,key,3);
+    await f.page.locator('.player-position-shrink').press('Enter');const partial=await waitSpan(f,key,2);
+    await f.page.keyboard.press('Escape');const closed=await geometry(f);assert.equal(closed.opened,false);assert.deepEqual(closed.layout,partial.layout);assert.equal(closed.saved,partial.saved);
+    await assertContinuity(f,before);
+    await f.page.reload({waitUntil:'load'});const restored=await waitSpan(f,key,2);assert.equal(restored.opened,false);
+    assert.equal(JSON.parse(restored.saved).focus.span,2);assertGeometry(restored);assertFits(await f.page.evaluate(()=>fixture.grid()));
+    await f.page.locator('#adjust-player-positions').click();assert.equal(await f.page.locator('.player-position-shrink').isHidden(),true);
+    await f.page.locator('#enlarge-player').click();assert.equal(await f.page.locator('.player-position-shrink').isVisible(),true);assert.equal(await f.page.locator('.player-position-shrink').isEnabled(),true);
+    assertGeometry(await geometry(f),{overlay:true});
+});
+
+test('a moved enlarged focus can shrink in a portrait pane without changing manual order or playback',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys),key=keys[0];
+    await f.page.locator('#enlarge-player').click();await positionCell(f,key).click();await waitSpan(f,key,2);
+    await positionCell(f,key).click();const grown=await waitSpan(f,key,3);
+    await f.page.locator('#adjust-player-positions').click();await positionCell(f,key).click();await positionCell(f,keys[4]).click();
+    const moved=await geometry(f);assert.notDeepEqual(moved.order,grown.order);assert.equal(spans(moved)[key],3);
+    await f.page.setViewportSize({width:375,height:900});await f.page.evaluate(()=>fixture.resize(320,780));
+    await f.page.waitForFunction(()=>fixture.grid().width<350&&fixture.grid().fits);
+    await f.page.locator('#enlarge-player').click();const order=(await geometry(f)).order;
+    await f.page.locator('.player-position-shrink').click();const partial=await waitSpan(f,key,2);
+    assert.deepEqual(withoutFocus(partial.order,key),withoutFocus(order,key));assertGeometry(partial,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));
+    const toolbar=await f.page.evaluate(()=>{
+        const bar=document.querySelector('.player-position-toolbar'),bounds=bar.getBoundingClientRect();
+        const buttons=Array.from(bar.querySelectorAll('button'),button=>button.getBoundingClientRect());
+        const cells=Array.from(document.querySelectorAll('.player-position-cell'));
+        const top=Math.min(...cells.map(cell=>cell.getBoundingClientRect().top));
+        const firstRow=cells.filter(cell=>Math.abs(cell.getBoundingClientRect().top-top)<.5);
+        return {height:bounds.height,oneRow:buttons.every(rect=>Math.abs(rect.top-buttons[0].top)<.5),
+            fits:buttons.every(rect=>rect.left>=bounds.left&&rect.right<=bounds.right),
+            targetsExposed:firstRow.every(cell=>{const rect=cell.getBoundingClientRect();return cell.contains(document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2))})};
+    });
+    assert.ok(toolbar.height<=50,'the mobile toolbar cannot grow tall enough to cover the first row');assert.equal(toolbar.oneRow,true);assert.equal(toolbar.fits,true);assert.equal(toolbar.targetsExposed,true);
+    await capture(f,'shrink-mobile');
+    await f.page.locator('.player-position-shrink').click();const normal=await waitSingleCells(f);assert.deepEqual(normal.order,partial.order);assert.equal(normal.saved,null);
+    const topCell=f.page.locator('.player-position-cell').first(),topKey=await topCell.getAttribute('data-player-key');
+    await topCell.click();assertGeometry(await waitSpan(f,topKey,2),{overlay:true});
+    await f.page.locator('.player-position-shrink').click();await waitSingleCells(f);
+    assertFits(await f.page.evaluate(()=>fixture.grid()));await assertContinuity(f,before);
+});
+
+test('shrink handles high spans and very thin panes while preserving precise editor targets',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const key='m3u8|layout-0';
+    const f=await fixture(t,{width:375,height:500,viewport:{width:400,height:600},storageSeed:{playerEnlargementLayout:JSON.stringify({
+        version:1,columns:30,focus:{key,span:30,row:0,column:0}
+    })}}),before=await snapshot(f);
+    await waitSpan(f,key,30);await f.page.locator('#enlarge-player').click();const order=(await geometry(f)).order;
+    await f.page.locator('.player-position-shrink').click();const partial=await waitSpan(f,key,29);
+    assert.deepEqual(withoutFocus(partial.order,key),withoutFocus(order,key));assertGeometry(partial,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));
+    await f.page.evaluate(()=>{
+        const pane=document.getElementById('multi-stream-container');document.getElementById('multi-stream-container-wrapper').style.padding='0';pane.style.border='0';fixture.resize(260,8);
+    });
+    await f.page.waitForFunction(()=>fixture.grid().height===8&&fixture.grid().fits);
+    // A programmatic click represents keyboard activation when the visible
+    // toolbar is taller than this deliberately pathological playback pane.
+    await f.page.evaluate(()=>document.querySelector('.player-position-shrink').click());const thin=await waitSpan(f,key,28);
+    assert.deepEqual(withoutFocus(thin.order,key),withoutFocus(order,key));assertGeometry(thin,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));await assertContinuity(f,before);
+});
+
+test('shrink works without browser storage and is disabled for hidden, single or absent enlarged players',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000,denyStorage:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys),key=keys[0];
+    await f.page.locator('#enlarge-player').click();await positionCell(f,key).click();await waitSpan(f,key,2);
+    await positionCell(f,key).click();await waitSpan(f,key,3);await f.page.locator('.player-position-shrink').click();
+    assertGeometry(await waitSpan(f,key,2),{overlay:true});await f.page.locator('.player-position-shrink').click();
+    await waitSingleCells(f);assert.equal(await f.page.locator('.player-position-shrink').isDisabled(),true);await assertContinuity(f,before);
+    await positionCell(f,key).click();await waitSpan(f,key,2);
+    await f.page.evaluate(key=>syncActivePlayers(channels.filter(channel=>ChannelList.channelKey(channel)!==key)),key);
+    assert.equal((await geometry(f)).opened,true);assert.equal(await f.page.locator('.player-position-shrink').isDisabled(),true,'a saved but hidden focus cannot be shrunk');
+    assert.equal(await f.page.evaluate(key=>shrinkPlayer(key),key),false);
+    await f.page.evaluate(()=>syncActivePlayers([channels[1]]));assert.equal((await geometry(f)).opened,false);
+    assert.equal(await f.page.locator('.player-position-shrink').isDisabled(),true);
+    await f.page.evaluate(()=>syncActivePlayers([]));assert.equal((await geometry(f)).opened,false);assert.equal(await f.page.locator('.player-position-shrink').isDisabled(),true);
+    assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
+});
+
+test('switching the enlarged focus after a column change preserves the current visual order of all other players',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    await waitColumns(f,2);await f.page.locator('#enlarge-player').click();await positionCell(f,keys[4]).click();
+    const first=await waitSpan(f,keys[4],2);assert.equal(first.layout.columns,2);
+    await f.page.evaluate(()=>fixture.resize(1800,320));
+    await f.page.waitForFunction(()=>playerGeometry?.columns===3&&fixture.grid().overlayColumns===3);
+    const resized=await geometry(f);assert.notDeepEqual(resized.order,first.order,'the changed columns move the pinned square relative to ordinary players');
+    await positionCell(f,keys[0]).click();const changed=await waitSpan(f,keys[0],2);
+    assert.deepEqual(withoutFocus(changed.order,keys[0]),withoutFocus(resized.order,keys[0]),'changing focus cannot restore an old internal order after a resize');
+    assert.equal(spans(changed)[keys[4]],1);assertGeometry(changed,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));
     await assertContinuity(f,before);
 });

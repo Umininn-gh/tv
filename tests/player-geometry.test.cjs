@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { build, grow, swap, choose } = require('../player-geometry.js');
+const { build, grow, shrink, swap, choose } = require('../player-geometry.js');
 
 const keys = count => Array.from({ length: count }, (_, index) => `player-${index}`);
 const item = (layout, key) => layout.items.find(value => value.key === key);
@@ -91,6 +91,130 @@ test('choosing another player restores the former focus to a single cell', () =>
     assert.equal(item(changed, list[9]).span, 2);
     assertLayout(changed, list);
     assert.equal(grow(changed, 'missing'), changed);
+});
+
+test('switching focus after a column change preserves the former focus in current visual order', () => {
+    const list = keys(12), formerKey = list[9], nextKey = list[8];
+    const grown = grow(build({ keys: list, columns: 4 }), formerKey);
+    const narrowed = build({ keys: visualKeys(grown), columns: 2,
+        focus: item(grown, formerKey) });
+    assert.deepEqual(visualKeys(narrowed), [0, 1, 9, 2, 3, 4, 5, 6, 7, 8, 10, 11].map(index => list[index]));
+    assert.notDeepEqual(narrowed.items.map(value => value.key), visualKeys(narrowed));
+    const expectedOrdinary = visualKeys(narrowed).filter(key => key !== nextKey);
+    const before = JSON.stringify(narrowed), next = grow(narrowed, nextKey);
+    assert.deepEqual(visualKeys(next).filter(key => key !== nextKey), expectedOrdinary);
+    assert.equal(item(next, formerKey).span, 1);
+    assert.equal(item(next, nextKey).span, 2);
+    assert.equal(JSON.stringify(narrowed), before);
+    assertLayout(next, list);
+    const restored = build({ keys: visualKeys(next), columns: next.columns,
+        focus: next.items.find(value => value.span > 1) });
+    for (const value of next.items) assert.deepEqual(item(restored, value.key), value);
+});
+
+test('shrink releases one square ring at a time and retains its top-left anchor', () => {
+    const list = keys(20), key = list[13];
+    let layout = build({ keys: list, columns: 6,
+        focus: { key, span: 5, row: 2, column: 1 } });
+    const released = [];
+    for (let span = 4; span >= 1; span--) {
+        const before = JSON.stringify(layout), order = visualKeys(layout);
+        const oldArea = occupiedArea(layout);
+        const next = shrink(layout, key);
+        released.push(oldArea - occupiedArea(next));
+        assert.equal(item(next, key).span, span);
+        if (span > 1) {
+            assert.equal(item(next, key).row, 2);
+            assert.equal(item(next, key).column, 1);
+        } else assert.deepEqual(visualKeys(next), order);
+        assert.equal(JSON.stringify(layout), before);
+        assertLayout(next, list);
+        assertFirstFreePacking(next);
+        layout = next;
+    }
+    assert.deepEqual(released, [9, 7, 5, 3]);
+    assert.equal(shrink(layout, key), layout);
+    assert.equal(shrink(layout, 'missing'), layout);
+    assert.equal(shrink(null, key), null);
+    assert.equal(shrink(undefined, key), undefined);
+});
+
+test('shrinking a moved focus to 1x1 preserves the latest visual order', () => {
+    const list = keys(15), key = list[4];
+    let layout = grow(build({ keys: list, columns: 5 }), key);
+    layout = swap(layout, key, list[13]);
+    layout = swap(layout, list[1], list[10]);
+    const before = visualKeys(layout);
+    assert.notDeepEqual(before, list);
+    const next = shrink(layout, key);
+    assert.deepEqual(next.items.map(value => value.key), before);
+    assert.deepEqual(visualKeys(next), before);
+    assert.ok(next.items.every(value => value.span === 1));
+    const restored = build({ keys: visualKeys(next), columns: next.columns });
+    assert.deepEqual(restored, next);
+    assert.equal(shrink(next, key), next);
+    assertLayout(next, list);
+});
+
+test('shrink reclaims surplus columns while keeping all players and the nearest legal origin', () => {
+    const list = keys(3), key = list[1];
+    const layout = build({ keys: list, columns: 100,
+        focus: { key, span: 8, row: 12, column: 80 } });
+    const next = shrink(layout, key);
+    assert.equal(next.columns, 9);
+    assert.deepEqual(item(next, key), { key, span: 7, row: 12, column: 2 });
+    assertLayout(next, list);
+    const only = build({ keys: [key], columns: 100,
+        focus: { key, span: 3, row: 0, column: 97 } });
+    const smaller = shrink(only, key), ordinary = shrink(smaller, key);
+    assert.equal(smaller.columns, 2);
+    assert.equal(ordinary.columns, 1);
+    assert.deepEqual(ordinary.items, [{ key, row: 0, column: 0, span: 1 }]);
+    assertLayout(smaller, [key]);
+    assertLayout(ordinary, [key]);
+});
+
+test('shrink trims entirely empty trailing columns without moving a low pinned focus', () => {
+    const list = keys(2), key = list[1];
+    const layout = build({ keys: list, columns: 3,
+        focus: { key, span: 3, row: 98, column: 0 } });
+    const next = shrink(layout, key);
+    assert.equal(next.columns, 2);
+    assert.equal(next.rows, 100);
+    assert.deepEqual(item(next, key), { key, span: 2, row: 98, column: 0 });
+    assert.deepEqual(item(next, list[0]), { key: list[0], span: 1, row: 0, column: 0 });
+    const rebuilt = build({ keys: visualKeys(next), columns: next.columns,
+        focus: next.items.find(value => value.span > 1) });
+    assert.deepEqual(rebuilt, next);
+    assertLayout(next, list);
+});
+
+test('trimmed shrink layouts restore the same visual order and positions across sparse anchors', () => {
+    const random = randomGenerator(0x51a1c0de);
+    let trimmed = 0;
+    for (let step = 0; step < 300; step++) {
+        const list = keys(1 + random(25)), key = list[random(list.length)];
+        const span = 2 + random(8), columns = span + random(20);
+        const layout = build({ keys: list, columns,
+            focus: { key, span, row: random(100), column: random(columns - span + 1) } });
+        const before = JSON.stringify(layout), next = shrink(layout, key);
+        const untrimmed = build({ keys: visualKeys(layout),
+            columns: Math.min(columns, span - 1 + list.length - 1),
+            focus: span > 2 ? { ...item(layout, key), span: span - 1 } : null });
+        if (next.columns < untrimmed.columns) trimmed++;
+        for (const value of next.items) assert.deepEqual(value, item(untrimmed, value.key),
+            'trimming trailing columns must retain every item coordinate');
+        const rebuilt = build({ keys: visualKeys(next), columns: next.columns,
+            focus: next.items.find(value => value.span > 1) });
+        assert.deepEqual(visualKeys(rebuilt), visualKeys(next));
+        for (const value of next.items) assert.deepEqual(item(rebuilt, value.key), value);
+        assert.equal(next.columns, next.items.reduce((maximum, value) => Math.max(maximum,
+            value.column + value.span), 1));
+        assert.equal(JSON.stringify(layout), before);
+        assertLayout(next, list);
+        assertFirstFreePacking(next);
+    }
+    assert.ok(trimmed > 0, 'the deterministic cases must exercise actual trailing-column trimming');
 });
 
 test('ordinary swaps exchange exact cells while keeping the enlarged focus pinned', () => {
@@ -203,21 +327,24 @@ function measuredArea(layout, width, height, columnGap, rowGap) {
     return Math.min(cellWidth, cellHeight * 16 / 9) ** 2 / (16 / 9);
 }
 
-test('seeded grow, swap, selection and resize sequences stay collision-free and preserve their inputs', () => {
+test('seeded grow, shrink, swap, selection and resize sequences stay collision-free and preserve their inputs', () => {
     let operations = 0;
     for (const seed of [1, 0x12345678, 0xabcdef01, 20261016, 0xffffffff]) {
         const random = randomGenerator(seed);
         let nextKey = 24, list = keys(nextKey);
         let layout = build({ keys: list, columns: 5 });
-        for (let step = 0; step < 160; step++) {
+        for (let step = 0; step < 200; step++) {
             const before = JSON.stringify(layout);
-            const operation = random(5);
+            const operation = random(6);
             let next;
             if (operation === 0 && list.length) {
                 const key = list[random(list.length)], current = item(layout, key);
                 const oldFocus = layout.items.find(value => value.span > 1);
                 next = grow(layout, key);
                 const enlarged = item(next, key);
+                assert.deepEqual(visualKeys(next).filter(value => value !== key),
+                    visualKeys(layout).filter(value => value !== key),
+                    'growing or switching focus must retain every other player in its current relative order');
                 assert.equal(enlarged.span, current.span + 1);
                 assert.equal(enlarged.row, Math.max(0, current.row - 1));
                 assert.equal(enlarged.column, Math.min(next.columns - enlarged.span,
@@ -262,6 +389,25 @@ test('seeded grow, swap, selection and resize sequences stay collision-free and 
                         assert.ok(next.area + .011 >= measuredArea(candidate, width, height, gap, gap));
                     }
                 }
+            } else if (operation === 4 && list.length) {
+                const currentFocus = layout.items.find(value => value.span > 1);
+                const key = currentFocus && random(4) > 0 ? currentFocus.key : list[random(list.length)];
+                const current = item(layout, key), order = visualKeys(layout);
+                next = shrink(layout, key);
+                if (current.span === 1) assert.equal(next, layout);
+                else {
+                    const span = current.span - 1;
+                    assert.equal(item(next, key).span, span);
+                    assert.ok(next.columns <= Math.min(layout.columns, span + list.length - 1));
+                    assert.equal(next.columns, next.items.reduce((maximum, value) => Math.max(maximum,
+                        value.column + value.span), 1));
+                    assert.equal(occupiedArea(next), list.length + span ** 2 - 1);
+                    assert.deepEqual(next.items.map(value => value.key), order);
+                    if (span > 1) {
+                        assert.equal(item(next, key).row, current.row);
+                        assert.equal(item(next, key).column, Math.min(current.column, next.columns - span));
+                    } else assert.deepEqual(visualKeys(next), order);
+                }
             } else {
                 next = build({ keys: visualKeys(layout), columns: layout.columns,
                     focus: layout.items.find(value => value.span > 1) });
@@ -275,7 +421,7 @@ test('seeded grow, swap, selection and resize sequences stay collision-free and 
             operations++;
         }
     }
-    assert.equal(operations, 800);
+    assert.equal(operations, 1000);
 });
 
 test('app-style visual order swaps retain exact ordinary destinations after focus moves and resizes', () => {

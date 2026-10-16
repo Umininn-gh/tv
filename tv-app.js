@@ -744,13 +744,13 @@ function savePlayerEnlargement() {
     } catch (_) {}
 }
 
-function enlargePlayer(key) {
-    if (activePlayers.size < 2 || !activePlayers.has(key)) return false;
-    if (enlargedPlayerFocus?.key === key && enlargedPlayerFocus.span >= 256) return false;
-    const next = PlayerGeometry.grow(getCurrentPlayerGeometry(), key);
-    if (!next) return false;
-    enlargedPlayerFocus = next.items.find(item => item.span > 1);
-    pendingPlayerGeometry = next;
+function applyPlayerSize(next) {
+    // Capture the reflowed order before the final shrink returns to normal tracks.
+    [...next.items].sort((a, b) => a.row - b.row || a.column - b.column).forEach((item, index) => {
+        getPlayerElement(activePlayers.get(item.key)).style.order = String(index);
+    });
+    enlargedPlayerFocus = next.items.find(item => item.span > 1) || null;
+    pendingPlayerGeometry = enlargedPlayerFocus ? next : null;
     updatePlayerLayout();
     const keys = getPlayerPositionKeys();
     preferredPlayerOrder = keys.concat(preferredPlayerOrder.filter(saved => !keys.includes(saved))).slice(0, 256);
@@ -758,6 +758,19 @@ function enlargePlayer(key) {
     savePlayerEnlargement();
     playerPositionEditor?.refresh();
     return true;
+}
+
+function enlargePlayer(key) {
+    if (activePlayers.size < 2 || !activePlayers.has(key)) return false;
+    if (enlargedPlayerFocus?.key === key && enlargedPlayerFocus.span >= 256) return false;
+    return applyPlayerSize(PlayerGeometry.grow(getCurrentPlayerGeometry(), key));
+}
+
+function shrinkPlayer(key) {
+    if (activePlayers.size < 2 || !activePlayers.has(key)) return false;
+    const current = playerGeometry?.items.find(item => item.key === key);
+    if (!current || current.span <= 1) return false;
+    return applyPlayerSize(PlayerGeometry.shrink(playerGeometry, key));
 }
 
 function getPlayerPositionKeys() {
@@ -1281,7 +1294,8 @@ function toggleChannelSelection() {
     layer.hidden = true;
     layer.innerHTML = `<div class="player-position-cells"></div>
         <div class="player-position-toolbar"><span class="player-position-instructions">拖曳或點選兩格交換；方向鍵搬位，Esc 完成</span>
-        <button class="player-position-reset" type="button">↺ 重設播放器位置</button>
+        <button class="player-position-shrink" type="button" hidden disabled>－ 縮小一格</button>
+        <button class="player-position-reset" type="button" title="還原全部播放器的大小及排列">↺ 重設佈局</button>
         <button class="player-position-done" type="button">✅ 完成搬位</button></div>
         <p class="player-position-announcement" role="status" aria-live="polite"></p>`;
     // A sibling overlay leaves every iframe/video connected in its original parent.
@@ -1289,6 +1303,7 @@ function toggleChannelSelection() {
     const cells = layer.querySelector('.player-position-cells');
     const doneButton = layer.querySelector('.player-position-done');
     const editorResetButton = layer.querySelector('.player-position-reset');
+    const shrinkButton = layer.querySelector('.player-position-shrink');
     const announcement = layer.querySelector('[role="status"]');
     const instructions = layer.querySelector('.player-position-instructions');
     let opened = false;
@@ -1373,6 +1388,11 @@ function toggleChannelSelection() {
     function refresh() {
         startButton.disabled = activePlayers.size < 2;
         if (enlargeButton) enlargeButton.disabled = startButton.disabled;
+        const focus = !startButton.disabled && playerGeometry?.items.find(item => item.span > 1);
+        shrinkButton.hidden = mode !== 'enlarge';
+        shrinkButton.disabled = !focus;
+        shrinkButton.title = focus ? `將 ${activePlayers.get(focus.key).channel.name} 由 ${focus.span}×${focus.span} 縮小至 ${focus.span - 1}×${focus.span - 1}` : '最小為 1×1；先點選播放器放大';
+        shrinkButton.setAttribute('aria-label', focus ? `縮小一格：${activePlayers.get(focus.key).channel.name}，${focus.span}×${focus.span} 至 ${focus.span - 1}×${focus.span - 1}` : '縮小一格，最小為 1×1');
         if (startButton.disabled) { close(); return; }
         if (!opened) return;
         const focusKey = document.activeElement?.dataset.playerKey;
@@ -1380,13 +1400,14 @@ function toggleChannelSelection() {
         pickedKey = null;
         buttons.clear();
         cells.replaceChildren();
+        const sizes = new Map((playerGeometry?.items || []).map(item => [item.key, item.span]));
         getPlayerPositionKeys().forEach((key, index) => {
             const entry = activePlayers.get(key);
             const button = document.createElement('button');
             button.type = 'button';
             button.className = 'player-position-cell';
             button.dataset.playerKey = key;
-            const span = playerGeometry?.items.find(item => item.key === key)?.span || 1;
+            const span = sizes.get(key) || 1;
             button.setAttribute('aria-label', `第 ${index + 1} 格：${entry.channel.name}，${span}×${span}，${mode === 'enlarge' ? '點選放大一格' : '拖曳或點選交換位置'}`);
             const number = document.createElement('span');
             number.className = 'player-position-number';
@@ -1414,7 +1435,7 @@ function toggleChannelSelection() {
         document.getElementById('channel-selection').style.display = 'none';
         mode = nextMode;
         layer.dataset.mode = mode;
-        instructions.textContent = mode === 'enlarge' ? '點同一格繼續放大；點另一格切換放大；Esc 保留佈局' : '拖曳或點選兩格交換；方向鍵搬位，Esc 完成';
+        instructions.textContent = mode === 'enlarge' ? '點播放器放大；「縮小一格」逐級縮小，最低 1×1；Esc 保留佈局' : '拖曳或點選兩格交換；方向鍵搬位，Esc 完成';
         doneButton.textContent = mode === 'enlarge' ? '✅ 完成放大' : '✅ 完成搬位';
         opened = true;
         layer.hidden = false;
@@ -1438,6 +1459,13 @@ function toggleChannelSelection() {
     }
     resetButton?.addEventListener('click', resetPositions);
     editorResetButton.addEventListener('click', resetPositions);
+    shrinkButton.addEventListener('click', () => {
+        if (!opened || mode !== 'enlarge') return;
+        const focus = playerGeometry?.items.find(item => item.span > 1);
+        if (!focus) return;
+        const name = activePlayers.get(focus.key).channel.name;
+        if (shrinkPlayer(focus.key)) announcement.textContent = `${name} 已縮小至 ${focus.span - 1}×${focus.span - 1}${focus.span === 2 ? '，已達最小單位，保留目前排列' : ''}`;
+    });
     doneButton.addEventListener('click', () => close());
     document.addEventListener('keydown', event => {
         if (opened && event.key === 'Escape') { event.preventDefault(); close(); }

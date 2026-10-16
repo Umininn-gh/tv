@@ -549,8 +549,12 @@
         }
         .player-position-toolbar span { flex: 1 1 200px; }
         .player-position-toolbar button { flex-shrink: 0; pointer-events: auto; }
+        .player-position-toolbar button[hidden] { display: none; }
+        .player-position-shrink:disabled { opacity: .45; cursor: default; }
         @media (max-width: 600px) {
-            .player-position-toolbar span { flex-basis: 100%; }
+            .player-position-toolbar { flex-wrap: nowrap; gap: 4px; padding: 5px; }
+            .player-position-toolbar > .player-position-instructions { display: none; }
+            .player-position-toolbar button { padding: 6px; min-height: 32px; font-size: .68rem; }
         }
         #adjust-player-positions:disabled, #enlarge-player:disabled { opacity: .45; cursor: default; }
         .player-position-hint { margin: 8px 0 0; color: var(--label-2); font-size: .72rem; }
@@ -1233,7 +1237,7 @@
     </style>
     <link rel="stylesheet" href="./login.css">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261016-enlarge-grid"></script>
+    <script defer src="./login.js?v=20261016-resize-grid"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">
@@ -1363,7 +1367,7 @@
         <button id="adjust-player-positions" type="button" disabled>↔️ 調整播放器位置</button>
         <button id="enlarge-player" type="button" disabled>🔍 放大模式</button>
         <button id="reset-player-positions" type="button">↺ 重設播放器位置</button>
-        <p class="player-position-hint">觀看至少兩台後，可搬位或放大。同時只放大一台，每按一次長闊各加一格；Esc 保留佈局，重設會還原大小。</p>
+        <p class="player-position-hint">觀看至少兩台後，可搬位或放大。同時只放大一台，每按一次長闊各加一格；「縮小一格」長闊各減一格，最低 1×1；Esc 保留佈局。</p>
     </div>
 
     <div id="multi-stream-container-wrapper">

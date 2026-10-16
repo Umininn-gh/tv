@@ -73,11 +73,11 @@
             await loadScript('./jquery-3.6.0.min.js', 'module');
             await loadScript('./channel-list.js');
             await loadScript('./stream-performance.js');
-            await loadScript('./player-geometry.js?v=20261016-enlarge-grid');
-            await loadScript('./player-layout.js?v=20261016-enlarge-grid');
+            await loadScript('./player-geometry.js?v=20261016-resize-grid');
+            await loadScript('./player-layout.js?v=20261016-resize-grid');
             await loadScript('./stream-quality.js?v=20261016-twitch-auto-init').catch(error => console.warn('畫質調節暫時未能載入，沿用平台播放器。', error));
             await loadScript('./embed-audio.js').catch(error => console.warn('YouTube 聲音同步暫時未能載入，請使用播放器聲音控制。', error));
-            await loadScript('./tv-app.js?v=20261016-enlarge-grid');
+            await loadScript('./tv-app.js?v=20261016-resize-grid');
             if (!window.tvAppReady || typeof window.tvAppReady.then !== 'function') {
                 throw new Error('TV application did not initialize');
             }

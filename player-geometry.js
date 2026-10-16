@@ -46,8 +46,27 @@
         const columns = Math.max(integer(layout.columns, 1), span);
         const oldColumn = integer(current.column);
         const column = oldColumn + span <= columns ? oldColumn : Math.max(0, oldColumn - 1);
-        return build({ keys: layout.items.map(item => item.key), columns,
+        const keys = [...layout.items].sort((a, b) => a.row - b.row || a.column - b.column)
+            .map(item => item.key);
+        return build({ keys, columns,
             focus: { key, span, row: Math.max(0, integer(current.row) - 1), column } });
+    }
+
+    function shrink(layout, key) {
+        const current = layout?.items?.find(item => item.key === key);
+        if (!current || !(current.span > 1)) return layout;
+        const keys = [...layout.items].sort((a, b) => a.row - b.row || a.column - b.column)
+            .map(item => item.key);
+        const span = integer(current.span, 1) - 1;
+        const columns = Math.min(integer(layout.columns, 1), Math.max(span, span + keys.length - 1));
+        // Keep the square's origin; release its bottom/right edges into the grid.
+        // Visual order also keeps recent moves when the last extra cells vanish.
+        const next = build({ keys, columns, focus: span > 1 ? { ...current, span } : null });
+        const usedColumns = next.items.reduce((maximum, item) => Math.max(maximum, item.column + item.span), 1);
+        if (usedColumns === next.columns) return next;
+        // Remove only wholly empty columns on the right; every cell stays put.
+        const rows = next.items.reduce((maximum, item) => Math.max(maximum, item.row + item.span), 1);
+        return { ...next, columns: usedColumns, rows };
     }
 
     function swap(layout, source, target) {
@@ -104,7 +123,7 @@
         return { ...build({ keys, columns: best.columns, focus }), area: best.area };
     }
 
-    const api = { build, grow, swap, choose };
+    const api = { build, grow, shrink, swap, choose };
     if (typeof module === 'object' && module.exports) module.exports = api;
     else root.PlayerGeometry = api;
 })(typeof globalThis === 'object' ? globalThis : this);
