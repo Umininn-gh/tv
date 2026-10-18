@@ -1353,10 +1353,12 @@ function toggleChannelSelection() {
     const layer = document.createElement('div');
     layer.id = 'player-position-editor';
     layer.hidden = true;
+    layer.dataset.toolbarPosition = 'top';
     layer.innerHTML = `<div class="player-position-cells"></div>
         <div class="player-resize-preview" aria-hidden="true" hidden></div>
         <div class="player-position-toolbar"><span class="player-position-instructions">拖曳或點選兩格交換；方向鍵搬位，Esc 完成</span>
         <button class="player-position-shrink" type="button" hidden disabled>－ 縮小一格</button>
+        <button class="player-position-toolbar-toggle" type="button" title="將操作列移到播放區底部">↓ 移到底部</button>
         <button class="player-position-reset" type="button" title="還原全部播放器的大小及排列">↺ 重設佈局</button>
         <button class="player-position-done" type="button">✅ 完成搬位</button></div>
         <p class="player-position-announcement" role="status" aria-live="polite"></p>`;
@@ -1367,6 +1369,7 @@ function toggleChannelSelection() {
     const doneButton = layer.querySelector('.player-position-done');
     const editorResetButton = layer.querySelector('.player-position-reset');
     const shrinkButton = layer.querySelector('.player-position-shrink');
+    const toolbarToggle = layer.querySelector('.player-position-toolbar-toggle');
     const announcement = layer.querySelector('[role="status"]');
     const instructions = layer.querySelector('.player-position-instructions');
     let opened = false;
@@ -1563,6 +1566,14 @@ function toggleChannelSelection() {
         if (shrinkPlayer(focus.key)) announcement.textContent = `${name} 已縮小至 ${focus.span - 1}×${focus.span - 1}${focus.span === 2 ? '，已達最小單位，保留目前排列' : ''}`;
     });
     doneButton.addEventListener('click', () => close());
+    toolbarToggle.addEventListener('click', () => {
+        cancelPointer();
+        const bottom = layer.dataset.toolbarPosition !== 'bottom';
+        layer.dataset.toolbarPosition = bottom ? 'bottom' : 'top';
+        toolbarToggle.textContent = bottom ? '↑ 移到頂部' : '↓ 移到底部';
+        toolbarToggle.title = `將操作列移到播放區${bottom ? '頂部' : '底部'}`;
+        announcement.textContent = `操作列已移到播放區${bottom ? '底部' : '頂部'}`;
+    });
     document.addEventListener('keydown', event => {
         if (opened && event.key === 'Escape') {
             event.preventDefault();

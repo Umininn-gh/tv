@@ -928,8 +928,17 @@ async function startCornerDrag(f,key,corner){
     });
     const handle=cornerHandle(f,key,corner),bounds=await handle.boundingBox();assert.ok(bounds&&bounds.width>0&&bounds.height>0,'corner handle has a real hit target');
     const point={x:bounds.x+bounds.width/2,y:bounds.y+bounds.height/2};
-    const hit=await f.page.evaluate(({x,y})=>document.elementFromPoint(x,y)?.closest('.player-resize-handle')?.dataset.resizeCorner,point);
-    assert.equal(hit,corner,'the toolbar or another cell cannot cover a resize handle');
+    const hitTest=()=>f.page.evaluate(({x,y})=>{const hit=document.elementFromPoint(x,y);return {
+        corner:hit?.closest('.player-resize-handle')?.dataset.resizeCorner,toolbarButton:Boolean(hit?.closest('.player-position-toolbar button'))};
+    },point);
+    let hit=await hitTest();
+    // Toolbar buttons intentionally win pointer hits. Exercise the user-facing
+    // edge switch when one covers a corner, rather than clicking through it or
+    // bypassing the production pointer handlers with a synthetic event.
+    if(hit.corner!==corner&&hit.toolbarButton&&await f.page.locator('.player-position-toolbar-toggle').count()){
+        await f.page.locator('.player-position-toolbar-toggle').click();hit=await hitTest();
+    }
+    assert.equal(hit.corner,corner,'moving an overlapping toolbar must expose the real resize handle');
     const before=await readLayout(f),pitch=await trackPitch(f);
     await f.page.mouse.move(point.x,point.y);await f.page.mouse.down();
     return {key,corner,point,pitch,before,pointerId:await f.page.evaluate(()=>lastResizeFixturePointer)};
@@ -1110,5 +1119,83 @@ test('Chromium trusted touch input can drag a corner through native pointer capt
     const events=await f.page.evaluate(()=>cornerTrustedTouch);assert.ok(events.some(event=>event.type==='pointerdown'&&event.trusted&&event.primary));
     assert.ok(events.some(event=>event.type==='pointerup'&&event.trusted&&event.primary));
     await cdp.detach();
+    await assertContinuity(f,before);
+});
+
+async function assertToolbarPosition(f,position){
+    await f.page.waitForFunction(position=>document.getElementById('player-position-editor').dataset.toolbarPosition===position,position);
+    const value=await f.page.evaluate(()=>{
+        const editor=document.getElementById('player-position-editor'),toolbar=editor.querySelector('.player-position-toolbar'),toggle=toolbar.querySelector('.player-position-toolbar-toggle');
+        const rect=element=>{const value=element.getBoundingClientRect();return {left:value.left,top:value.top,right:value.right,bottom:value.bottom,width:value.width,height:value.height}};
+        return {editor:rect(editor),toolbar:rect(toolbar),label:toggle.textContent.trim(),focused:document.activeElement===toggle,
+            same:!window.fixtureToolbarToggle||window.fixtureToolbarToggle===toggle,viewport:{width:innerWidth,height:innerHeight},
+            buttons:Array.from(toolbar.querySelectorAll('button')).filter(button=>!button.hidden&&getComputedStyle(button).display!=='none').map(button=>{
+                const bounds=rect(button),hit=document.elementFromPoint(bounds.left+bounds.width/2,bounds.top+bounds.height/2);
+                return {label:button.textContent.trim(),rect:bounds,hit:hit?.closest('button')===button,
+                    target:hit?{tag:hit.tagName,className:hit.className,corner:hit.dataset.resizeCorner}:null};
+            })};
+    });
+    assert.match(value.label,position==='top'?/↓\s*移到底部/:/↑\s*移到頂部/);
+    assert.equal(value.same,true,'moving the toolbar preserves its actual toggle button');
+    const middle=value.toolbar.top+value.toolbar.height/2;
+    assert.ok(position==='top'?middle<value.editor.top+value.editor.height/2:middle>value.editor.top+value.editor.height/2,'the toolbar physically moves to the selected edge');
+    return value;
+}
+
+test('editor toolbar switches edges with pointer and keyboard, shares its choice across modes and preserves player geometry and playback',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948,players:17,storageSeed:cornerSeed}),before=await snapshot(f),initial=await readLayout(f);
+    const toggle=f.page.locator('.player-position-toolbar-toggle');
+    await f.page.locator('#adjust-player-positions').click();await assertToolbarPosition(f,'top');
+    await f.page.evaluate(()=>{window.fixtureToolbarToggle=document.querySelector('.player-position-toolbar-toggle')});
+    await toggle.click();await assertToolbarPosition(f,'bottom');
+    assert.deepEqual((await readLayout(f)).logical,initial.logical,'moving the toolbar cannot move, enlarge or reset a player');
+    await f.page.locator('.player-position-done').click();assert.equal((await geometry(f)).opened,false);
+    await f.page.locator('#enlarge-player').click();await assertToolbarPosition(f,'bottom');
+    await toggle.focus();await toggle.press('Enter');assert.equal((await assertToolbarPosition(f,'top')).focused,true);
+    assert.deepEqual((await readLayout(f)).logical,initial.logical,'keyboard toolbar activation cannot bubble into a size action');
+    await f.page.keyboard.press('Escape');assert.equal((await geometry(f)).opened,false);
+    await f.page.locator('#adjust-player-positions').click();await assertToolbarPosition(f,'top');
+    await toggle.focus();await toggle.press('Space');assert.equal((await assertToolbarPosition(f,'bottom')).focused,true);
+    await f.page.locator('.player-position-done').click();await f.page.locator('#enlarge-player').click();await assertToolbarPosition(f,'bottom');
+    const after=await readLayout(f);assert.deepEqual(after.logical,initial.logical);assert.equal(after.state.saved,initial.state.saved);
+    assertGeometry(after.state,{overlay:true});await assertContinuity(f,before);
+});
+
+test('editor toolbar buttons fit narrow mobile panes at either edge in both modes without changing players',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:300,height:480,viewport:{width:320,height:720},storageSeed:cornerSeed}),before=await snapshot(f);
+    const toggle=f.page.locator('.player-position-toolbar-toggle');
+    for(const width of [320,375,414]){
+        await f.page.setViewportSize({width,height:720});await settlePane(f,width-20,480);
+        for(const mode of ['move','enlarge']){
+            await f.page.locator(mode==='move'?'#adjust-player-positions':'#enlarge-player').click();
+            const initial=await readLayout(f);
+            for(const position of ['top','bottom']){
+                if(await f.page.locator('#player-position-editor').getAttribute('data-toolbar-position')!==position)await toggle.click();
+                const value=await assertToolbarPosition(f,position),box=value.toolbar;
+                for(const side of ['left','top'])assert.ok(box[side]>=value.editor[side]-.6,`${width}/${mode}/${position} toolbar ${side} stays in the pane`);
+                for(const side of ['right','bottom'])assert.ok(box[side]<=value.editor[side]+.6,`${width}/${mode}/${position} toolbar ${side} stays in the pane`);
+                assert.ok(box.left>=-.6&&box.right<=value.viewport.width+.6,'toolbar cannot cause horizontal viewport overflow');
+                assert.equal(value.buttons.length,mode==='move'?3:4);
+                for(const button of value.buttons){
+                    assert.ok(button.rect.width>0&&button.rect.height>0,button.label+' has a visible control');
+                    assert.ok(button.rect.left>=box.left-.6&&button.rect.right<=box.right+.6,button.label+' fits inside its wrapped toolbar');
+                    assert.ok(button.rect.top>=box.top-.6&&button.rect.bottom<=box.bottom+.6,button.label+' fits vertically inside its toolbar');
+                    if(!button.hit&&process.env.UMININN_CORNER_SCREENSHOT_DIR){
+                        const directory=path.resolve(process.env.UMININN_CORNER_SCREENSHOT_DIR);fs.mkdirSync(directory,{recursive:true});
+                        const label=engine==='firefox'?'firefox':/msedge/i.test(executablePath||'')?'edge':'chrome';
+                        await f.page.screenshot({path:path.join(directory,`player-toolbar-${label}-mobile-overlap.png`)});
+                    }
+                    assert.equal(button.hit,true,`${width}/${mode}/${position}: ${button.label} is not covered: ${JSON.stringify(button)}`);
+                }
+                const current=await readLayout(f);assert.deepEqual(current.logical,initial.logical);assertGeometry(current.state,{overlay:true});
+                if(width===320&&mode==='enlarge'&&position==='bottom'&&process.env.UMININN_CORNER_SCREENSHOT_DIR){
+                    const directory=path.resolve(process.env.UMININN_CORNER_SCREENSHOT_DIR);fs.mkdirSync(directory,{recursive:true});
+                    const label=engine==='firefox'?'firefox':/msedge/i.test(executablePath||'')?'edge':'chrome';
+                    await f.page.screenshot({path:path.join(directory,`player-toolbar-${label}-mobile-bottom.png`)});
+                }
+            }
+            await f.page.locator('.player-position-done').click();assert.equal((await geometry(f)).opened,false);
+        }
+    }
     await assertContinuity(f,before);
 });

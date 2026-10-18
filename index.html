@@ -626,7 +626,7 @@
             top: 8px;
             right: 8px;
             left: 8px;
-            z-index: 2;
+            z-index: 5;
             display: flex;
             flex-wrap: wrap;
             align-items: center;
@@ -640,11 +640,12 @@
             pointer-events: none;
         }
         .player-position-toolbar span { flex: 1 1 200px; }
+        #player-position-editor[data-toolbar-position="bottom"] .player-position-toolbar { top: auto; bottom: 8px; }
         .player-position-toolbar button { flex-shrink: 0; pointer-events: auto; }
         .player-position-toolbar button[hidden] { display: none; }
         .player-position-shrink:disabled { opacity: .45; cursor: default; }
         @media (max-width: 600px) {
-            .player-position-toolbar { flex-wrap: nowrap; gap: 4px; padding: 5px; }
+            .player-position-toolbar { flex-wrap: wrap; gap: 4px; padding: 5px; }
             .player-position-toolbar > .player-position-instructions { display: none; }
             .player-position-toolbar button { padding: 6px; min-height: 32px; font-size: .68rem; }
         }
@@ -1342,7 +1343,7 @@
     </style>
     <link rel="stylesheet" href="./login.css">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261018-corner-resize"></script>
+    <script defer src="./login.js?v=20261018-toolbar-position"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">
