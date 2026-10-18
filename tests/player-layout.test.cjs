@@ -58,7 +58,7 @@ test('zero or hidden panes retain columns until a usable measurement, including 
     assert.ok(Number.isFinite(grid(20, 0, 0).rows));
 });
 
-function fixture({ fallback = false, stabilizeResize = false, calculate = choose,
+function fixture({ fallback = false, stabilizeResize = false, getResizeStability = () => false, calculate = choose,
     width = 1400, height = 900 } = {}) {
     let clock = 0, next = 0, count = 6, deliveries = 0, changes = 0;
     const timers = new Map(), events = new Map();
@@ -82,7 +82,7 @@ function fixture({ fallback = false, stabilizeResize = false, calculate = choose
         disconnect() { observed = false; }
     };
     pane.ownerDocument = { defaultView: view };
-    const controller = observe(pane, { getCount: () => count, stabilizeResize,
+    const controller = observe(pane, { getCount: () => count, stabilizeResize, getResizeStability,
         calculate(options) { calculations.push(options); return calculate(options); },
         onChange: () => changes++ });
     function resize(width, height) {
@@ -331,4 +331,156 @@ test('deferred focus transitions notify once even when tracks, item positions an
     f.controller.update();
     assert.equal(f.changes, 4);
     assert.equal(f.calculations.length, 8);
+});
+
+test('enlargement stability retains a manual grid during proportional scaling and small aspect changes', () => {
+    const f = fixture({ width: 1000, height: 1000, getResizeStability: () => true,
+        calculate: options => !options.previous ? { count: options.count, columns: 5, rows: 2 } :
+            choose({ ...options, force: true }) });
+    f.controller.update();
+    assert.equal(f.controller.getColumns(), 5);
+    for (const [width, height] of [[3000, 3000], [500, 500], [1140, 1000]]) {
+        resizeAndFlush(f, width, height);
+        assert.equal(lastCalculation(f).preserveColumns, true);
+        assert.equal(f.controller.getColumns(), 5, 'manual columns need not be the optimal layout');
+    }
+    assert.equal(f.timers.size, 0);
+    f.controller.destroy();
+});
+
+test('enlargement aspect boundaries are inclusive on either side and ignore the old 32px limit', () => {
+    const f = fixture({ width: 1000, height: 1000, stabilizeResize: true,
+        getResizeStability: () => true,
+        calculate: options => ({ count: options.count, columns: 2, rows: 3 }) });
+    f.controller.update();
+    for (const [width, expected] of [[1033, true], [1150, true], [1151, false], [850, true], [849, false]]) {
+        resizeAndFlush(f, width, 1000);
+        assert.equal(lastCalculation(f).preserveColumns, expected, `width ${width}`);
+    }
+    resizeAndFlush(f, 1000, 2000);
+    assert.equal(lastCalculation(f).preserveColumns, false, 'a portrait transition can optimize');
+    f.controller.destroy();
+});
+
+test('failed optimization keeps the adopted aspect anchor across cumulative out-of-band measurements', () => {
+    const f = fixture({ width: 1000, height: 1000, getResizeStability: () => true,
+        calculate: options => ({ count: options.count, columns: 2, rows: 3 }) });
+    f.controller.update();
+    for (const width of [1140, 1150]) {
+        resizeAndFlush(f, width, 1000);
+        assert.equal(lastCalculation(f).preserveColumns, true);
+    }
+    for (const width of [1160, 1170, 1200]) {
+        resizeAndFlush(f, width, 1000);
+        assert.equal(lastCalculation(f).preserveColumns, false,
+            'an unchanged topology cannot re-arm the band at its latest measurement');
+    }
+    resizeAndFlush(f, 1100, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, true, 'returning to the adopted aspect is still stable');
+    f.controller.destroy();
+});
+
+test('an adopted topology establishes a new aspect anchor, including item-only geometry changes', () => {
+    let columns = 2, row = 0;
+    const f = fixture({ width: 1000, height: 1000, getResizeStability: () => true,
+        calculate: options => ({ count: options.count, columns, rows: Math.ceil(options.count / columns),
+            items: [{ key: 'focus', row, column: 0, span: 2 }] }) });
+    f.controller.update();
+    columns = 3;
+    resizeAndFlush(f, 1200, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, false);
+    resizeAndFlush(f, 1350, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, true);
+    row = 1;
+    f.controller.update();
+    resizeAndFlush(f, 1500, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, true,
+        'the new focus position adopted at 1350 supplies the reference');
+    f.controller.destroy();
+});
+
+test('explicit force and count changes reset enlargement stability without waiting for a ratio change', () => {
+    const f = fixture({ width: 1000, height: 1000, getResizeStability: () => true,
+        calculate: options => ({ count: options.count, columns: 2, rows: Math.ceil(options.count / 2) }) });
+    f.controller.update();
+    resizeAndFlush(f, 1100, 1000);
+    f.controller.update({ force: true });
+    assert.equal(lastCalculation(f).preserveColumns, false);
+    assert.equal(lastCalculation(f).force, true);
+    resizeAndFlush(f, 1250, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, true);
+    f.setCount(7);
+    assert.equal(lastCalculation(f).force, true);
+    assert.equal(lastCalculation(f).preserveColumns, false);
+    resizeAndFlush(f, 1430, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, true);
+    resizeAndFlush(f, 1440, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, false);
+    f.controller.destroy();
+});
+
+test('enlargement hidden and page lifecycle measurements retain the positive anchor and pending force', () => {
+    const f = fixture({ width: 1000, height: 1000, getResizeStability: () => true });
+    f.controller.update();
+    resizeAndFlush(f, 0, 0);
+    resizeAndFlush(f, 1120, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, true);
+    resizeAndFlush(f, 0, 1000);
+    f.events.get('pagehide')();
+    f.controller.update({ force: true });
+    f.events.get('pageshow')();
+    assert.equal(lastCalculation(f).force, true);
+    resizeAndFlush(f, 1120, 1000);
+    assert.equal(lastCalculation(f).force, true);
+    assert.equal(lastCalculation(f).preserveColumns, false);
+    resizeAndFlush(f, 1240, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, true);
+    f.controller.destroy();
+    assert.equal(f.timers.size, 0);
+    assert.equal(f.events.size, 0);
+});
+
+test('inactive or dormant enlargement keeps normal resize behavior and can activate without a stale anchor', () => {
+    let active = false;
+    const f = fixture({ width: 1000, height: 1000, stabilizeResize: true,
+        getResizeStability: () => active,
+        calculate: options => ({ count: options.count, columns: 2, rows: 3 }) });
+    f.controller.update();
+    resizeAndFlush(f, 1040, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, false, 'normal 32px band is unchanged');
+    active = true;
+    f.controller.update();
+    resizeAndFlush(f, 1180, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, true);
+    active = false;
+    resizeAndFlush(f, 1220, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, false);
+    active = true;
+    f.controller.update();
+    resizeAndFlush(f, 1380, 1000);
+    assert.equal(lastCalculation(f).preserveColumns, true, 'reactivation starts with the current adopted shape');
+    f.controller.destroy();
+});
+
+test('enlargement aspect gating and focused eighteen-percent gain work together', () => {
+    const geometry = require('../player-geometry.js');
+    const list = Array.from({ length: 6 }, (_, index) => `player-${index}`);
+    const focus = { key: list[0], span: 2, row: 0, column: 0 };
+    const f = fixture({ width: 700, height: 700, getResizeStability: () => true,
+        calculate(options) {
+            const next = !options.previous || options.preserveColumns ? geometry.build({ keys: list,
+                columns: options.previous?.columns || 2, focus }) : geometry.choose({ ...options, keys: list, focus });
+            return { ...next, count: options.count };
+        } });
+    f.controller.update();
+    resizeAndFlush(f, 780, 700);
+    assert.equal(f.controller.getColumns(), 2);
+    assert.equal(lastCalculation(f).preserveColumns, true);
+    resizeAndFlush(f, 815, 700);
+    assert.equal(lastCalculation(f).preserveColumns, false);
+    assert.equal(f.controller.getColumns(), 3);
+    resizeAndFlush(f, 920, 700);
+    assert.equal(lastCalculation(f).preserveColumns, true);
+    assert.equal(f.controller.getColumns(), 3);
+    f.controller.destroy();
 });

@@ -5,6 +5,7 @@
     const ASPECT = 16 / 9;
     const SWITCH_GAIN = 0.06;
     const RESIZE_DELAY = 180;
+    const ASPECT_RESIZE_BAND = 0.15;
 
     function choose({ count, width, height, columnGap = 0, rowGap = 0, previous, force = false,
         preserveColumns = false }) {
@@ -40,7 +41,7 @@
     }
 
     function observe(pane, { getCount, getTrackCount = getCount, calculate = choose,
-        stabilizeResize = false, onChange = () => {} }) {
+        stabilizeResize = false, getResizeStability = () => false, onChange = () => {} }) {
         const view = pane.ownerDocument?.defaultView;
         let current = null;
         let timer = null;
@@ -49,6 +50,7 @@
         let lastColumnGap;
         let lastRowGap;
         let reference = null;
+        let aspectReference = null;
         let pendingForce = false;
         const observer = view?.ResizeObserver ? new view.ResizeObserver(schedule) : null;
 
@@ -80,18 +82,29 @@
                 Math.max(2, Math.min(32, original * .05));
             const small = usable && reference && withinBand(width, reference.width) && withinBand(height, reference.height);
             const computedForce = Boolean(force || count !== current?.count || pendingForce);
+            const stableAspect = Boolean(getResizeStability());
+            const anchor = aspectReference || (usable ? { width, height } : null);
+            const similarAspect = usable && anchor && Math.abs((width / height) /
+                (anchor.width / anchor.height) - 1) <= ASPECT_RESIZE_BAND + Number.EPSILON;
             // Hidden panes still process logical changes; defer choosing tracks
             // for those changes until there is a useful measurement again.
             if (!usable && computedForce) pendingForce = true;
             const next = calculate({ count, width, height, columnGap, rowGap, previous: current,
                 force: computedForce,
-                preserveColumns: validPrevious && (!usable || Boolean(stabilizeResize && !computedForce && small)) });
+                preserveColumns: validPrevious && (!usable || (!computedForce &&
+                    (stableAspect ? Boolean(similarAspect) : Boolean(stabilizeResize && small)))) });
+            const topologyChanged = next.columns !== current?.columns || next.rows !== current?.rows ||
+                JSON.stringify(next.items) !== JSON.stringify(current?.items);
             if (usable) {
                 if (!reference || computedForce || !small) reference = { width, height };
+                // Anchor to the adopted logical layout, not each measurement:
+                // proportional scaling and cumulative small drags must not re-arm it.
+                if (stableAspect && (!aspectReference || computedForce || topologyChanged))
+                    aspectReference = { width, height };
                 pendingForce = false;
             }
-            const changed = next.columns !== current?.columns || next.rows !== current?.rows ||
-                JSON.stringify(next.items) !== JSON.stringify(current?.items) ||
+            if (!stableAspect) aspectReference = null;
+            const changed = topologyChanged ||
                 Boolean(next.deferredFocus) !== Boolean(current?.deferredFocus) ||
                 columnGap !== lastColumnGap || rowGap !== lastRowGap;
             current = next;

@@ -4,6 +4,7 @@
 
     const ASPECT = 16 / 9;
     const SWITCH_GAIN = 0.06;
+    const FOCUS_SWITCH_GAIN = 0.18;
     const integer = (value, minimum = 0) => Number.isFinite(Number(value)) ?
         Math.max(minimum, Math.floor(Number(value))) : minimum;
     const uniqueKeys = keys => Array.isArray(keys) ? [...new Set(keys)] : [];
@@ -69,6 +70,26 @@
         return { ...next, columns: usedColumns, rows };
     }
 
+    function resize(layout, key, span, corner = 'se') {
+        const current = layout?.items?.find(item => item.key === key);
+        if (!current) return layout;
+        span = Math.min(256, integer(span, 1));
+        if (!['nw', 'ne', 'sw', 'se'].includes(corner)) corner = 'se';
+        const keys = [...layout.items].sort((a, b) => a.row - b.row || a.column - b.column)
+            .map(item => item.key);
+        if (span === 1) return build({ keys,
+            columns: Math.min(768, integer(layout.columns, 1), Math.max(1, keys.length)) });
+
+        const delta = integer(current.span, 1) - span;
+        // Match the persisted UI schema, including repeated opposite-corner drags.
+        const row = Math.min(512, Math.max(0, integer(current.row) + (corner[0] === 'n' ? delta : 0)));
+        const column = Math.min(512, Math.max(0, integer(current.column) + (corner[1] === 'w' ? delta : 0)));
+        // Keep the opposite corner whenever it fits. Retaining existing columns
+        // also preserves a right-hand anchor when a west handle shrinks a square.
+        const columns = Math.min(768, Math.max(integer(layout.columns, 1), column + span));
+        return build({ keys, columns, focus: { key, span, row, column } });
+    }
+
     function swap(layout, source, target) {
         const keys = layout?.items?.map(item => item.key) || [];
         const sourceIndex = keys.indexOf(source), targetIndex = keys.indexOf(target);
@@ -85,14 +106,15 @@
     }
 
     function choose({ keys, width, height, columnGap = 0, rowGap = 0, previous,
-        focus, force = false } = {}) {
+        focus, force = false, preserveAnchor = false } = {}) {
         keys = uniqueKeys(keys);
         if (!keys.length) return { ...build(), area: 0 };
         focus = getFocus(keys, focus);
-        const minimum = focus?.span || 1;
+        const span = focus?.span || 1;
+        const minimum = preserveAnchor && focus ? focus.column + span : span;
         // Beyond this width all ordinary players already fit beside the square.
-        const maximum = minimum + keys.length - 1;
-        const occupiedArea = keys.length + minimum * minimum - 1;
+        const maximum = Math.max(minimum, span + keys.length - 1);
+        const occupiedArea = keys.length + span * span - 1;
         const oldColumns = previous?.columns;
         const validPrevious = Number.isInteger(oldColumns) && oldColumns >= minimum && oldColumns <= maximum;
         const nonnegative = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
@@ -118,12 +140,13 @@
         }
         if (!force && validPrevious) {
             const current = measure(oldColumns);
-            if (best.area <= current.area * (1 + SWITCH_GAIN)) best = current;
+            const gain = focus ? FOCUS_SWITCH_GAIN : SWITCH_GAIN;
+            if (best.area <= current.area * (1 + gain)) best = current;
         }
         return { ...build({ keys, columns: best.columns, focus }), area: best.area };
     }
 
-    const api = { build, grow, shrink, swap, choose };
+    const api = { build, grow, shrink, resize, swap, choose };
     if (typeof module === 'object' && module.exports) module.exports = api;
     else root.PlayerGeometry = api;
 })(typeof globalThis === 'object' ? globalThis : this);

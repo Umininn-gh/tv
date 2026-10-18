@@ -126,8 +126,8 @@ fixture.grid=function(){const pane=document.getElementById('multi-stream-contain
 };
 fixture.mount();fixture.initialGrid=fixture.grid();fixture.initialGeometry=fixture.geometry();`;
 
-async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5}={}){
-    const context=await browser.newContext({viewport,serviceWorkers:'block'});t.after(()=>context.close());
+async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,hasTouch=false}={}){
+    const context=await browser.newContext({viewport,serviceWorkers:'block',...(hasTouch?{hasTouch:true}:{})});t.after(()=>context.close());
     if(storageSeed||denyStorage)await context.addInitScript(({storageSeed,denyStorage,origin})=>{
         if(location.origin!==origin)return;
         if(storageSeed)for(const [key,value]of Object.entries(storageSeed))localStorage.setItem(key,value);
@@ -746,12 +746,15 @@ test('size actions optimize seventeen players immediately and small pane changes
 });
 
 test('tiny resize increments eventually adapt after a meaningful cumulative pane change instead of moving the stability reference forever',{skip:!enabled,timeout:30000},async t=>{
-    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948}),before=await snapshot(f),key=await seventeenPlayers(f);
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948,viewport:{width:3000,height:1300}}),before=await snapshot(f),key=await seventeenPlayers(f);
     await f.page.evaluate(key=>{enlargePlayer(key);enlargePlayer(key)},key);const initial=await readLayout(f);assert.equal(initial.grid.columns,5);
-    // Each 30 px step is inside the 32 px band at these widths. Anchoring the
-    // band to the last decision, rather than every observation, must still allow
-    // the accumulated 990 px difference to select the wider seven-column grid.
-    for(let step=1;step<=33;step++)await settlePane(f,1508+step*30,948);
+    // Each 30 px step is small. The enlarged-layout aspect reference must stay
+    // anchored to its last adopted topology. At 2498px the seven-column gain
+    // is still below the new 18% threshold; 2588px is large enough to adapt.
+    for(let step=1;step<=36;step++){
+        await settlePane(f,1508+step*30,948);
+        if(step===33)assert.equal((await readLayout(f)).grid.columns,5,'a gain below 18 percent retains the enlarged layout');
+    }
     const wide=await readLayout(f);assert.equal(wide.grid.columns,7);assert.equal(wide.grid.rows,4);
     assert.deepEqual(withoutFocus(wide.state.order,key),withoutFocus(initial.state.order,key));assertGeometry(wide.state,{overlay:true});assertFits(wide.grid);
     await settlePane(f,1508,948);const returned=await readLayout(f);assert.equal(returned.grid.columns,5);assert.equal(returned.grid.rows,5);
@@ -908,4 +911,204 @@ test('channel-name text is safely renamed without rebuilding players and follows
     await f.page.locator('#more-channels-btn').click();assert.equal((await nameGeometry(f)).hidden,true);
     await f.page.evaluate(()=>{fixture.entries[1].resource.element.style.width='60%'});
     await f.page.locator('#more-channels-btn').click();assertNameGeometry(await waitNames(f));
+});
+
+function cornerHandle(f,key,corner){return positionCell(f,key).locator(`.player-resize-handle[data-resize-corner="${corner}"]`)}
+async function trackPitch(f){
+    return f.page.evaluate(()=>{
+        const style=getComputedStyle(document.getElementById('multi-stream-container'));
+        return {x:parseFloat(style.gridTemplateColumns)+(parseFloat(style.columnGap)||0),
+            y:parseFloat(style.gridTemplateRows)+(parseFloat(style.rowGap)||0)};
+    });
+}
+async function startCornerDrag(f,key,corner){
+    await f.page.evaluate(()=>{
+        if(window.resizeFixturePointerHook)return;window.resizeFixturePointerHook=true;
+        document.addEventListener('pointerdown',event=>{window.lastResizeFixturePointer=event.pointerId},true);
+    });
+    const handle=cornerHandle(f,key,corner),bounds=await handle.boundingBox();assert.ok(bounds&&bounds.width>0&&bounds.height>0,'corner handle has a real hit target');
+    const point={x:bounds.x+bounds.width/2,y:bounds.y+bounds.height/2};
+    const hit=await f.page.evaluate(({x,y})=>document.elementFromPoint(x,y)?.closest('.player-resize-handle')?.dataset.resizeCorner,point);
+    assert.equal(hit,corner,'the toolbar or another cell cannot cover a resize handle');
+    const before=await readLayout(f),pitch=await trackPitch(f);
+    await f.page.mouse.move(point.x,point.y);await f.page.mouse.down();
+    return {key,corner,point,pitch,before,pointerId:await f.page.evaluate(()=>lastResizeFixturePointer)};
+}
+async function moveCornerDrag(f,drag,x,y=x,{steps=8}={}){
+    const east=drag.corner.endsWith('e')?1:-1,south=drag.corner.startsWith('s')?1:-1;
+    await f.page.mouse.move(drag.point.x+east*x*drag.pitch.x,drag.point.y+south*y*drag.pitch.y,{steps});
+}
+async function assertPreviewOnly(f,drag){
+    await f.page.waitForFunction(()=>{const preview=document.querySelector('.player-resize-preview');return preview&&!preview.hidden&&getComputedStyle(preview).display!=='none'});
+    const current=await readLayout(f);assert.deepEqual(current.logical,drag.before.logical,'pointermove can preview but cannot commit geometry');
+    assert.equal(current.state.saved,drag.before.state.saved,'pointermove cannot persist a tentative size');
+    assert.equal(await f.page.locator('.player-resize-preview').evaluate(element=>getComputedStyle(element).pointerEvents),'none');
+}
+async function assertResizeIdle(f){
+    assert.equal(await f.page.locator('.player-resize-preview').isVisible(),false);
+    assert.equal(await f.page.locator('.position-dragging,.position-target,.position-resizing').count(),0);
+}
+async function captureCornerPreview(f){
+    if(!process.env.UMININN_CORNER_SCREENSHOT_DIR)return;
+    const directory=path.resolve(process.env.UMININN_CORNER_SCREENSHOT_DIR);fs.mkdirSync(directory,{recursive:true});
+    const label=engine==='firefox'?'firefox':/msedge/i.test(executablePath||'')?'edge':'chrome';
+    await f.page.locator('#multi-stream-container-wrapper').screenshot({path:path.join(directory,`corner-resize-${label}-preview.png`)});
+}
+const cornerSeed={playerEnlargementLayout:JSON.stringify({version:1,columns:5,focus:{key:'m3u8|layout-0',span:3,row:1,column:1}})};
+
+test('corner resize previews four outward/inward directions and commits only once on release without interrupting media',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948,players:17,storageSeed:cornerSeed}),before=await snapshot(f),key='m3u8|layout-0';
+    await f.page.locator('#enlarge-player').click();await waitSpan(f,key,3);
+    for(const corner of ['nw','ne','sw','se']){
+        const outward=await startCornerDrag(f,key,corner);await moveCornerDrag(f,outward,.8);await assertPreviewOnly(f,outward);
+        await f.page.mouse.up();const grown=await waitSpan(f,key,4);assertGeometry(grown,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));await assertResizeIdle(f);
+        // A new gesture snapshots the reflowed pitch, instead of continuing to
+        // use measurements from before the previous grow action.
+        const inward=await startCornerDrag(f,key,corner);await moveCornerDrag(f,inward,-.8);await assertPreviewOnly(f,inward);
+        await f.page.mouse.up();const shrunk=await waitSpan(f,key,3);assertGeometry(shrunk,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));
+        await f.page.waitForTimeout(220);assert.equal(spans(await geometry(f))[key],3,'mouseup/click and an old resize timer cannot add a second size change');
+    }
+    await assertContinuity(f,before);
+});
+
+test('corner resize uses the dominant normalized start pitch across multiple cells, including release outside the pane',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948,players:17,storageSeed:cornerSeed}),before=await snapshot(f),key='m3u8|layout-0';
+    await f.page.locator('#enlarge-player').click();const drag=await startCornerDrag(f,key,'se');
+    await moveCornerDrag(f,drag,1.2,-.2);await assertPreviewOnly(f,drag);
+    await moveCornerDrag(f,drag,2.2,-.3,{steps:14});await assertPreviewOnly(f,drag);
+    // Horizontal outward movement dominates the smaller vertical inward move;
+    // the one release jumps from span 3 to span 5, rather than growing per move.
+    await f.page.mouse.up();const grown=await waitSpan(f,key,5);assertGeometry(grown,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));
+    await f.page.waitForTimeout(260);assert.equal(spans(await geometry(f))[key],5);
+    const shrink=await startCornerDrag(f,key,'sw');await moveCornerDrag(f,shrink,-.8,.2);await assertPreviewOnly(f,shrink);await captureCornerPreview(f);
+    await f.page.mouse.up();assertGeometry(await waitSpan(f,key,4),{overlay:true});await assertResizeIdle(f);await assertContinuity(f,before);
+});
+
+test('handle clicks and subthreshold drags do not grow a player, while center and keyboard activation remain usable',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]);
+    await f.page.locator('#adjust-player-positions').click();assert.equal(await cornerHandle(f,key,'se').isVisible(),false);
+    await f.page.locator('#enlarge-player').click();
+    assert.equal(await positionCell(f,key).locator('span.player-resize-handle[aria-hidden="true"]').count(),4);
+    for(const corner of ['nw','ne','sw','se'])await cornerHandle(f,key,corner).click();
+    assert.equal((await geometry(f)).layout,null,'a corner click cannot bubble into the center enlarge action');
+    const tap=await startCornerDrag(f,key,'se');await f.page.mouse.move(tap.point.x+2,tap.point.y+2);await f.page.mouse.up();
+    assert.equal((await geometry(f)).layout,null);await assertResizeIdle(f);
+    await positionCell(f,key).press('Enter');await waitSpan(f,key,2);
+    const below=await startCornerDrag(f,key,'se');await moveCornerDrag(f,below,.49,0);await f.page.mouse.up();assert.equal(spans(await geometry(f))[key],2,'less than half a start track rounds to no size change');
+    const above=await startCornerDrag(f,key,'se');await moveCornerDrag(f,above,.65,0);await f.page.mouse.up();await waitSpan(f,key,3);
+    // Shrink can reach the normal single cell. It cannot create a zero span or
+    // allow a later center click to be swallowed by stale drag suppression.
+    const minimum=await startCornerDrag(f,key,'se');await moveCornerDrag(f,minimum,-2.2,0);await f.page.mouse.up();await waitSingleCells(f);
+    await positionCell(f,key).click();await waitSpan(f,key,2);await assertContinuity(f,before);
+});
+
+test('corner resize cancellation clears its preview and cannot leak a commit into the next mode or selection',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948,players:17,storageSeed:cornerSeed}),before=await snapshot(f),key='m3u8|layout-0';
+    await f.page.locator('#enlarge-player').click();
+    for(const reason of ['pointercancel','lostcapture','blur','resize','mode','selection','escape']){
+        if((await geometry(f)).mode!=='enlarge')await f.page.locator('#enlarge-player').click();
+        const drag=await startCornerDrag(f,key,'se');await moveCornerDrag(f,drag,.8);await assertPreviewOnly(f,drag);
+        if(reason==='pointercancel')await f.page.evaluate(id=>document.dispatchEvent(new PointerEvent('pointercancel',{pointerId:id,pointerType:'mouse',isPrimary:true,bubbles:true})),drag.pointerId);
+        if(reason==='lostcapture'){
+            assert.equal(await f.page.evaluate(id=>{const owner=Array.from(document.querySelectorAll('*')).find(element=>element.hasPointerCapture?.(id));if(!owner)return false;owner.releasePointerCapture(id);return true},drag.pointerId),true);
+            await f.page.mouse.move(drag.point.x+1,drag.point.y+1);
+        }
+        if(reason==='blur')await f.page.evaluate(()=>dispatchEvent(new Event('blur')));
+        if(reason==='resize')await settlePane(f,1510,950);
+        if(reason==='mode')await f.page.evaluate(()=>document.getElementById('adjust-player-positions').click());
+        if(reason==='selection')await f.page.evaluate(()=>{const channel={id:'resize-cancel-extra',platform:'at',name:'本地取消測試'};fixture.addPlaceholder(channel);syncActivePlayers([...channels,channel])});
+        if(reason==='escape')await f.page.keyboard.press('Escape');
+        const canceled=await readLayout(f);await f.page.mouse.up();await assertResizeIdle(f);
+        assert.deepEqual((await readLayout(f)).logical,canceled.logical,reason+' must not commit on a late pointerup/click');
+        assert.equal(spans(await geometry(f))[key],3,reason+' preserves the active span');
+        if(reason==='escape'){
+            assert.equal((await geometry(f)).opened,true,'first Escape cancels only the resize');
+            await f.page.keyboard.press('Escape');assert.equal((await geometry(f)).opened,false);await f.page.locator('#enlarge-player').click();
+        }
+        if(reason==='selection')await f.page.evaluate(()=>syncActivePlayers(channels));
+    }
+    const fresh=await startCornerDrag(f,key,'se');await moveCornerDrag(f,fresh,.8);await f.page.mouse.up();await waitSpan(f,key,4);
+    await assertContinuity(f,before);
+});
+
+test('a second pointer cannot steal or finish a corner resize and changing focus keeps exactly one enlarged player',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948,players:17,storageSeed:cornerSeed}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys),key=keys[0];
+    await f.page.locator('#enlarge-player').click();const drag=await startCornerDrag(f,key,'se');await moveCornerDrag(f,drag,.8);await assertPreviewOnly(f,drag);
+    await f.page.evaluate(({id,x,y,key})=>{
+        const other=Array.from(document.querySelectorAll('.player-position-cell')).find(cell=>cell.dataset.playerKey===key).querySelector('[data-resize-corner="se"]');
+        other.dispatchEvent(new PointerEvent('pointerdown',{pointerId:id+100,pointerType:'touch',isPrimary:false,button:0,bubbles:true,clientX:x,clientY:y}));
+        for(const type of ['pointermove','pointerup'])document.dispatchEvent(new PointerEvent(type,{pointerId:id+100,pointerType:'touch',isPrimary:false,button:0,bubbles:true,clientX:x,clientY:y}));
+    },{id:drag.pointerId,x:drag.point.x,y:drag.point.y,key:keys[1]});
+    await assertPreviewOnly(f,drag);await f.page.mouse.up();await waitSpan(f,key,4);
+    const next=await startCornerDrag(f,keys[1],'se');await moveCornerDrag(f,next,.8);await f.page.mouse.up();
+    const changed=await waitSpan(f,keys[1],2);assert.equal(spans(changed)[key],1);assert.equal(changed.layout.items.filter(item=>item.span>1).length,1);
+    assertGeometry(changed,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));await assertResizeIdle(f);await assertContinuity(f,before);
+});
+
+test('real viewport jitter preserves an enlarged layout while a large portrait resize can still adapt',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948}),before=await snapshot(f),key=await seventeenPlayers(f);
+    await f.page.setViewportSize({width:1548,height:1018});
+    await f.page.evaluate(()=>{const host=document.getElementById('multi-stream-container-wrapper');host.style.width='calc(100vw - 40px)';host.style.height='calc(100vh - 70px)'});
+    await f.page.waitForTimeout(240);await f.page.evaluate(key=>{enlargePlayer(key);enlargePlayer(key)},key);
+    const initial=await readLayout(f);assert.equal(spans(initial.state)[key],3);
+    for(const viewport of [{width:1549,height:1019},{width:1488,height:1048},{width:1618,height:988},{width:1528,height:1058},{width:1548,height:1018}]){
+        await f.page.setViewportSize(viewport);await f.page.waitForTimeout(240);const current=await readLayout(f);
+        assert.deepEqual(current.logical,initial.logical,`small actual viewport ${viewport.width}x${viewport.height} must not jump cells`);
+        assertGeometry(current.state,{overlay:true});assertFits(current.grid);
+    }
+    await f.page.setViewportSize({width:400,height:1100});await f.page.waitForTimeout(280);const portrait=await readLayout(f);
+    assert.notEqual(portrait.grid.columns,initial.grid.columns,'a major orientation change cannot permanently lock unsuitable columns');
+    assert.equal(spans(portrait.state)[key],3);assert.deepEqual(withoutFocus(portrait.state.order,key),withoutFocus(initial.state.order,key));
+    assertGeometry(portrait.state,{overlay:true});assertFits(portrait.grid);await assertContinuity(f,before);
+});
+
+test('a mouse button chord cannot commit a corner resize after the primary button has been released',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948,players:17,storageSeed:cornerSeed}),before=await snapshot(f),key='m3u8|layout-0';
+    await f.page.locator('#enlarge-player').click();const drag=await startCornerDrag(f,key,'se');await moveCornerDrag(f,drag,.8);await assertPreviewOnly(f,drag);
+    await f.page.evaluate(({id,x,y})=>{
+        // Left is no longer held, while right is still pressed. The subsequent
+        // right-button release must not finish the old primary-button gesture.
+        document.dispatchEvent(new PointerEvent('pointermove',{pointerId:id,pointerType:'mouse',isPrimary:true,button:-1,buttons:2,bubbles:true,cancelable:true,clientX:x,clientY:y}));
+        document.dispatchEvent(new PointerEvent('pointerup',{pointerId:id,pointerType:'mouse',isPrimary:true,button:2,buttons:0,bubbles:true,clientX:x,clientY:y}));
+    },{id:drag.pointerId,x:drag.point.x+drag.pitch.x*.8,y:drag.point.y+drag.pitch.y*.8});
+    await assertResizeIdle(f);assert.deepEqual((await readLayout(f)).logical,drag.before.logical);
+    await f.page.mouse.up();assert.equal(spans(await geometry(f))[key],3);
+    const fresh=await startCornerDrag(f,key,'se');await moveCornerDrag(f,fresh,.8);await f.page.mouse.up();assertGeometry(await waitSpan(f,key,4),{overlay:true});
+    await assertContinuity(f,before);
+});
+
+test('a pane change and pointerup in the same task cannot commit a resize using stale start geometry',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948,players:17,storageSeed:cornerSeed}),before=await snapshot(f),key='m3u8|layout-0';
+    await f.page.locator('#enlarge-player').click();const drag=await startCornerDrag(f,key,'se');await moveCornerDrag(f,drag,.8);await assertPreviewOnly(f,drag);
+    const immediate=await f.page.evaluate(({id,x,y,key})=>{
+        const host=document.getElementById('multi-stream-container-wrapper');host.style.height=(host.getBoundingClientRect().height+100)+'px';
+        // There is deliberately no await/rAF/RO opportunity between changing the
+        // box and releasing the pointer. The release must validate current bounds.
+        document.dispatchEvent(new PointerEvent('pointerup',{pointerId:id,pointerType:'mouse',isPrimary:true,button:0,buttons:0,bubbles:true,clientX:x,clientY:y}));
+        return {span:playerGeometry.items.find(item=>item.key===key).span,saved:localStorage.getItem('playerEnlargementLayout')};
+    },{id:drag.pointerId,x:drag.point.x+drag.pitch.x*.8,y:drag.point.y+drag.pitch.y*.8,key});
+    assert.equal(immediate.span,3);assert.equal(immediate.saved,drag.before.state.saved);
+    await f.page.mouse.up();await f.page.waitForTimeout(260);await assertResizeIdle(f);assert.equal(spans(await geometry(f))[key],3);
+    assertGeometry(await geometry(f),{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));await assertContinuity(f,before);
+});
+
+test('Chromium trusted touch input can drag a corner through native pointer capture without restarting media',{
+    skip:!enabled||engine!=='chromium',timeout:30000
+},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1508,height:948,players:17,storageSeed:cornerSeed,hasTouch:true}),before=await snapshot(f),key='m3u8|layout-0';
+    await f.page.locator('#enlarge-player').click();const start=await readLayout(f),pitch=await trackPitch(f),bounds=await cornerHandle(f,key,'se').boundingBox();
+    assert.ok(bounds);const x=bounds.x+bounds.width/2,y=bounds.y+bounds.height/2;
+    await f.page.evaluate(()=>{window.cornerTrustedTouch=[];for(const type of ['pointerdown','pointerup'])document.addEventListener(type,event=>{
+        if(event.pointerType==='touch')cornerTrustedTouch.push({type,trusted:event.isTrusted,primary:event.isPrimary});
+    },true)});
+    const cdp=await f.page.context().newCDPSession(f.page);
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{id:1,x,y,radiusX:1,radiusY:1,force:1}]});
+    for(let step=1;step<=8;step++)await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{id:1,x:x+pitch.x*.8*step/8,y:y+pitch.y*.8*step/8,radiusX:1,radiusY:1,force:1}]});
+    await assertPreviewOnly(f,{before:start});
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    const grown=await waitSpan(f,key,4);assertGeometry(grown,{overlay:true});await assertResizeIdle(f);
+    const events=await f.page.evaluate(()=>cornerTrustedTouch);assert.ok(events.some(event=>event.type==='pointerdown'&&event.trusted&&event.primary));
+    assert.ok(events.some(event=>event.type==='pointerup'&&event.trusted&&event.primary));
+    await cdp.detach();
+    await assertContinuity(f,before);
 });

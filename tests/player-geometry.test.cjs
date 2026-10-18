@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { build, grow, shrink, swap, choose } = require('../player-geometry.js');
+const { build, grow, shrink, resize, swap, choose } = require('../player-geometry.js');
 
 const keys = count => Array.from({ length: count }, (_, index) => `player-${index}`);
 const item = (layout, key) => layout.items.find(value => value.key === key);
@@ -259,6 +259,58 @@ test('adaptive columns score contained base video area and preserve the focus an
     }
 });
 
+test('a six-player corner enlargement optimizes to three columns without shifting its logical anchor', () => {
+    const list = keys(6), before = build({ keys: list, columns: 2 });
+    const resized = resize(before, list[0], 2, 'se');
+    assert.equal(resized.columns, 2);
+    assert.equal(resized.rows, 5);
+    const focus = item(resized, list[0]);
+    const fitted = choose({ keys: visualKeys(resized), width: 930, height: 601,
+        columnGap: 10, rowGap: 10, focus, force: true, preserveAnchor: true });
+    assert.equal(fitted.columns, 3);
+    assert.equal(fitted.rows, 3);
+    assert.deepEqual(item(fitted, focus.key), focus);
+    assert.ok(fitted.area > measuredArea(resized, 930, 601, 10, 10));
+    assertLayout(fitted, list);
+});
+
+test('anchor-preserving optimization never clamps the focus column, including hidden and sparse grids', () => {
+    const list = keys(12), focus = { key: list[7], span: 3, row: 2, column: 4 };
+    const savedFocus = JSON.stringify(focus);
+    for (const [width, height] of [[380, 900], [1920, 500], [0, 900]]) {
+        const fitted = choose({ keys: list, width, height, columnGap: 10, rowGap: 10,
+            focus, force: true, preserveAnchor: true, previous: { columns: 3 } });
+        assert.ok(fitted.columns >= 7);
+        assert.deepEqual(item(fitted, focus.key), focus);
+        assertLayout(fitted, list);
+        if (width > 0) {
+            for (let columns = 7; columns <= 14; columns++) {
+                const candidate = build({ keys: list, columns, focus });
+                assert.ok(fitted.area + .011 >= measuredArea(candidate, width, height, 10, 10));
+            }
+        }
+    }
+    const normal = choose({ keys: list, width: 380, height: 900, focus, force: true });
+    assert.ok(item(normal, focus.key).column < focus.column, 'legacy optimization may still clamp its anchor');
+    const sparse = { key: list[0], span: 4, row: 3, column: 512 };
+    const fitted = choose({ keys: list, width: 930, height: 601, focus: sparse,
+        force: true, preserveAnchor: true });
+    assert.equal(fitted.columns, 516);
+    assert.deepEqual(item(fitted, sparse.key), sparse);
+    assertLayout(fitted, list);
+    assert.equal(JSON.stringify(focus), savedFocus);
+});
+
+test('anchor-preserving optimization uses the square area rather than the minimum column count', () => {
+    const list = keys(15), focus = { key: list[3], span: 2, row: 0, column: 3 };
+    const fitted = choose({ keys: list, width: 2000, height: 900, focus,
+        columnGap: 10, rowGap: 10, force: true, preserveAnchor: true });
+    assert.ok(Math.abs(fitted.area - measuredArea(fitted, 2000, 900, 10, 10)) < .001);
+    assert.equal(fitted.rows, Math.ceil((list.length + 3) / fitted.columns));
+    assert.deepEqual(choose({ keys: list, width: 930, height: 601, preserveAnchor: true }),
+        choose({ keys: list, width: 930, height: 601 }), 'normal layouts retain existing behavior');
+});
+
 test('hysteresis retains near-equivalent columns and hidden panes retain their previous columns', () => {
     const list = keys(6), options = { keys: list, columnGap: 10, rowGap: 10 };
     const previous = choose({ ...options, width: 1200, height: 700 });
@@ -326,6 +378,173 @@ function measuredArea(layout, width, height, columnGap, rowGap) {
     const cellHeight = Math.max(0, (height - rowGap * (layout.rows - 1)) / layout.rows);
     return Math.min(cellWidth, cellHeight * 16 / 9) ** 2 / (16 / 9);
 }
+
+for (const corner of ['nw', 'ne', 'sw', 'se']) {
+    test(`corner resize ${corner} preserves the opposite corner for growth and shrink`, () => {
+        const list = keys(20), key = list[12];
+        const before = build({ keys: list, columns: 10,
+            focus: { key, span: 4, row: 4, column: 4 } });
+        const saved = JSON.stringify(before);
+        const opposite = value => ({ row: value.row + (corner[0] === 'n' ? value.span : 0),
+            column: value.column + (corner[1] === 'w' ? value.span : 0) });
+        for (const span of [2, 6]) {
+            const next = resize(before, key, span, corner);
+            assert.deepEqual(opposite(item(next, key)), opposite(item(before, key)));
+            assert.equal(item(next, key).span, span);
+            assert.deepEqual(next.items.map(value => value.key), visualKeys(before));
+            assert.deepEqual(visualKeys(next).filter(value => value !== key),
+                visualKeys(before).filter(value => value !== key));
+            assertLayout(next, list);
+            assertFirstFreePacking(next);
+        }
+        assert.equal(JSON.stringify(before), saved);
+    });
+}
+
+test('corner resize clamps top/left growth and expands the grid for a right-hand edge', () => {
+    const list = keys(10), key = list[0];
+    const pinned = build({ keys: list, columns: 5,
+        focus: { key, span: 2, row: 0, column: 0 } });
+    const grown = resize(pinned, key, 8, 'nw');
+    assert.deepEqual(item(grown, key), { key, span: 8, row: 0, column: 0 });
+    assert.equal(grown.columns, 8);
+    assertLayout(grown, list);
+    const ordinary = build({ keys: list, columns: 5 });
+    const edge = resize(ordinary, list[4], 4, 'se');
+    assert.deepEqual(item(edge, list[4]), { key: list[4], span: 4, row: 0, column: 4 });
+    assert.equal(edge.columns, 8);
+    assertLayout(edge, list);
+});
+
+test('west-corner shrink retains the existing right anchor even beyond the optimal column range', () => {
+    const list = keys(2), key = list[0];
+    const before = build({ keys: list, columns: 5,
+        focus: { key, span: 4, row: 1, column: 1 } });
+    for (const corner of ['nw', 'sw']) {
+        const next = resize(before, key, 2, corner);
+        assert.equal(next.columns, 5);
+        assert.equal(item(next, key).column, 3);
+        assert.equal(item(next, key).column + item(next, key).span, 5);
+        assertLayout(next, list);
+    }
+});
+
+test('corner resize switches the sole focus and span one returns the visual order to a normal grid', () => {
+    const list = keys(15), key = list[7], other = list[14];
+    const before = build({ keys: list, columns: 6,
+        focus: { key, span: 3, row: 1, column: 1 } });
+    const next = resize(before, other, 2, 'ne');
+    assert.equal(item(next, key).span, 1);
+    assert.equal(item(next, other).span, 2);
+    assertLayout(next, list);
+    const normal = resize(next, key, 1, 'nw');
+    assert.ok(normal.items.every(value => value.span === 1));
+    assert.deepEqual(visualKeys(normal), visualKeys(next));
+    assertLayout(normal, list);
+    const sparse = resize(build({ keys: keys(2), columns: 5,
+        focus: { key: 'player-0', span: 4, row: 1, column: 1 } }), 'player-0', 1);
+    assert.equal(sparse.columns, 2);
+});
+
+test('corner resize normalizes span and corner without mutating input or inventing a missing key', () => {
+    const list = keys(4), before = build({ keys: list, columns: 2 }), saved = JSON.stringify(before);
+    for (const [input, expected] of [[0, 1], [-4, 1], [NaN, 1], [Infinity, 1], [-Infinity, 1],
+        [undefined, 1], ['3.9', 3], [2.9, 2], [256, 256], [999, 256]]) {
+        const next = resize(before, list[1], input);
+        assert.equal(item(next, list[1]).span, expected);
+        assertLayout(next, list);
+    }
+    assert.deepEqual(resize(before, list[1], 3, 'unknown'), resize(before, list[1], 3, 'se'));
+    assert.equal(resize(before, 'missing', 3), before);
+    assert.equal(resize(undefined, 'missing', 3), undefined);
+    assert.equal(JSON.stringify(before), saved);
+});
+
+test('repeated opposite-corner resizes stay inside saved-schema limits and restore every player', () => {
+    const list = keys(8), key = list[3];
+    let layout = build({ keys: list, columns: 6,
+        focus: { key, span: 2, row: 0, column: 0 } });
+    for (let step = 0; step < 20; step++) {
+        const span = step % 2 ? 2 : 256, corner = step % 2 ? 'nw' : 'se';
+        const before = JSON.stringify(layout), next = resize(layout, key, span, corner);
+        const saved = JSON.parse(JSON.stringify({ version: 1, columns: next.columns,
+            focus: item(next, key) }));
+        assert.ok(saved.focus.span >= 2 && saved.focus.span <= 256);
+        assert.ok(Number.isInteger(saved.focus.row) && saved.focus.row >= 0 && saved.focus.row <= 512);
+        assert.ok(Number.isInteger(saved.focus.column) && saved.focus.column >= 0 && saved.focus.column <= 512);
+        assert.ok(Number.isInteger(saved.columns) && saved.columns >= saved.focus.span && saved.columns <= 768);
+        const restored = build({ keys: visualKeys(next), columns: saved.columns, focus: saved.focus });
+        assert.equal(restored.columns, next.columns);
+        assert.equal(restored.rows, next.rows);
+        for (const value of next.items) assert.deepEqual(item(restored, value.key), value);
+        assert.equal(JSON.stringify(layout), before);
+        assertLayout(next, list);
+        layout = next;
+    }
+    assert.equal(item(layout, key).row, 512);
+    assert.equal(item(layout, key).column, 512);
+    assert.equal(layout.columns, 768);
+});
+
+test('corner resize preserves the opposite anchor up to the persisted origin boundary', () => {
+    const list = keys(4), key = list[0];
+    const before = build({ keys: list, columns: 768,
+        focus: { key, span: 4, row: 510, column: 510 } });
+    const atLimit = resize(before, key, 2, 'nw');
+    assert.deepEqual(item(atLimit, key), { key, span: 2, row: 512, column: 512 });
+    assert.equal(item(atLimit, key).row + 2, item(before, key).row + 4);
+    assert.equal(item(atLimit, key).column + 2, item(before, key).column + 4);
+    const pastLimit = resize(build({ keys: list, columns: 768,
+        focus: { key, span: 4, row: 512, column: 512 } }), key, 2, 'nw');
+    assert.deepEqual(item(pastLimit, key), { key, span: 2, row: 512, column: 512 });
+    assertLayout(pastLimit, list);
+    const outside = resize(build({ keys: list, columns: 900,
+        focus: { key, span: 4, row: 700, column: 800 } }), key, 256, 'se');
+    assert.deepEqual(item(outside, key), { key, span: 256, row: 512, column: 512 });
+    assert.equal(outside.columns, 768);
+    assertLayout(outside, list);
+});
+
+test('focused geometry needs eighteen percent improvement before changing columns', () => {
+    const list = keys(6), focus = { key: list[0], span: 2, row: 0, column: 0 };
+    const options = { keys: list, focus, width: 760, height: 700, columnGap: 10, rowGap: 10 };
+    const previous = build({ keys: list, columns: 2, focus });
+    const raw = choose({ ...options, previous, force: true });
+    const stable = choose({ ...options, previous });
+    assert.ok(raw.area > measuredArea(previous, 760, 700, 10, 10) * 1.06);
+    assert.ok(raw.area <= stable.area * 1.18);
+    assert.notEqual(raw.columns, previous.columns);
+    assert.equal(stable.columns, previous.columns);
+    const large = choose({ ...options, width: 1800, height: 500, previous });
+    assert.notEqual(large.columns, previous.columns);
+    assert.ok(large.area > measuredArea(previous, 1800, 500, 10, 10) * 1.18);
+});
+
+test('seeded corner resizes preserve the opposite anchor, one focus and visual packing without mutations', () => {
+    const list = keys(24), random = randomGenerator(0x18c0ffee);
+    let layout = build({ keys: list, columns: 6 });
+    for (let step = 0; step < 160; step++) {
+        const key = list[random(list.length)], corner = ['nw', 'ne', 'sw', 'se'][random(4)];
+        const span = 1 + random(8), current = item(layout, key), before = JSON.stringify(layout);
+        const order = visualKeys(layout), next = resize(layout, key, span, corner);
+        assertLayout(next, list);
+        assertFirstFreePacking(next);
+        assert.equal(JSON.stringify(layout), before);
+        assert.deepEqual(next.items.map(value => value.key), order);
+        if (span > 1) {
+            const changed = item(next, key);
+            const bottom = current.row + current.span, right = current.column + current.span;
+            if (corner[0] === 'n' && bottom >= span) assert.equal(changed.row + span, bottom);
+            else assert.equal(changed.row, corner[0] === 'n' ? 0 : current.row);
+            if (corner[1] === 'w' && right >= span) assert.equal(changed.column + span, right);
+            else assert.equal(changed.column, corner[1] === 'w' ? 0 : current.column);
+            assert.equal(changed.span, span);
+            assert.ok(next.columns >= layout.columns);
+            assert.deepEqual(visualKeys(next).filter(value => value !== key), order.filter(value => value !== key));
+        } else assert.ok(next.items.every(value => value.span === 1));
+        layout = next;
+    }
+});
 
 test('seeded grow, shrink, swap, selection and resize sequences stay collision-free and preserve their inputs', () => {
     let operations = 0;

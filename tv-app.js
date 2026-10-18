@@ -687,10 +687,12 @@ function updatePlayerLayout({ force = false } = {}) {
     if (!pane) return;
     if (!playerGrid) playerGrid = PlayerLayout.observe(pane, {
         stabilizeResize: true,
+        getResizeStability: () => activePlayers.size > 1 && activePlayers.has(enlargedPlayerFocus?.key),
         getCount: () => activePlayers.size,
         getTrackCount: () => {
             const focus = activePlayers.size > 1 && activePlayers.has(enlargedPlayerFocus?.key) ? enlargedPlayerFocus : null;
-            return Math.max(activePlayers.size + (focus?.span || 1) - 1, focus ? focus.row + focus.span : 1);
+            return Math.max(activePlayers.size + (focus?.span || 1) - 1, focus ? focus.row + focus.span : 1,
+                focus ? Math.max(pendingPlayerGeometry?.columns || 0, playerGeometry?.columns || 0) : 1);
         },
         calculate(options) {
             const keys = getPlayerPositionKeys();
@@ -711,13 +713,17 @@ function updatePlayerLayout({ force = false } = {}) {
                 // Explicit sizing and reopening settle on the best grid immediately.
                 pendingPlayerGeometry = null;
                 next = PlayerGeometry.choose({ ...options, keys, focus, force: true });
+            } else if (pendingPlayerGeometry?.intent === 'drag') {
+                // The preview already chose these tracks and the opposite corner.
+                next = PlayerGeometry.build({ keys, columns: pendingPlayerGeometry.columns, focus });
+                pendingPlayerGeometry = null;
             } else if (pendingPlayerGeometry) {
                 // A saved grid may have come from a much larger selection.
                 const columns = Math.max(focus.span, Math.min(pendingPlayerGeometry.columns, focus.span + keys.length - 1));
                 next = PlayerGeometry.build({ keys, columns, focus });
                 pendingPlayerGeometry = null;
             } else if (options.preserveColumns && options.previous?.columns >= focus.span &&
-                options.previous.columns <= focus.span + keys.length - 1) {
+                options.previous.columns <= 768) {
                 next = PlayerGeometry.build({ keys, columns: options.previous.columns, focus });
             } else next = PlayerGeometry.choose({ ...options, keys, focus });
             return { ...next, count: keys.length };
@@ -766,13 +772,13 @@ function savePlayerEnlargement() {
     } catch (_) {}
 }
 
-function applyPlayerSize(next) {
+function applyPlayerSize(next, { optimize = true } = {}) {
     // Capture the reflowed order before the final shrink returns to normal tracks.
     [...next.items].sort((a, b) => a.row - b.row || a.column - b.column).forEach((item, index) => {
         getPlayerElement(activePlayers.get(item.key)).style.order = String(index);
     });
     enlargedPlayerFocus = next.items.find(item => item.span > 1) || null;
-    pendingPlayerGeometry = enlargedPlayerFocus ? { ...next, intent: 'size' } : null;
+    pendingPlayerGeometry = enlargedPlayerFocus ? { ...next, intent: optimize ? 'size' : 'drag' } : null;
     updatePlayerLayout({ force: true });
     const keys = getPlayerPositionKeys();
     preferredPlayerOrder = keys.concat(preferredPlayerOrder.filter(saved => !keys.includes(saved))).slice(0, 256);
@@ -1348,6 +1354,7 @@ function toggleChannelSelection() {
     layer.id = 'player-position-editor';
     layer.hidden = true;
     layer.innerHTML = `<div class="player-position-cells"></div>
+        <div class="player-resize-preview" aria-hidden="true" hidden></div>
         <div class="player-position-toolbar"><span class="player-position-instructions">拖曳或點選兩格交換；方向鍵搬位，Esc 完成</span>
         <button class="player-position-shrink" type="button" hidden disabled>－ 縮小一格</button>
         <button class="player-position-reset" type="button" title="還原全部播放器的大小及排列">↺ 重設佈局</button>
@@ -1356,6 +1363,7 @@ function toggleChannelSelection() {
     // A sibling overlay leaves every iframe/video connected in its original parent.
     wrapper.appendChild(layer);
     const cells = layer.querySelector('.player-position-cells');
+    const resizePreview = layer.querySelector('.player-resize-preview');
     const doneButton = layer.querySelector('.player-position-done');
     const editorResetButton = layer.querySelector('.player-position-reset');
     const shrinkButton = layer.querySelector('.player-position-shrink');
@@ -1368,6 +1376,9 @@ function toggleChannelSelection() {
     let dropKey = null;
     let suppressClick = false;
     let layoutFrame = null;
+    let layoutSignature = null;
+    let resizeDrag = null;
+    let previewFrame = null;
     const buttons = new Map();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleLayout) : null;
 
@@ -1382,10 +1393,22 @@ function toggleChannelSelection() {
 
     function cancelPointer() {
         const previous = drag;
+        const previousResize = resizeDrag;
         drag = null;
+        resizeDrag = null;
         dropKey = null;
+        if (previewFrame !== null) cancelAnimationFrame(previewFrame);
+        previewFrame = null;
+        resizePreview.hidden = true;
+        layer.classList.remove('position-resizing');
+        // A canceled gesture may still be followed by a native click. The next
+        // pointerdown or keyboard activation starts a fresh, independent action.
+        if (previousResize) suppressClick = true;
         if (previous) {
             try { previous.button.releasePointerCapture(previous.id); } catch (_) {}
+        }
+        if (previousResize) {
+            try { previousResize.button.releasePointerCapture(previousResize.id); } catch (_) {}
         }
         updateHighlights();
     }
@@ -1395,6 +1418,10 @@ function toggleChannelSelection() {
         const bounds = pane.getBoundingClientRect();
         const parentBounds = wrapper.getBoundingClientRect();
         const style = getComputedStyle(pane);
+        const signature = [bounds.left, bounds.top, pane.clientWidth, pane.clientHeight,
+            parentBounds.left, parentBounds.top, style.gridTemplateColumns, style.gridTemplateRows, style.gap].join('|');
+        if (layoutSignature !== null && signature !== layoutSignature) cancelPointer();
+        layoutSignature = signature;
         layer.style.left = `${bounds.left - parentBounds.left + pane.clientLeft}px`;
         layer.style.top = `${bounds.top - parentBounds.top + pane.clientTop}px`;
         layer.style.width = `${pane.clientWidth}px`;
@@ -1420,9 +1447,13 @@ function toggleChannelSelection() {
         if (!opened || layoutFrame !== null) return;
         layoutFrame = requestAnimationFrame(() => {
             layoutFrame = null;
-            cancelPointer();
             layout();
         });
+    }
+
+    function onViewportResize() {
+        cancelPointer();
+        scheduleLayout();
     }
 
     function close(restoreFocus = true) {
@@ -1431,7 +1462,7 @@ function toggleChannelSelection() {
         pickedKey = null;
         cancelPointer();
         observer?.disconnect();
-        window.removeEventListener('resize', scheduleLayout);
+        window.removeEventListener('resize', onViewportResize);
         if (layoutFrame !== null) cancelAnimationFrame(layoutFrame);
         layoutFrame = null;
         layer.hidden = true;
@@ -1463,7 +1494,7 @@ function toggleChannelSelection() {
             button.className = 'player-position-cell';
             button.dataset.playerKey = key;
             const span = sizes.get(key) || 1;
-            button.setAttribute('aria-label', `第 ${index + 1} 格：${entry.channel.name}，${span}×${span}，${mode === 'enlarge' ? '點選放大一格' : '拖曳或點選交換位置'}`);
+            button.setAttribute('aria-label', `第 ${index + 1} 格：${entry.channel.name}，${span}×${span}，${mode === 'enlarge' ? '點選放大一格，或拖拉四角調整大小' : '拖曳或點選交換位置'}`);
             const number = document.createElement('span');
             number.className = 'player-position-number';
             number.textContent = mode === 'enlarge' ? `＋ ${span}×${span} → ${span + 1}×${span + 1}` : `↔ 第 ${index + 1} 格${span > 1 ? ` · ${span}×${span}` : ''}`;
@@ -1471,6 +1502,16 @@ function toggleChannelSelection() {
             name.className = 'player-position-name';
             name.textContent = `${platformIcon(entry.channel.platform)} ${entry.channel.name}`;
             button.append(number, name);
+            if (mode === 'enlarge') {
+                for (const [corner, title] of [['nw', '左上'], ['ne', '右上'], ['sw', '左下'], ['se', '右下']]) {
+                    const handle = document.createElement('span');
+                    handle.className = 'player-resize-handle';
+                    handle.dataset.resizeCorner = corner;
+                    handle.title = `拖拉${title}角調整大小，放開套用`;
+                    handle.setAttribute('aria-hidden', 'true');
+                    button.appendChild(handle);
+                }
+            }
             cells.appendChild(button);
             buttons.set(key, button);
         });
@@ -1490,7 +1531,7 @@ function toggleChannelSelection() {
         setChannelSelectionVisible(false);
         mode = nextMode;
         layer.dataset.mode = mode;
-        instructions.textContent = mode === 'enlarge' ? '點播放器放大；「縮小一格」逐級縮小，最低 1×1；Esc 保留佈局' : '拖曳或點選兩格交換；方向鍵搬位，Esc 完成';
+        instructions.textContent = mode === 'enlarge' ? '拖拉四角預覽，放開套用；也可點格放大或按「縮小一格」；Esc 取消拖拉／完成' : '拖曳或點選兩格交換；方向鍵搬位，Esc 完成';
         doneButton.textContent = mode === 'enlarge' ? '✅ 完成放大' : '✅ 完成搬位';
         opened = true;
         layer.hidden = false;
@@ -1499,7 +1540,7 @@ function toggleChannelSelection() {
         refresh();
         observer?.observe(pane);
         observer?.observe(wrapper);
-        window.addEventListener('resize', scheduleLayout);
+        window.addEventListener('resize', onViewportResize);
         buttons.values().next().value?.focus({ preventScroll: true });
     }
     for (const button of [startButton, enlargeButton]) {
@@ -1523,11 +1564,20 @@ function toggleChannelSelection() {
     });
     doneButton.addEventListener('click', () => close());
     document.addEventListener('keydown', event => {
-        if (opened && event.key === 'Escape') { event.preventDefault(); close(); }
+        if (opened && event.key === 'Escape') {
+            event.preventDefault();
+            if (resizeDrag) { cancelPointer(); announcement.textContent = '已取消這次大小調整'; }
+            else close();
+        }
     });
     cells.addEventListener('click', event => {
         const button = event.target.closest('.player-position-cell');
-        if (!button || suppressClick) return;
+        if (!button || !opened) return;
+        if (suppressClick || event.target.closest('.player-resize-handle')) {
+            event.preventDefault();
+            event.stopPropagation();
+            return;
+        }
         const key = button.dataset.playerKey;
         if (mode === 'enlarge') {
             if (enlargePlayer(key)) announcement.textContent = `${activePlayers.get(key).channel.name} 已放大至 ${enlargedPlayerFocus.span}×${enlargedPlayerFocus.span}`;
@@ -1542,6 +1592,10 @@ function toggleChannelSelection() {
         }
     });
     cells.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            if (resizeDrag) { event.preventDefault(); return; }
+            suppressClick = false;
+        }
         const button = event.target.closest('.player-position-cell');
         if (!button || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
         event.preventDefault();
@@ -1578,9 +1632,85 @@ function toggleChannelSelection() {
         if (target >= 0 && target < keys.length) exchange(keys[index], keys[target]);
     });
 
+    function updateResizePreview() {
+        const gesture = resizeDrag;
+        if (!gesture?.moved) return;
+        const dx = (gesture.lastX - gesture.x) * (gesture.corner.includes('w') ? -1 : 1) / gesture.pitchX;
+        const dy = (gesture.lastY - gesture.y) * (gesture.corner.includes('n') ? -1 : 1) / gesture.pitchY;
+        // Use the starting tracks throughout the gesture; reflowing the preview
+        // must not feed back into the pointer-to-size calculation.
+        const delta = Math.abs(dx) >= Math.abs(dy) ? dx : dy;
+        const span = Math.max(1, Math.min(256, Math.round(gesture.item.span + delta)));
+        if (gesture.span === span) return;
+        gesture.span = span;
+        const next = PlayerGeometry.resize(gesture.base, gesture.key, span, gesture.corner);
+        if (span === 1) {
+            const keys = [...next.items].sort((a, b) => a.row - b.row || a.column - b.column).map(item => item.key);
+            const normal = PlayerLayout.choose({ ...gesture.measure, count: keys.length, force: true });
+            gesture.next = PlayerGeometry.build({ keys, columns: normal.columns });
+        } else {
+            const keys = [...next.items].sort((a, b) => a.row - b.row || a.column - b.column).map(item => item.key);
+            gesture.next = PlayerGeometry.choose({ ...gesture.measure, keys,
+                focus: next.items.find(item => item.span > 1), force: true, preserveAnchor: true });
+        }
+        const item = gesture.next.items.find(value => value.key === gesture.key);
+        // Match the gap caps used by the real layout, even for very large spans.
+        const tracks = Math.max(activePlayers.size + span - 1, item.row + span, gesture.next.columns);
+        const gapX = Math.min(gesture.measure.columnGap, gesture.measure.width / (2 * tracks));
+        const gapY = Math.min(gesture.measure.rowGap, gesture.measure.height / (2 * tracks));
+        const cellWidth = Math.max(0, (gesture.measure.width - gapX * (gesture.next.columns - 1)) / gesture.next.columns);
+        const cellHeight = Math.max(0, (gesture.measure.height - gapY * (gesture.next.rows - 1)) / gesture.next.rows);
+        resizePreview.style.left = `${item.column * (cellWidth + gapX)}px`;
+        resizePreview.style.top = `${item.row * (cellHeight + gapY)}px`;
+        resizePreview.style.width = `${cellWidth * span + gapX * (span - 1)}px`;
+        resizePreview.style.height = `${cellHeight * span + gapY * (span - 1)}px`;
+        resizePreview.textContent = `${activePlayers.get(gesture.key)?.channel.name || ''} · ${span}×${span}（放開套用）`;
+        resizePreview.hidden = false;
+        layer.classList.add('position-resizing');
+    }
+
+    function queueResizePreview(event) {
+        resizeDrag.lastX = event.clientX;
+        resizeDrag.lastY = event.clientY;
+        if (!resizeDrag.moved && Math.hypot(event.clientX - resizeDrag.x, event.clientY - resizeDrag.y) < 6) return;
+        resizeDrag.moved = true;
+        if (previewFrame === null) previewFrame = requestAnimationFrame(() => {
+            previewFrame = null;
+            updateResizePreview();
+        });
+    }
+
+    function resizeBoundsUnchanged() {
+        const bounds = pane.getBoundingClientRect();
+        return resizeDrag && pane.clientWidth === resizeDrag.measure.width && pane.clientHeight === resizeDrag.measure.height &&
+            bounds.left === resizeDrag.bounds.left && bounds.top === resizeDrag.bounds.top;
+    }
+
     cells.addEventListener('pointerdown', event => {
         const button = event.target.closest('.player-position-cell');
-        if (!button || mode === 'enlarge' || drag || !event.isPrimary || (event.pointerType === 'mouse' && event.button !== 0)) return;
+        if (!button || !opened || drag || resizeDrag || !event.isPrimary || event.button !== 0) return;
+        suppressClick = false;
+        if (mode === 'enlarge') {
+            const handle = event.target.closest('.player-resize-handle');
+            if (!handle) return;
+            event.preventDefault();
+            button.focus({ preventScroll: true });
+            const base = getCurrentPlayerGeometry();
+            const item = base.items.find(value => value.key === button.dataset.playerKey);
+            const style = getComputedStyle(pane);
+            const measure = { width: pane.clientWidth, height: pane.clientHeight,
+                columnGap: parseFloat(style.columnGap) || 0, rowGap: parseFloat(style.rowGap) || 0 };
+            if (!item || !(measure.width > 0 && measure.height > 0)) return;
+            resizeDrag = { key: item.key, item, base, button, id: event.pointerId,
+                pointerType: event.pointerType, bounds: pane.getBoundingClientRect(),
+                corner: handle.dataset.resizeCorner, x: event.clientX, y: event.clientY,
+                lastX: event.clientX, lastY: event.clientY, moved: false, span: null, next: null, measure,
+                pitchX: (measure.width + measure.columnGap) / base.columns,
+                pitchY: (measure.height + measure.rowGap) / base.rows };
+            suppressClick = true;
+            try { button.setPointerCapture(event.pointerId); } catch (_) { cancelPointer(); }
+            return;
+        }
         button.focus({ preventScroll: true });
         drag = { key: button.dataset.playerKey, button, id: event.pointerId,
             x: event.clientX, y: event.clientY, moved: false,
@@ -1592,6 +1722,15 @@ function toggleChannelSelection() {
             event.clientY >= rect.top && event.clientY <= rect.bottom)?.key || null;
     }
     document.addEventListener('pointermove', event => {
+        if (resizeDrag && event.pointerId === resizeDrag.id) {
+            if (!resizeBoundsUnchanged() || (resizeDrag.pointerType === 'mouse' && !(event.buttons & 1))) {
+                cancelPointer();
+                return;
+            }
+            if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) queueResizePreview(event);
+            event.preventDefault();
+            return;
+        }
         if (!drag || event.pointerId !== drag.id) return;
         if (!drag.moved && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 6) return;
         drag.moved = true;
@@ -1605,6 +1744,23 @@ function toggleChannelSelection() {
         event.preventDefault();
     }, { passive: false });
     document.addEventListener('pointerup', event => {
+        if (resizeDrag && event.pointerId === resizeDrag.id) {
+            if (!resizeBoundsUnchanged() || (resizeDrag.pointerType === 'mouse' && event.button !== 0)) {
+                cancelPointer();
+                return;
+            }
+            queueResizePreview(event);
+            updateResizePreview();
+            const gesture = resizeDrag;
+            const next = gesture.moved && gesture.span !== gesture.item.span ? gesture.next : null;
+            cancelPointer();
+            if (next && activePlayers.size > 1 && activePlayers.has(gesture.key)) {
+                applyPlayerSize(next, { optimize: false });
+                announcement.textContent = `${activePlayers.get(gesture.key).channel.name} 已調整至 ${gesture.span}×${gesture.span}`;
+            }
+            event.preventDefault();
+            return;
+        }
         if (!drag || event.pointerId !== drag.id) return;
         const source = drag.key;
         const target = targetAt(event);
@@ -1617,11 +1773,12 @@ function toggleChannelSelection() {
         }
     });
     document.addEventListener('pointercancel', event => {
-        if (drag && event.pointerId === drag.id) cancelPointer();
+        if (event.pointerId === drag?.id || event.pointerId === resizeDrag?.id) cancelPointer();
     });
     cells.addEventListener('lostpointercapture', event => {
-        if (drag && event.pointerId === drag.id) cancelPointer();
+        if (event.pointerId === drag?.id || event.pointerId === resizeDrag?.id) cancelPointer();
     });
+    window.addEventListener('blur', cancelPointer);
     window.addEventListener('pagehide', () => close(false));
     playerPositionEditor = { refresh, close, layoutChanged: scheduleLayout };
     refresh();
