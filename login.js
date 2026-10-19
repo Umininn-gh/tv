@@ -77,8 +77,9 @@
             await loadScript('./player-layout.js?v=20261018-corner-resize');
             await loadScript('./stream-quality.js?v=20261016-twitch-auto-init').catch(error => console.warn('畫質調節暫時未能載入，沿用平台播放器。', error));
             await loadScript('./embed-audio.js').catch(error => console.warn('YouTube 聲音同步暫時未能載入，請使用播放器聲音控制。', error));
-            await loadScript('./layout-bookmarks.js?v=20261019-bookmarks');
-            await loadScript('./tv-app.js?v=20261019-bookmarks');
+            await loadScript('./layout-bookmarks.js?v=20261019-shared-bookmarks');
+            await loadScript('./shared-bookmarks.js?v=20261019-shared-bookmarks');
+            await loadScript('./tv-app.js?v=20261019-shared-bookmarks');
             if (!window.tvAppReady || typeof window.tvAppReady.then !== 'function') {
                 throw new Error('TV application did not initialize');
             }

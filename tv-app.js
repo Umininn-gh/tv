@@ -1472,8 +1472,13 @@ function applyPlayerBookmark(value) {
     const button = document.getElementById('layout-bookmarks-btn');
     const panel = document.getElementById('layout-bookmarks');
     if (!button || !panel || typeof LayoutBookmarks === 'undefined') return;
+    let cacheStorage;
+    try { cacheStorage = localStorage; } catch (_) {}
+    const store = typeof SharedBookmarks !== 'undefined' ? SharedBookmarks.createStore({
+        transport: SharedBookmarks.createTransport(), cacheStorage
+    }) : undefined;
     layoutBookmarkMenu = LayoutBookmarks.mount({
-        button, panel, capture: capturePlayerBookmark, apply: applyPlayerBookmark,
+        button, panel, store, capture: capturePlayerBookmark, apply: applyPlayerBookmark,
         beforeOpen() {
             setChannelSelectionVisible(false);
             playerPositionEditor?.close(false);

@@ -1,4 +1,4 @@
-/* A local layout library; previews never create media players. */
+/* Layout library previews never create media players. */
 #layout-bookmarks {
     position: fixed;
     z-index: 1001;
@@ -46,6 +46,10 @@
 #layout-bookmarks .layout-bookmarks-save { width: 100%; padding: 10px; background: #6b39c8; border-color: #9563ed; font-size: 14px; font-weight: 600; }
 #layout-bookmarks .layout-bookmarks-save:hover { background: #7c47da; }
 .layout-bookmarks-help { margin: 9px 0 14px; color: var(--label-2, #b3b3bc); font-size: 12px; line-height: 1.6; }
+.layout-bookmarks-sync { margin: -5px 0 12px; color: #a9e9bb; font-size: 11px; line-height: 1.6; }
+.layout-bookmarks-sync.is-error, .layout-bookmarks-import-note { color: #f1ca8b; }
+#layout-bookmarks .layout-bookmarks-import { width: 100%; margin-bottom: 12px; color: #e2d3fc; background: #352b47; border-color: #66517d; }
+.layout-bookmarks-import-note { margin: 0 0 12px; font-size: 12px; line-height: 1.6; }
 .layout-bookmarks-status { padding: 9px 10px; margin: 0 0 12px; background: rgba(48, 209, 88, .12); border-radius: 7px; color: #a9e9bb; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
 .layout-bookmarks-status.is-error { background: rgba(255, 69, 58, .12); color: #ffb5ae; }
 .layout-bookmarks-undo { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; padding: 8px; background: #29292e; border-radius: 7px; font-size: 12px; }
@@ -58,6 +62,7 @@
 .layout-bookmark-card { min-width: 0; padding: 10px; background: #252528; border: 1px solid rgba(255, 255, 255, .08); border-radius: 11px; }
 .layout-bookmark-name-row { display: flex; align-items: center; min-width: 0; gap: 7px; margin-bottom: 8px; }
 .layout-bookmark-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 0; font-size: 14px; line-height: 1.5; }
+#layout-bookmarks .layout-bookmark-move-up, #layout-bookmarks .layout-bookmark-move-down { flex: 0 0 auto; width: 28px; min-width: 28px; padding: 3px; font-size: 17px; line-height: 1; }
 #layout-bookmarks .layout-bookmark-rename { padding: 3px 7px; color: #c5c5cd; background: transparent; border-color: transparent; }
 .layout-bookmark-name-input { flex: 1; width: 0; min-width: 0; border: 1px solid #85858c; border-radius: 6px; padding: 6px; color: #fff; background: #151518; font-size: 13px; }
 #layout-bookmarks .layout-bookmark-name-save, #layout-bookmarks .layout-bookmark-name-cancel { flex: 0 0 auto; padding: 5px 7px; }
