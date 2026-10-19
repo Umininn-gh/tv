@@ -1,6 +1,10 @@
 # Umininn TV 播放器控制 Userscript
 
-版本：1.0.5。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+版本：1.0.6。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+
+## 1.0.6 快捷全部靜音
+
+「播放控制」左邊新增小型 🔇 按鈕，直接執行面板內的「全部靜音」。連按仍保持全部靜音；滑鼠提示和輔助讀屏名稱均為「全部靜音」。
 
 ## 1.0.5 閒置選單關閉
 

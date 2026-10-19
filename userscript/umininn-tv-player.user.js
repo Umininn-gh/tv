@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.5
+// @version      1.0.6
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -29,7 +29,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.5",
+        userscriptVersion: "1.0.6",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -1489,6 +1489,8 @@
             shadow = host.attachShadow({ mode: 'open' });
             const style = node('style', `:host{font:12px system-ui,sans-serif;color:#eee}*{box-sizing:border-box}button,input{font:inherit}button{background:#292d36;color:#fff;border:1px solid #596172;border-radius:5px;cursor:pointer;padding:4px 7px}button:disabled,input:disabled{opacity:.45;cursor:default}button:focus-visible,input:focus-visible{outline:2px solid #58c8ff;outline-offset:2px}#toggle{height:18px;min-height:18px;line-height:16px;padding:0 5px;font-size:11px;white-space:nowrap}#panel{position:fixed;right:12px;top:44px;width:min(470px,calc(100vw - 24px));max-height:75vh;overflow:auto;z-index:2147483646;background:#16191f;border:1px solid #657084;border-radius:10px;padding:12px;box-shadow:0 8px 28px #0009}#panel[hidden]{display:none}.row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.heading{justify-content:space-between}.state,#summary,.help{color:#bac5d7;font-size:11px;line-height:1.5;margin:5px 0;overflow-wrap:anywhere}#players{display:flex;flex-direction:column;gap:8px}.player{border-top:1px solid #3c4351;padding-top:8px}.player strong{display:block;margin-bottom:5px;overflow-wrap:anywhere}.player input{width:140px;max-width:32vw}.level{min-width:34px;text-align:right}.master{margin:9px 0}a{color:#83cfff}`);
             toggle = node('button', '🎚 播放控制', { id: 'toggle', type: 'button', 'aria-expanded': 'false', 'aria-haspopup': 'dialog' });
+            const quickMute = node('button', '🔇', { id: 'quick-mute', type: 'button', title: '全部靜音', 'aria-label': '全部靜音' });
+            quickMute.style.cssText = 'height:18px;min-height:18px;width:22px;line-height:16px;padding:0;font-size:12px;';
             quickDetect = node('button', '↻ 偵測恢復', { id: 'quick-recover', type: 'button', title: '重新偵測全部播放器，未播放的台各嘗試恢復一次' });
             quickDetect.style.cssText = 'height:18px;min-height:18px;line-height:16px;padding:0 5px;font-size:11px;white-space:nowrap;';
             panel = node('section', null, { id: 'panel', role: 'dialog', 'aria-label': '播放器控制' });
@@ -1516,7 +1518,7 @@
             panelHost.style.cssText = 'position:fixed;inset:0;z-index:2147483646;pointer-events:none;display:block;';
             panelShadow = panelHost.attachShadow({ mode: 'open' });
             panelShadow.append(style.cloneNode(true), node('style', '#panel{pointer-events:auto;}'), panel);
-            shadow.append(style, toggle, quickDetect);
+            shadow.append(style, quickMute, toggle, quickDetect);
             input.appendChild(host);
             doc.body.appendChild(panelHost);
             let idleTimer = null;
@@ -1574,6 +1576,7 @@
             win.addEventListener('resize', positionPanel);
             win.addEventListener('scroll', positionPanel, true);
             mute.addEventListener('click', () => { setGlobalMuted(true); });
+            quickMute.addEventListener('click', () => { setGlobalMuted(true); });
             unmute.addEventListener('click', () => { setGlobalMuted(false); });
             volume.addEventListener('input', () => { masterLevel.textContent = `${volume.value}%`; });
             volume.addEventListener('change', () => { void applyAll({ action: 'setVolume', value: Number(volume.value) / 100 }); });
