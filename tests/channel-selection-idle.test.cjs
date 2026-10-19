@@ -32,6 +32,7 @@ function fixture(source) {
         document: { getElementById(id) { return id === 'channel-selection' ? panel : null; } },
         window: { addEventListener(type, callback) { windowListeners.set(type, callback); } },
         playerNameOverlay: { setVisible(value) { overlayVisible = value; } },
+        layoutBookmarkMenu: null,
         setTimeout(callback, delay) { const id = ++nextId; timers.set(id, { at: now + delay, callback }); return id; },
         clearTimeout(id) { timers.delete(id); },
         Date: { now() { return now; } },

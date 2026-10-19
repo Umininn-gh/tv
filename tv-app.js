@@ -482,6 +482,8 @@ let playerPositionEditor = null;
 let playerNameOverlay = null;
 let playerWindowControls = null;
 let playerGrid = null;
+let layoutBookmarkMenu = null;
+let layoutBookmarkFeedbackTimer = null;
 let globalMutedPreference = null;
 let globalAudioFeedbackTimer = null;
 const statusScheduler = StreamPerformance.createStatusScheduler({ maxConcurrent: 4, cacheMs: 30000 });
@@ -699,6 +701,13 @@ function updatePlayerLayout({ force = false } = {}) {
             const keys = getPlayerPositionKeys();
             const focus = keys.includes(enlargedPlayerFocus?.key) && keys.length > 1 ? enlargedPlayerFocus : null;
             if (!focus) {
+                if (pendingPlayerGeometry?.intent === 'bookmark') {
+                    const columns = Math.max(1, Math.min(keys.length || 1, pendingPlayerGeometry.columns));
+                    // Apply the saved grid once, then keep the existing resize
+                    // stability rules. Hidden panes retain the restore intent.
+                    if (options.width > 0 && options.height > 0) pendingPlayerGeometry = null;
+                    return { count: keys.length, columns, rows: Math.max(1, Math.ceil(keys.length / columns)), area: 0 };
+                }
                 pendingPlayerGeometry = null;
                 return PlayerLayout.choose(options);
             }
@@ -710,7 +719,10 @@ function updatePlayerLayout({ force = false } = {}) {
                 return { ...PlayerGeometry.build({ keys, columns, focus }), count: keys.length, deferredFocus: true };
             }
             let next;
-            if (pendingPlayerGeometry?.intent === 'size' || pendingPlayerGeometry?.intent === 'restore') {
+            if (pendingPlayerGeometry?.intent === 'bookmark') {
+                next = PlayerGeometry.build({ keys, columns: pendingPlayerGeometry.columns, focus });
+                pendingPlayerGeometry = null;
+            } else if (pendingPlayerGeometry?.intent === 'size' || pendingPlayerGeometry?.intent === 'restore') {
                 // Explicit sizing and reopening settle on the best grid immediately.
                 pendingPlayerGeometry = null;
                 next = PlayerGeometry.choose({ ...options, keys, focus, force: true });
@@ -749,7 +761,7 @@ function updatePlayerLayout({ force = false } = {}) {
     const previousFocus = playerGeometry?.items.find(item => item.span > 1);
     const activeFocus = activePlayers.size > 1 && activePlayers.has(enlargedPlayerFocus?.key) ? enlargedPlayerFocus : null;
     const contextChanged = previousFocus?.key !== activeFocus?.key || previousFocus?.span !== activeFocus?.span;
-    playerGrid.update({ force: force || contextChanged });
+    playerGrid.update({ force: force || contextChanged || pendingPlayerGeometry?.intent === 'bookmark' });
     // A retry may replace one player while keeping exactly the same geometry.
     if (playerGeometry) playerGeometry.items.forEach(item => {
         const entry = activePlayers.get(item.key);
@@ -1018,6 +1030,7 @@ const channelSelectionIdleTimer = (() => {
 })();
 
 function setChannelSelectionVisible(visible) {
+    if (visible) layoutBookmarkMenu?.close(false);
     const panel = document.getElementById('channel-selection');
     if (panel) panel.style.display = visible ? 'block' : 'none';
     playerNameOverlay?.setVisible(visible);
@@ -1398,6 +1411,75 @@ function toggleChannelSelection() {
         setChannelSelectionVisible(true);
     } else setChannelSelectionVisible(false);
 }
+
+/* ------------------------ 台佈局書籤 ------------------------ */
+function capturePlayerBookmark() {
+    const keys = getPlayerPositionKeys();
+    if (!keys.length) throw new Error('先在「看更台」選台並開始觀看，再儲存佈局。');
+    const pane = document.getElementById('multi-stream-container');
+    const geometry = getCurrentPlayerGeometry();
+    const focus = geometry.items.find(item => item.span > 1);
+    return {
+        channels: keys.map(key => ({ key, name: activePlayers.get(key).channel.name })),
+        columns: geometry.columns,
+        focus: focus ? { key: focus.key, row: focus.row, column: focus.column, span: focus.span } : null,
+        aspectRatio: pane?.clientWidth > 0 && pane?.clientHeight > 0 ? pane.clientWidth / pane.clientHeight : 16 / 9
+    };
+}
+
+function showLayoutBookmarkFeedback(message) {
+    const output = document.getElementById('layout-bookmark-feedback');
+    if (!output) return;
+    if (layoutBookmarkFeedbackTimer !== null) clearTimeout(layoutBookmarkFeedbackTimer);
+    output.textContent = message;
+    output.hidden = false;
+    layoutBookmarkFeedbackTimer = setTimeout(() => {
+        output.hidden = true;
+        layoutBookmarkFeedbackTimer = null;
+    }, 6000);
+}
+
+function applyPlayerBookmark(value) {
+    const snapshot = LayoutBookmarks.normalizeSnapshot(value);
+    if (!snapshot) throw new Error('這個書籤的佈局資料無效。');
+    const available = new Map(channels.map(channel => [ChannelList.channelKey(channel), channel]));
+    const selected = snapshot.channels.map(item => available.get(item.key)).filter(Boolean);
+    if (!selected.length) throw new Error('這個書籤的台已從頻道列表移除；目前播放保持不變。');
+    playerPositionEditor?.close(false);
+    setChannelSelectionVisible(false);
+    // A layout bookmark changes placement and selection, keeping existing
+    // players' sound preference even when switching between one and many.
+    if (activePlayers.size) globalMutedPreference = getGlobalMuted();
+    const keys = selected.map(ChannelList.channelKey);
+    preferredPlayerOrder = keys.concat(preferredPlayerOrder.filter(key => !keys.includes(key))).slice(0, 256);
+    enlargedPlayerFocus = keys.length > 1 && keys.includes(snapshot.focus?.key) ? { ...snapshot.focus } : null;
+    const columns = enlargedPlayerFocus ? snapshot.columns : Math.min(snapshot.columns, keys.length);
+    pendingPlayerGeometry = { columns, intent: 'bookmark' };
+    syncActivePlayers(selected);
+    try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(preferredPlayerOrder)); } catch (_) {}
+    savePlayerEnlargement();
+    const selectedKeys = new Set(keys);
+    for (const input of document.querySelectorAll('#channel-options input[type="checkbox"]')) {
+        input.checked = selectedKeys.has(ChannelList.channelKey({ id: input.value, platform: input.dataset.platform, name: input.dataset.name || 'channel' }));
+    }
+    updateChannelSelectionSummary();
+    const missing = snapshot.channels.length - selected.length;
+    showLayoutBookmarkFeedback(`已套用佈局：${selected.length} 台${missing ? `；已略過 ${missing} 個已移除的台` : ''}。`);
+    return { applied: selected.length, missing };
+}
+
+(function initLayoutBookmarks() {
+    const button = document.getElementById('layout-bookmarks-btn');
+    const panel = document.getElementById('layout-bookmarks');
+    if (!button || !panel || typeof LayoutBookmarks === 'undefined') return;
+    layoutBookmarkMenu = LayoutBookmarks.mount({
+        button, panel, capture: capturePlayerBookmark, apply: applyPlayerBookmark,
+        beforeOpen() {
+            setChannelSelectionVisible(false);
+            playerPositionEditor?.close(false);
+        }
+    });
+})();
 
 /* ------------------------ 看更台：播放器搬位模式 ------------------------ */
 (function initPlayerPositionEditor() {

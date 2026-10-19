@@ -1413,8 +1413,9 @@
 }
     </style>
     <link rel="stylesheet" href="./login.css">
+    <link rel="stylesheet" href="./layout-bookmarks.css?v=20261019-bookmarks">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261019-chat-toggle"></script>
+    <script defer src="./login.js?v=20261019-bookmarks"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">
@@ -1463,6 +1464,7 @@
                 <button id="toggle-all-audio" type="button" aria-pressed="false" onclick="toggleAllAudio()" title="同步支援的播放器聲音；部分外站播放器會重新載入">🔇 全部靜音</button>
                 <span id="global-audio-feedback" role="status" aria-live="polite" hidden></span>
                 <button id="more-channels-btn" onclick="toggleChannelSelection()">📺 看更台</button>
+                <button id="layout-bookmarks-btn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="layout-bookmarks">🔖 書籤</button>
             </div>
         </div>
     </div>
@@ -1542,6 +1544,9 @@
         <button id="reset-player-positions" type="button">↺ 重設播放器位置</button>
         <p class="player-position-hint">觀看至少兩台後，可搬位或放大。同時只放大一台：拖拉四角預覽大小，放開套用；也可點格放大或按「縮小一格」，最低 1×1。拖拉時按 Esc 取消，其餘時間按 Esc 保留佈局。</p>
     </div>
+
+    <section id="layout-bookmarks" role="dialog" aria-labelledby="layout-bookmarks-title" tabindex="-1" hidden></section>
+    <p id="layout-bookmark-feedback" role="status" aria-live="polite" hidden></p>
 
     <div id="multi-stream-container-wrapper">
         <div id="multi-stream-container" class="video-wrapper">

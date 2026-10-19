@@ -110,6 +110,7 @@ async function fixture(t, entry) {
                 const channelOptionControls = new Map(); let channelOptionSequence = 0;
                 const PLATFORMS = {m3u8:{icon:'📺'}};
                 const playerNameOverlay = {setVisible(value) {document.getElementById('name-overlay').hidden = !value}};
+                const layoutBookmarkMenu = null;
                 window.fixture = {applied:0,statusRefreshes:0,playerActions:0,initialPlayer:document.getElementById('existing-player'),initialEntry:activePlayers.values().next().value};
                 for (const method of ['play','pause','load']) fixture.initialPlayer[method] = () => {fixture.playerActions++; return Promise.resolve()};
                 function syncActivePlayers(){fixture.applied++}

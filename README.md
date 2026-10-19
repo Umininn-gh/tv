@@ -180,3 +180,8 @@ Kick 的官方 iframe 只有播放、靜音及全螢幕參數，沒有公開的�
 新增的登入資源與頻道清單使用相對路徑，同時支援 GitHub 的 `/tv/` 子路徑與 Cloudflare 的根網址。播放器仍依賴外部直播平台、代理與 Firebase；搬移時需要逐一確認這些外部來源仍可用，或改成自己的來源。Twitch 的 `parent` 已依目前網域產生。
 
 官方文件：[Static HTML](https://developers.cloudflare.com/pages/framework-guides/deploy-anything/)、[Preview deployments / Access](https://developers.cloudflare.com/pages/configuration/preview-deployments/)。
+
+
+## 台佈局書籤
+
+「看更台」右邊的「書籤」可儲存目前觀看的台、排列及放大格。彩色縮圖以縮小台名顯示格位，點縮圖或「套用」即可還原；亦可改名、更新為目前佈局、刪除及復原最後一次刪除。書籤最多 50 個，只儲存在此瀏覽器，清除網站資料會一併移除。套用時沿用共有播放器及當下聲音設定，只載入新增的台；已從頻道列表刪除的台會略過，全部失效時保留目前播放。選單在沒有操作 30 秒後自動關閉；背景更新不會延長時間。
