@@ -482,6 +482,67 @@
             transition: none;
         }
 
+        /* Only the small window buttons receive input; media stay in place. */
+        #player-window-controls {
+            position: absolute;
+            inset: 0;
+            z-index: 15;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        #player-window-controls[hidden],
+        #multi-stream-container-wrapper:has(> #player-position-editor:not([hidden])) > #player-window-controls { display: none; }
+        .player-window-cell {
+            position: absolute;
+            min-width: 0;
+            min-height: 0;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        .player-window-buttons {
+            position: absolute;
+            top: 3px;
+            right: 3px;
+            display: flex;
+            justify-content: flex-end;
+            max-width: calc(100% - 6px);
+            border-radius: 3px;
+            background: rgba(28, 28, 30, .48);
+            overflow: hidden;
+            opacity: 0;
+            pointer-events: none;
+        }
+        .player-window-cell[data-hovered="true"] .player-window-buttons,
+        .player-window-cell:has(button:focus-visible) .player-window-buttons { opacity: .85; }
+        .player-window-cell[data-hovered="true"] .player-window-buttons button,
+        .player-window-cell:has(button:focus-visible) .player-window-buttons button { pointer-events: auto; }
+        .player-window-buttons button {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 18px;
+            width: 18px;
+            height: 18px;
+            min-width: 0;
+            min-height: 0;
+            margin: 0;
+            padding: 3px;
+            border: 0;
+            border-radius: 0;
+            background: transparent;
+            color: #fff;
+            line-height: 1;
+            box-shadow: none;
+            transform: none;
+            pointer-events: none;
+        }
+        .player-window-buttons button[hidden] { display: none; }
+        .player-window-buttons button:hover { background: rgba(255, 255, 255, .18); transform: none; }
+        .player-window-buttons button[data-player-action="close"]:hover { background: rgba(232, 67, 67, .8); }
+        .player-window-buttons button:focus-visible { outline: 1px solid #fff; outline-offset: -2px; }
+        .player-window-buttons button:disabled { opacity: .35; cursor: default; }
+        .player-window-buttons svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1; pointer-events: none; }
+
         /* 看更台開啟時顯示台名；覆蓋層不攔截播放器操作。 */
         #player-name-overlay {
             position: absolute;
@@ -1343,7 +1404,7 @@
     </style>
     <link rel="stylesheet" href="./login.css">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261018-toolbar-position"></script>
+    <script defer src="./login.js?v=20261019-window-controls"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">

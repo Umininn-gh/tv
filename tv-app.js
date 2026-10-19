@@ -480,6 +480,7 @@ let playerGeometry = null;
 let pendingPlayerGeometry = null;
 let playerPositionEditor = null;
 let playerNameOverlay = null;
+let playerWindowControls = null;
 let playerGrid = null;
 let globalMutedPreference = null;
 let globalAudioFeedbackTimer = null;
@@ -742,6 +743,7 @@ function updatePlayerLayout({ force = false } = {}) {
             } else activePlayers.forEach(entry => { getPlayerElement(entry).style.gridArea = ''; });
             playerPositionEditor?.layoutChanged?.();
             playerNameOverlay?.refresh();
+            playerWindowControls?.refresh();
         }
     });
     const previousFocus = playerGeometry?.items.find(item => item.span > 1);
@@ -753,6 +755,7 @@ function updatePlayerLayout({ force = false } = {}) {
         const entry = activePlayers.get(item.key);
         if (entry) getPlayerElement(entry).style.gridArea = playerGridArea(item);
     });
+    playerWindowControls?.refresh();
 }
 
 function playerGridArea(item) {
@@ -800,6 +803,47 @@ function shrinkPlayer(key) {
     const current = playerGeometry?.items.find(item => item.key === key);
     if (!current || current.span <= 1) return false;
     return applyPlayerSize(PlayerGeometry.shrink(playerGeometry, key));
+}
+
+function closePlayer(key) {
+    const pane = document.getElementById('multi-stream-container');
+    const entry = activePlayers.get(key);
+    const initial = key === 'initial-player' && !activePlayers.size && pane?.querySelector('#MyFrame');
+    if (!entry && !initial) return false;
+    const muted = getGlobalMuted();
+    if (entry) { disposePlayer(entry); activePlayers.delete(key); }
+    else initial.remove();
+    // A close must not re-render retained players or apply the 2-to-1 audio rule.
+    if (globalMutedPreference === null && activePlayers.size && muted !== getGlobalMuted()) globalMutedPreference = muted;
+    if (enlargedPlayerFocus?.key === key || activePlayers.size < 2) {
+        enlargedPlayerFocus = null;
+        pendingPlayerGeometry = null;
+        savePlayerEnlargement();
+    }
+    currentDisplayChannel = activePlayers.size === 1 ? activePlayers.values().next().value.channel : null;
+    activePlayers.forEach(retained => {
+        const element = getPlayerElement(retained);
+        element.classList.toggle('full-screen-video', activePlayers.size === 1);
+        element.classList.toggle('video', activePlayers.size > 1);
+    });
+    for (const input of document.querySelectorAll('#channel-options input[type="checkbox"]')) {
+        if (ChannelList.channelKey({ id: input.value, platform: input.dataset.platform, name: input.dataset.name || 'channel' }) === key) {
+            input.checked = false;
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    }
+    if (!activePlayers.size && pane) {
+        const message = document.createElement('div');
+        message.style.cssText = 'color:var(--label-2);text-align:center;padding:2rem';
+        message.textContent = '未選擇任何頻道';
+        pane.replaceChildren(message);
+    }
+    updatePlayerLayout();
+    updateGlobalAudioButton();
+    playerPositionEditor?.refresh();
+    playerNameOverlay?.refresh();
+    playerWindowControls?.refresh();
+    return true;
 }
 
 function getPlayerPositionKeys() {
@@ -923,7 +967,7 @@ function pruneActivePlayers() {
     if (currentDisplayChannel) currentDisplayChannel = available.get(ChannelList.channelKey(currentDisplayChannel)) || null;
     const remaining = getPlayerPositionKeys().map(key => available.get(key)).filter(Boolean);
     if (remaining.length !== activePlayers.size) syncActivePlayers(remaining);
-    else playerNameOverlay?.refresh();
+    else { playerNameOverlay?.refresh(); playerWindowControls?.refresh(); }
 }
 
 function displaySingleChannel(channel) {
@@ -1886,6 +1930,148 @@ function toggleChannelSelection() {
     window.addEventListener('pagehide', () => setVisible(false));
     window.addEventListener('pageshow', syncVisibility);
     syncVisibility();
+})();
+
+/* Window controls are a sibling overlay: never wrap or move a live iframe. */
+(function initPlayerWindowControls() {
+    const pane = document.getElementById('multi-stream-container');
+    const wrapper = document.getElementById('multi-stream-container-wrapper');
+    if (!pane || !wrapper) return;
+    const editor = document.getElementById('player-position-editor');
+    const layer = document.createElement('div');
+    layer.id = 'player-window-controls';
+    layer.hidden = true;
+    wrapper.appendChild(layer);
+    const cells = new Map();
+    const observed = new Set();
+    let frame = null;
+    let hoverFrame = null;
+    let suspended = false;
+    const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+    const mutations = new MutationObserver(schedule);
+    const modeObserver = new MutationObserver(schedule);
+    const icons = {
+        shrink: '<path d="M2 9.5h8"/>',
+        enlarge: '<rect x="2.5" y="2.5" width="7" height="7"/>',
+        close: '<path d="m2.5 2.5 7 7m0-7-7 7"/>'
+    };
+    const labels = { shrink: '縮小一格', enlarge: '放大一級', close: '關閉' };
+
+    function blocked() {
+        return suspended || Boolean(document.fullscreenElement || document.webkitFullscreenElement) || Boolean(editor && !editor.hidden);
+    }
+    function updateHover() {
+        for (const cell of cells.values()) {
+            cell.node.dataset.hovered = String(!blocked() && (cell.element.matches(':hover') || cell.bar.matches(':hover')));
+        }
+    }
+    function scheduleHover() {
+        if (hoverFrame !== null) return;
+        hoverFrame = requestAnimationFrame(() => { hoverFrame = null; updateHover(); });
+    }
+    function unbind(cell) {
+        cell.element.removeEventListener('pointerenter', scheduleHover);
+        cell.element.removeEventListener('pointerleave', scheduleHover);
+    }
+    function bind(cell, element) {
+        if (cell.element === element) return;
+        if (cell.element) unbind(cell);
+        cell.element = element;
+        // Events on the outer iframe work without reading its foreign document.
+        element.addEventListener('pointerenter', scheduleHover);
+        element.addEventListener('pointerleave', scheduleHover);
+    }
+    function render() {
+        const items = Array.from(activePlayers, ([key, entry]) => ({ key, name: entry.channel.name, element: getPlayerElement(entry) }));
+        const initial = !items.length && pane.querySelector('#MyFrame');
+        if (initial) items.push({ key: 'initial-player', name: '目前播放器', element: initial });
+        const visible = items.filter(item => item.element.isConnected);
+        const keys = new Set(visible.map(item => item.key));
+        for (const [key, cell] of cells) if (!keys.has(key)) {
+            unbind(cell); cell.node.remove(); cells.delete(key);
+        }
+        const elements = new Set([pane, wrapper, ...visible.map(item => item.element)]);
+        for (const element of observed) if (!elements.has(element)) { observer?.unobserve(element); observed.delete(element); }
+        for (const element of elements) if (!observed.has(element)) { observer?.observe(element); observed.add(element); }
+        const bounds = wrapper.getBoundingClientRect();
+        for (const { key, name, element } of visible) {
+            let cell = cells.get(key);
+            if (!cell) {
+                const node = document.createElement('div');
+                node.className = 'player-window-cell';
+                node.dataset.playerKey = key;
+                const bar = document.createElement('div');
+                bar.className = 'player-window-buttons';
+                bar.setAttribute('role', 'group');
+                const buttons = {};
+                for (const action of ['shrink', 'enlarge', 'close']) {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.dataset.playerAction = action;
+                    button.innerHTML = `<svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">${icons[action]}</svg>`;
+                    bar.appendChild(button); buttons[action] = button;
+                }
+                node.appendChild(bar); layer.appendChild(node);
+                bar.addEventListener('pointerenter', scheduleHover);
+                bar.addEventListener('pointerleave', scheduleHover);
+                cell = { node, bar, buttons, element: null };
+                cells.set(key, cell);
+            }
+            bind(cell, element);
+            cell.bar.setAttribute('aria-label', `${name} 播放器控制`);
+            const span = playerGeometry?.items.find(item => item.key === key)?.span || 1;
+            cell.buttons.shrink.hidden = span <= 1;
+            cell.buttons.enlarge.disabled = activePlayers.size < 2 || span >= 256;
+            for (const action of ['shrink', 'enlarge', 'close']) {
+                cell.buttons[action].title = `${labels[action]}：${name}`;
+                cell.buttons[action].setAttribute('aria-label', `${labels[action]}：${name}`);
+            }
+            if (cell.buttons.enlarge.disabled) cell.buttons.enlarge.title = activePlayers.size < 2 ? '至少觀看兩台才可放大' : '已達最大格數';
+            const rect = element.getBoundingClientRect();
+            cell.node.style.left = `${rect.left - bounds.left - wrapper.clientLeft + wrapper.scrollLeft}px`;
+            cell.node.style.top = `${rect.top - bounds.top - wrapper.clientTop + wrapper.scrollTop}px`;
+            cell.node.style.width = `${rect.width}px`;
+            cell.node.style.height = `${rect.height}px`;
+        }
+        layer.hidden = blocked() || !visible.length;
+        updateHover();
+    }
+    function schedule() {
+        if (suspended || frame !== null) return;
+        frame = requestAnimationFrame(() => { frame = null; render(); });
+    }
+    layer.addEventListener('click', event => {
+        const button = event.target.closest('button[data-player-action]');
+        if (!button || blocked() || button.disabled) return;
+        event.preventDefault(); event.stopPropagation();
+        const key = button.closest('.player-window-cell').dataset.playerKey;
+        if (button.dataset.playerAction === 'close') {
+            // Reflow can move another close button under a double-click.
+            if (event.detail > 1) return;
+            closePlayer(key);
+        } else if (button.dataset.playerAction === 'enlarge') enlargePlayer(key);
+        else shrinkPlayer(key);
+        render();
+    });
+    function observe() {
+        mutations.observe(pane, { childList: true, subtree: true });
+        if (editor) modeObserver.observe(editor, { attributes: true, attributeFilter: ['hidden'] });
+        window.addEventListener('resize', schedule);
+        wrapper.addEventListener('scroll', schedule, { passive: true });
+    }
+    window.addEventListener('pagehide', () => {
+        suspended = true; layer.hidden = true;
+        observer?.disconnect(); observed.clear(); mutations.disconnect(); modeObserver.disconnect();
+        window.removeEventListener('resize', schedule); wrapper.removeEventListener('scroll', schedule);
+        if (frame !== null) cancelAnimationFrame(frame);
+        if (hoverFrame !== null) cancelAnimationFrame(hoverFrame);
+        frame = hoverFrame = null;
+    });
+    window.addEventListener('pageshow', () => { suspended = false; observe(); render(); });
+    document.addEventListener('fullscreenchange', schedule);
+    document.addEventListener('webkitfullscreenchange', schedule);
+    playerWindowControls = { refresh: schedule };
+    observe(); render();
 })();
 
 function toggleChannelMenu() {

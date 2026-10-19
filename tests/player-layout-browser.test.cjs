@@ -37,7 +37,7 @@ test.before(async () => {
     appScript=source.slice(0,coreEnd)+'\n'+source.slice(selectionStart,editorEnd)+'\n'+fixtureApp;
     layoutScript=read('player-layout.js');geometryScript=read('player-geometry.js');channelScript=read('channel-list.js');performanceScript=read('stream-performance.js');
     css=[...read('index.html').matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match=>match[1]).join('\n');
-    console.log(`Player layout model: ${engine} ${browser.version()} (production CSS/app sections; all network intercepted; no live platform).`);
+    console.log(`Player layout model: ${engine} ${browser.version()} (headless; production CSS/app sections; all network intercepted; no live platform).`);
 });
 test.after(async()=>{await browser?.close()});
 function optional(t){if(unavailable){t.skip(unavailable);return false}return true}
@@ -72,10 +72,10 @@ function generateChannelOptions(){
 window.fixture={elements:[],entries:[],keys:[],frames:[],removals:0,frameSources:0};
 fixture.mount=function(){
  const pane=document.getElementById('multi-stream-container');
- channels=Array.from({length:5},(_,index)=>({id:'layout-'+index,platform:index===2||index===3?'at':'m3u8',name:'播放器 '+index}));
+ channels=Array.from({length:5},(_,index)=>({id:'layout-'+index,platform:index===2||index===3?document.body.dataset.fixtureFramePlatform||'at':'m3u8',name:'播放器 '+index}));
  channels.forEach((channel,index)=>{
    let element,resource=null;
-   if(channel.platform==='at'){
+   if(index===2||index===3){
       element=document.createElement('iframe');element.id='frame-'+index;element.src='${frameOrigin}/player?index='+index;element.allow='autoplay';
       element.addEventListener('load',()=>{element.dataset.loads=String(Number(element.dataset.loads||0)+1)});
       new MutationObserver(records=>{fixture.frameSources+=records.length}).observe(element,{attributes:true,attributeFilter:['src']});
@@ -126,7 +126,7 @@ fixture.grid=function(){const pane=document.getElementById('multi-stream-contain
 };
 fixture.mount();fixture.initialGrid=fixture.grid();fixture.initialGeometry=fixture.geometry();`;
 
-async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,hasTouch=false}={}){
+async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,hasTouch=false,framePlatform='at'}={}){
     const context=await browser.newContext({viewport,serviceWorkers:'block',...(hasTouch?{hasTouch:true}:{})});t.after(()=>context.close());
     if(storageSeed||denyStorage)await context.addInitScript(({storageSeed,denyStorage,origin})=>{
         if(location.origin!==origin)return;
@@ -136,7 +136,8 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
         });
     },{storageSeed,denyStorage,origin:new URL(siteUrl).origin});
     const navigations=new Map(),blocked=[];
-    const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body data-fixture-players="${players}">
+    assert.ok(['at','kick'].includes(framePlatform));
+    const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body data-fixture-players="${players}" data-fixture-frame-platform="${framePlatform}">
     <div style="height:30px;flex:none"><button id="more-channels-btn" onclick="toggleChannelSelection()">看更台</button><button id="adjust-player-positions">調整位置</button><button id="enlarge-player">放大模式</button><button id="reset-player-positions">重設</button><button id="toggle-all-audio">聲音</button></div>
     <div id="channel-selection" style="display:none"><div id="channel-options"></div><button id="fixture-watch-selected" onclick="watchSelectedChannels()">開始觀看</button></div><div id="multi-stream-container-wrapper" style="flex:none;width:${width}px;height:${height}px;min-height:0"><div id="multi-stream-container" class="video-wrapper"></div></div>
     <script src="/instrument.js"></script><script src="/channel-list.js"></script><script src="/stream-performance.js"></script><script src="/player-geometry.js"></script><script src="/player-layout.js"></script><script src="/fixture-app.js"></script></body></html>`;
@@ -649,17 +650,19 @@ test('a moved enlarged focus can shrink in a portrait pane without changing manu
     await f.page.locator('#enlarge-player').click();const order=(await geometry(f)).order;
     await f.page.locator('.player-position-shrink').click();const partial=await waitSpan(f,key,2);
     assert.deepEqual(withoutFocus(partial.order,key),withoutFocus(order,key));assertGeometry(partial,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));
+    // The four-button mobile toolbar now wraps. Its edge switch exposes the
+    // first row without forcing the controls into a single overflowing row.
+    if(await f.page.locator('#player-position-editor').getAttribute('data-toolbar-position')!=='bottom')await f.page.locator('.player-position-toolbar-toggle').click();
     const toolbar=await f.page.evaluate(()=>{
         const bar=document.querySelector('.player-position-toolbar'),bounds=bar.getBoundingClientRect();
         const buttons=Array.from(bar.querySelectorAll('button'),button=>button.getBoundingClientRect());
         const cells=Array.from(document.querySelectorAll('.player-position-cell'));
         const top=Math.min(...cells.map(cell=>cell.getBoundingClientRect().top));
         const firstRow=cells.filter(cell=>Math.abs(cell.getBoundingClientRect().top-top)<.5);
-        return {height:bounds.height,oneRow:buttons.every(rect=>Math.abs(rect.top-buttons[0].top)<.5),
-            fits:buttons.every(rect=>rect.left>=bounds.left&&rect.right<=bounds.right),
+        return {fits:buttons.every(rect=>rect.left>=bounds.left&&rect.right<=bounds.right),
             targetsExposed:firstRow.every(cell=>{const rect=cell.getBoundingClientRect();return cell.contains(document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2))})};
     });
-    assert.ok(toolbar.height<=50,'the mobile toolbar cannot grow tall enough to cover the first row');assert.equal(toolbar.oneRow,true);assert.equal(toolbar.fits,true);assert.equal(toolbar.targetsExposed,true);
+    assert.equal(toolbar.fits,true);assert.equal(toolbar.targetsExposed,true,'moving the wrapped mobile toolbar to the bottom exposes first-row player targets');
     await capture(f,'shrink-mobile');
     await f.page.locator('.player-position-shrink').click();const normal=await waitSingleCells(f);assert.deepEqual(normal.order,partial.order);assert.equal(normal.saved,null);
     const topCell=f.page.locator('.player-position-cell').first(),topKey=await topCell.getAttribute('data-player-key');
@@ -1198,4 +1201,186 @@ test('editor toolbar buttons fit narrow mobile panes at either edge in both mode
         }
     }
     await assertContinuity(f,before);
+});
+
+function windowCell(f,key){return f.page.locator(`.player-window-cell[data-player-key=${JSON.stringify(key)}]`)}
+async function hoverWindow(f,key){
+    const point=await f.page.evaluate(key=>{const rect=getPlayerElement(activePlayers.get(key)).getBoundingClientRect();return {x:rect.left+rect.width/2,y:rect.top+rect.height/2}},key);
+    await f.page.mouse.move(point.x,point.y,{steps:8});
+    try{await f.page.waitForFunction(key=>{
+        const layer=document.getElementById('player-window-controls'),cell=Array.from(layer.querySelectorAll('.player-window-cell')).find(cell=>cell.dataset.playerKey===key);
+        return !layer.hidden&&cell?.dataset.hovered==='true'&&Number(getComputedStyle(cell.querySelector('.player-window-buttons')).opacity)>.5;
+    },key)}catch(error){
+        console.error('Window hover diagnostic:',{key,point},await f.page.evaluate(({key,point})=>({
+            hidden:document.getElementById('player-window-controls').hidden,actualHover:getPlayerElement(activePlayers.get(key)).matches(':hover'),
+            target:document.elementFromPoint(point.x,point.y)?.id,scroll:[scrollX,scrollY],
+            rectangles:Array.from(activePlayers,([key,entry])=>({key,rect:JSON.stringify(getPlayerElement(entry).getBoundingClientRect().toJSON())})),
+            pointerLog:window.fixtureWindowPointerLog,
+            hovered:Array.from(document.querySelectorAll(':hover'),element=>element.id||element.className||element.tagName),
+            cells:Array.from(document.querySelectorAll('.player-window-cell'),cell=>({key:cell.dataset.playerKey,hovered:cell.dataset.hovered,opacity:getComputedStyle(cell.querySelector('.player-window-buttons')).opacity}))
+        }),{key,point}));throw error;
+    }
+    return point;
+}
+async function clickWindowAction(f,key,action){
+    const button=windowCell(f,key).locator(`button[data-player-action="${action}"]`);
+    const foreignFrame=await f.page.evaluate(key=>getPlayerElement(activePlayers.get(key)).tagName==='IFRAME',key);
+    if(engine==='chromium'&&foreignFrame){
+        // Chromium's Playwright input route does not reliably update the parent
+        // hover chain for an OOPIF. Exercise real keyboard activation instead;
+        // the separate Firefox subcase retains the complete pure-hover path.
+        await f.page.keyboard.press('Tab');await button.focus();
+        await button.evaluate(button=>{if(!button.matches(':focus-visible')||Number(getComputedStyle(button.parentElement).opacity)<=.5)throw Error('keyboard focus must reveal the real window controls')});
+        await button.press('Enter');
+    }else{await hoverWindow(f,key);await button.click()}
+}
+async function waitWindowGeometry(f){
+    await f.page.waitForFunction(()=>{
+        const layer=document.getElementById('player-window-controls');
+        if(!layer||layer.hidden||layer.children.length!==activePlayers.size)return false;
+        return Array.from(activePlayers,([key,entry])=>{
+            const cell=Array.from(layer.children).find(cell=>cell.dataset.playerKey===key);if(!cell)return false;
+            const a=cell.getBoundingClientRect(),b=getPlayerElement(entry).getBoundingClientRect();
+            return ['left','top','right','bottom'].every(side=>Math.abs(a[side]-b[side])<.6);
+        }).every(Boolean);
+    });
+}
+async function activeMediaSnapshot(f,keys,{remember=false}={}){
+    const state=await f.page.evaluate(({keys,remember})=>{
+        if(remember)window.fixtureRetainedPlayers=new Map();
+        return keys.map(key=>{
+            const entry=activePlayers.get(key),element=getPlayerElement(entry),frameIndex=fixture.frames.findIndex(frame=>frame.element===element);
+            if(remember)fixtureRetainedPlayers.set(key,{entry,element,resource:entry.resource,window:frameIndex<0?null:element.contentWindow});
+            const old=fixtureRetainedPlayers.get(key),saved=entry.resource?.video&&fixtureMedia.find(saved=>saved.video===entry.resource.video);
+            return {key,frameIndex,connected:element.isConnected,muted:entry.muted,failed:entry.failed,
+                sameElement:old.element===element,sameEntry:old.entry===entry,sameResource:old.resource===entry.resource,
+                sameWindow:frameIndex<0||element.contentWindow===old.window,loads:frameIndex<0?null:Number(element.dataset.loads),
+                media:saved?readMedia(saved):null};
+        });
+    },{keys,remember});
+    return Promise.all(state.map(async entry=>({...entry,child:entry.frameIndex<0?null:await f.frames[entry.frameIndex].evaluate(()=>({id:fixtureId,media:fixtureMedia.map(readMedia)}))})));
+}
+async function assertActiveContinuity(f,before){
+    const after=await activeMediaSnapshot(f,before.map(entry=>entry.key));
+    const stableEntry=entry=>({...entry,media:entry.media&&stable(entry.media),child:entry.child&&{...entry.child,media:entry.child.media.map(stable)}});
+    assert.deepEqual(after.map(stableEntry),before.map(stableEntry),'retained entries, native media and foreign iframe documents keep their identity and manual settings');
+    for(let index=0;index<after.length;index++){
+        if(before[index].media?.paused)assert.equal(after[index].media.time,before[index].media.time);
+        if(before[index].child?.media[0].paused)assert.equal(after[index].child.media[0].time,before[index].child.media[0].time);
+    }
+    assert.ok([...f.navigations.values()].every(count=>count===1));assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
+}
+
+test('window controls track native hover, preserve iframe center click-through and stay aligned through resize and editor modes',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    await waitWindowGeometry(f);await f.page.mouse.move(1990,1290);
+    assert.equal(await f.page.locator('.player-window-cell[data-hovered="true"]').count(),0);
+    await f.page.evaluate(()=>{
+        window.fixtureWindowPointerLog=[];
+        for(const entry of activePlayers.values())for(const type of ['pointerenter','pointerleave'])getPlayerElement(entry).addEventListener(type,event=>fixtureWindowPointerLog.push({type,target:event.target.id,hover:event.target.matches(':hover'),trusted:event.isTrusted}));
+        for(const saved of fixtureMedia)saved.video.addEventListener('click',()=>{saved.video.dataset.fixtureClicks=String(Number(saved.video.dataset.fixtureClicks||0)+1)});
+    });
+    for(const frame of f.frames)await frame.evaluate(()=>fixtureMedia[0].video.addEventListener('click',()=>{window.fixtureClicks=(window.fixtureClicks||0)+1}));
+    await hoverWindow(f,keys[0]);
+    assert.deepEqual(await f.page.locator('.player-window-cell[data-hovered="true"]').evaluateAll(cells=>cells.map(cell=>cell.dataset.playerKey)),[keys[0]]);
+    if(engine==='chromium')t.diagnostic('Only the pure OOPIF hover subcase is skipped for Chromium Playwright input. Separate CUA native-input evidence: outputs/player-window-controls-cross-origin-native.json and outputs/player-window-controls-twitch-native.png. This model still tests native hover, iframe-center click-through, geometry and keyboard iframe actions.');
+    await t.test('pure cross-origin iframe hover and pointer handoff to its window buttons',{
+        skip:engine==='chromium'?'Chromium Playwright OOPIF input does not update parent hover; separately verified with CUA native input':false
+    },async()=>{
+        for(const index of [2,3]){
+            await hoverWindow(f,keys[index]);
+            assert.deepEqual(await f.page.locator('.player-window-cell[data-hovered="true"]').evaluateAll(cells=>cells.map(cell=>cell.dataset.playerKey)),[keys[index]]);
+            await windowCell(f,keys[index]).locator('[data-player-action="close"]').hover();
+            assert.equal(await windowCell(f,keys[index]).getAttribute('data-hovered'),'true','moving from the foreign frame onto its own buttons keeps the controls revealed');
+        }
+    });
+    for(const index of [0,2,3]){
+        const point=await f.page.evaluate(key=>{const bounds=getPlayerElement(activePlayers.get(key)).getBoundingClientRect();return {x:bounds.left+bounds.width/2,y:bounds.top+bounds.height/2}},keys[index]);
+        assert.deepEqual(await windowCell(f,keys[index]).locator('button').evaluateAll(buttons=>buttons.map(button=>button.dataset.playerAction)),['shrink','enlarge','close']);
+        assert.equal(await windowCell(f,keys[index]).locator('[data-player-action="shrink"]').isVisible(),false);
+        assert.equal(await windowCell(f,keys[index]).locator('[data-player-action="enlarge"]').isEnabled(),true);
+        const tag=await f.page.evaluate(({x,y})=>document.elementFromPoint(x,y).tagName,point);assert.equal(tag,index===0?'VIDEO':'IFRAME','a transparent control cell cannot intercept media-center input');
+        await f.page.mouse.click(point.x,point.y);
+        if(index===0)assert.equal(await f.page.locator('#native-0').getAttribute('data-fixture-clicks'),'1');
+        else assert.equal(await f.frames[index-2].evaluate(()=>fixtureClicks),1);
+    }
+    for(const mode of ['#adjust-player-positions','#enlarge-player']){
+        await f.page.locator(mode).click();await f.page.waitForFunction(()=>document.getElementById('player-window-controls').hidden);
+        assert.equal(await f.page.locator('#player-window-controls').isVisible(),false);
+        if(mode==='#adjust-player-positions'){
+            await positionCell(f,keys[0]).click();await positionCell(f,keys[4]).click();
+        }
+        await f.page.locator('.player-position-done').click();await waitWindowGeometry(f);await hoverWindow(f,keys[0]);
+    }
+    await settlePane(f,320,650);await waitWindowGeometry(f);await hoverWindow(f,keys[0]);
+    await f.page.evaluate(()=>{document.getElementById('multi-stream-container-wrapper').style.padding='0'});
+    await settlePane(f,260,8);await waitWindowGeometry(f);await hoverWindow(f,keys[0]);
+    const clipped=await windowCell(f,keys[0]).evaluate(cell=>{
+        const button=cell.querySelector('[data-player-action="close"]'),box=button.getBoundingClientRect(),bounds=cell.getBoundingClientRect();
+        return {below:box.top+box.height/2>bounds.bottom,hit:document.elementFromPoint(box.left+box.width/2,box.top+box.height/2)?.closest('button[data-player-action]')===button};
+    });
+    assert.equal(clipped.below,true);assert.equal(clipped.hit,false,'a clipped tiny-player button cannot receive input outside its player');
+    await f.page.evaluate(()=>{document.getElementById('multi-stream-container-wrapper').style.padding=''});
+    await settlePane(f,1200,800);await waitWindowGeometry(f);await hoverWindow(f,keys[0]);await assertContinuity(f,before);
+});
+
+test('window controls enlarge and shrink the one focused player without opening the editor and safely update renamed channel labels',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    const keyboardButton=windowCell(f,keys[0]).locator('[data-player-action="enlarge"]');await keyboardButton.focus();
+    await f.page.waitForFunction(key=>{
+        const cell=Array.from(document.querySelectorAll('.player-window-cell')).find(cell=>cell.dataset.playerKey===key);
+        return cell.querySelector('[data-player-action="enlarge"]').matches(':focus-visible')&&Number(getComputedStyle(cell.querySelector('.player-window-buttons')).opacity)>.5;
+    },keys[0]);
+    await keyboardButton.press('Enter');await waitSpan(f,keys[0],2);await waitWindowGeometry(f);
+    assert.equal((await geometry(f)).opened,false);assert.equal(await windowCell(f,keys[0]).locator('[data-player-action="shrink"]').isVisible(),true);
+    await clickWindowAction(f,keys[2],'enlarge');const switched=await waitSpan(f,keys[2],2);assert.equal(spans(switched)[keys[0]],1);
+    assert.equal(switched.layout.items.filter(item=>item.span>1).length,1);await waitWindowGeometry(f);
+    await clickWindowAction(f,keys[2],'shrink');await waitSingleCells(f);await waitWindowGeometry(f);
+    assert.equal(await windowCell(f,keys[2]).locator('[data-player-action="shrink"]').isVisible(),false);
+    const name='<img src=x onerror="window.fixtureWindowXss=true"> & \\" 名稱 '.repeat(12);
+    await f.page.evaluate(({key,name})=>{const channel=channels.find(channel=>ChannelList.channelKey(channel)===key);channel.name=name;pruneActivePlayers()}, {key:keys[2],name});
+    await f.page.waitForFunction(({key,name})=>Array.from(document.querySelectorAll('.player-window-cell')).find(cell=>cell.dataset.playerKey===key)?.querySelector('[role="group"]').getAttribute('aria-label')===name+' 播放器控制',{key:keys[2],name});
+    assert.equal(await f.page.locator('#player-window-controls img,#player-window-controls script').count(),0);assert.equal(await f.page.evaluate(()=>Boolean(window.fixtureWindowXss)),false);
+    assert.equal(await windowCell(f,keys[2]).locator('[data-player-action="close"]').getAttribute('aria-label'),'關閉：'+name);
+    await assertContinuity(f,before);
+});
+
+test('window controls close only the chosen native resource, deselect its checkbox and preserve failed siblings without retrying them',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),keys=await f.page.evaluate(()=>fixture.keys),remaining=keys.slice(1);
+    await f.page.evaluate(()=>{
+        generateChannelOptions();document.querySelectorAll('#channel-options input')[3].checked=false;
+        window.fixtureChangedKeys=[];document.getElementById('channel-options').addEventListener('change',event=>fixtureChangedKeys.push(ChannelList.channelKey({id:event.target.value,platform:event.target.dataset.platform,name:event.target.dataset.name})));
+        window.fixtureHlsDestroyed=0;fixture.entries[0].resource.hls={destroy(){fixtureHlsDestroyed++}};
+        setTimeout(()=>{replacePlayerWithError(fixture.entries[1].resource,'本地保留失敗播放器');window.fixtureFailedElement=fixture.entries[1].resource.element},20);
+        window.fixtureRenders=0;const original=renderChannelElement;renderChannelElement=function(...args){fixtureRenders++;return original(...args)};
+    });
+    await f.page.waitForFunction(()=>fixture.entries[1].resource.element===window.fixtureFailedElement&&fixtureFailedElement?.isConnected);await waitWindowGeometry(f);
+    const before=await activeMediaSnapshot(f,remaining,{remember:true}),closedBefore=await f.page.evaluate(()=>readMedia(fixtureMedia[0]));
+    await hoverWindow(f,keys[0]);await windowCell(f,keys[0]).locator('[data-player-action="close"]').dblclick();
+    await f.page.waitForFunction(()=>activePlayers.size===4);await waitWindowGeometry(f);
+    const closed=await f.page.evaluate(()=>({disposed:fixture.entries[0].resource.disposed,src:fixture.entries[0].resource.video.getAttribute('src'),media:readMedia(fixtureMedia[0]),destroyed:fixtureHlsDestroyed,
+        channelCount:channels.length,changed:fixtureChangedKeys,checked:Array.from(document.querySelectorAll('#channel-options input'),input=>input.checked),renders:fixtureRenders,
+        sameFailed:fixture.entries[1].resource.element===fixtureFailedElement&&fixtureFailedElement.isConnected,othersDisposed:fixture.entries.slice(1).some(entry=>entry.resource?.disposed)}));
+    assert.equal(closed.disposed,true);assert.equal(closed.destroyed,1);assert.equal(closed.src,null);assert.equal(closed.media.same,false);
+    assert.equal(closed.media.actions.pause,closedBefore.actions.pause+1);assert.equal(closed.media.actions.load,closedBefore.actions.load+1);
+    assert.equal(closed.channelCount,5);assert.deepEqual(closed.changed,[keys[0]],'a double-click cannot close a sibling that reflows under the first close button');
+    assert.deepEqual(closed.checked,[false,true,true,false,true],'closing a player preserves an unrelated pending checkbox edit');
+    assert.equal(closed.renders,0);assert.equal(closed.sameFailed,true);assert.equal(closed.othersDisposed,false);await assertActiveContinuity(f,before);
+});
+
+test('window controls keep Kick-like fallback iframe documents and audio intact when closing two to one, then show the empty state after the last close',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,framePlatform:'kick'}),keys=await f.page.evaluate(()=>fixture.keys);
+    await f.page.evaluate(()=>generateChannelOptions());
+    for(const index of [0,1,4])await clickWindowAction(f,keys[index],'close');
+    await f.page.waitForFunction(()=>activePlayers.size===2);await waitWindowGeometry(f);
+    const before=await activeMediaSnapshot(f,[keys[3]],{remember:true}),audioBefore=await f.page.locator('#toggle-all-audio').getAttribute('aria-pressed');
+    await clickWindowAction(f,keys[2],'close');await f.page.waitForFunction(()=>activePlayers.size===1);await waitWindowGeometry(f);
+    assert.equal(await f.page.locator('#toggle-all-audio').getAttribute('aria-pressed'),audioBefore);
+    assert.equal(await windowCell(f,keys[3]).locator('[data-player-action="enlarge"]').isDisabled(),true);
+    assert.equal(await windowCell(f,keys[3]).locator('[data-player-action="shrink"]').isVisible(),false);
+    assert.equal(await f.page.evaluate(()=>ChannelList.channelKey(currentDisplayChannel)),keys[3]);await assertActiveContinuity(f,before);
+    await clickWindowAction(f,keys[3],'close');await f.page.waitForFunction(()=>activePlayers.size===0&&document.querySelectorAll('.player-window-cell').length===0);
+    assert.equal(await f.page.locator('#multi-stream-container').innerText(),'未選擇任何頻道');assert.equal(await f.page.locator('#player-window-controls').isVisible(),false);
+    assert.deepEqual(await f.page.evaluate(()=>({channels:channels.length,checked:document.querySelectorAll('#channel-options input:checked').length,display:currentDisplayChannel})),{channels:5,checked:0,display:null});
+    assert.ok([...f.navigations.values()].every(count=>count===1));assert.deepEqual(f.blocked,[]);assert.deepEqual(f.errors,[]);
 });
