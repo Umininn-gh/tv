@@ -120,6 +120,7 @@
         let sequence = 0, scanTimer = null, disposed = false, globalMuted = null;
         let preparation = null, preparedCohort = new Set(), watchStartTimer = null, unreadyWrappers = 0;
         let preparationWaiting = '', lastRecoveryStatus = null;
+        let panelIdleCleanup = null;
 
         function node(tag, text, attributes = {}) {
             const element = doc.createElement(tag);
@@ -496,7 +497,37 @@
             shadow.append(style, toggle, quickDetect);
             input.appendChild(host);
             doc.body.appendChild(panelHost);
+            let idleTimer = null;
+            const activityEvents = ['pointerdown', 'pointermove', 'pointerup', 'click', 'keydown', 'keyup', 'input', 'change', 'wheel', 'touchstart', 'touchmove', 'touchend'];
+            function clearIdleTimer() {
+                if (idleTimer !== null) win.clearTimeout(idleTimer);
+                idleTimer = null;
+            }
+            function armIdleTimer() {
+                clearIdleTimer();
+                idleTimer = win.setTimeout(() => {
+                    idleTimer = null;
+                    if (disposed || panel.hidden) return;
+                    const restoreFocus = panel.contains(panelShadow.activeElement);
+                    setOpen(false);
+                    if (restoreFocus) toggle.focus({ preventScroll: true });
+                }, 30000);
+            }
+            function onPanelActivity(event) {
+                // Status updates, scripted clicks/focus and restored scrollTop
+                // are not user activity. Wheel/keys/pointer movement cover scrolling.
+                if (event.isTrusted && !disposed && !panel.hidden) armIdleTimer();
+            }
+            function onPanelPageHide() { setOpen(false); }
+            for (const type of activityEvents) panel.addEventListener(type, onPanelActivity, { capture: true, passive: true });
+            win.addEventListener('pagehide', onPanelPageHide);
+            panelIdleCleanup = () => {
+                clearIdleTimer();
+                for (const type of activityEvents) panel.removeEventListener(type, onPanelActivity, true);
+                win.removeEventListener('pagehide', onPanelPageHide);
+            };
             function setOpen(open) {
+                clearIdleTimer();
                 panel.hidden = !open;
                 toggle.setAttribute('aria-expanded', String(open));
                 if (open) {
@@ -504,6 +535,7 @@
                     scan();
                     for (const entry of entries.values()) if (!entry.target) probe(entry);
                     close.focus({ preventScroll: true });
+                    armIdleTimer();
                 }
             }
             toggle.addEventListener('click', () => setOpen(panel.hidden));
@@ -557,6 +589,8 @@
         function dispose() {
             if (disposed) return;
             disposed = true;
+            panelIdleCleanup?.();
+            panelIdleCleanup = null;
             recoveryFlow?.dispose();
             clearPreparation();
             if (watchStartTimer !== null) win.clearTimeout(watchStartTimer);

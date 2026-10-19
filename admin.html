@@ -1144,8 +1144,7 @@ textarea:focus {
 
         // ======================== 看更台（多視窗）=====================
         function watchSelectedChannels() {
-            const selectionDiv = document.getElementById('channel-selection');
-            if (selectionDiv) selectionDiv.style.display = 'none';
+            setChannelSelectionVisible(false);
             const selected = Array.from(document.querySelectorAll('#channel-options input:checked'));
             const byKey = new Map(channels.map(channel => [channelStatusKey(channel), channel]));
             const fullSelected = selected.map(cb => byKey.get(channelStatusKey({ name: cb.dataset.name || 'channel', id: cb.value, platform: cb.dataset.platform }))).filter(Boolean);
@@ -1383,13 +1382,48 @@ textarea:focus {
         }
 
         // ======================== 看更台面板 ========================
+        const channelSelectionIdleTimer = (() => {
+            const panel = document.getElementById('channel-selection');
+            let timer = null;
+            let visible = false;
+            function reset() {
+                if (timer !== null) clearTimeout(timer);
+                timer = visible ? setTimeout(() => setChannelSelectionVisible(false), 30000) : null;
+            }
+            function onActivity(event) {
+                if (!visible || event.isTrusted !== true) return;
+                // Script-written scrollTop can also generate trusted scroll
+                // events. Only the actual input gesture resets inactivity.
+                reset();
+            }
+            for (const type of ['pointermove', 'pointerdown', 'pointerup', 'click', 'keydown', 'keyup',
+                'input', 'change', 'wheel', 'touchstart', 'touchmove', 'touchend']) {
+                panel?.addEventListener(type, onActivity, { capture: true, passive: true });
+            }
+            window.addEventListener('pagehide', () => setChannelSelectionVisible(false));
+            return {
+                setVisible(next) {
+                    next = Boolean(panel && next);
+                    if (next === visible) return;
+                    visible = next;
+                    reset();
+                }
+            };
+        })();
+
+        function setChannelSelectionVisible(visible) {
+            const panel = document.getElementById('channel-selection');
+            if (panel) panel.style.display = visible ? 'block' : 'none';
+            channelSelectionIdleTimer.setVisible(visible);
+        }
+
         function toggleChannelSelection() {
             const div = document.getElementById("channel-selection");
             if (!div) return;
             if (div.style.display === "none") {
                 generateChannelOptions();
-                div.style.display = "block";
-            } else div.style.display = "none";
+                setChannelSelectionVisible(true);
+            } else setChannelSelectionVisible(false);
         }
 
         function generateChannelOptions() {

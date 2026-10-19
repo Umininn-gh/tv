@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.4
+// @version      1.0.5
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -29,7 +29,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.4",
+        userscriptVersion: "1.0.5",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -1142,6 +1142,7 @@
         let sequence = 0, scanTimer = null, disposed = false, globalMuted = null;
         let preparation = null, preparedCohort = new Set(), watchStartTimer = null, unreadyWrappers = 0;
         let preparationWaiting = '', lastRecoveryStatus = null;
+        let panelIdleCleanup = null;
 
         function node(tag, text, attributes = {}) {
             const element = doc.createElement(tag);
@@ -1518,7 +1519,37 @@
             shadow.append(style, toggle, quickDetect);
             input.appendChild(host);
             doc.body.appendChild(panelHost);
+            let idleTimer = null;
+            const activityEvents = ['pointerdown', 'pointermove', 'pointerup', 'click', 'keydown', 'keyup', 'input', 'change', 'wheel', 'touchstart', 'touchmove', 'touchend'];
+            function clearIdleTimer() {
+                if (idleTimer !== null) win.clearTimeout(idleTimer);
+                idleTimer = null;
+            }
+            function armIdleTimer() {
+                clearIdleTimer();
+                idleTimer = win.setTimeout(() => {
+                    idleTimer = null;
+                    if (disposed || panel.hidden) return;
+                    const restoreFocus = panel.contains(panelShadow.activeElement);
+                    setOpen(false);
+                    if (restoreFocus) toggle.focus({ preventScroll: true });
+                }, 30000);
+            }
+            function onPanelActivity(event) {
+                // Status updates, scripted clicks/focus and restored scrollTop
+                // are not user activity. Wheel/keys/pointer movement cover scrolling.
+                if (event.isTrusted && !disposed && !panel.hidden) armIdleTimer();
+            }
+            function onPanelPageHide() { setOpen(false); }
+            for (const type of activityEvents) panel.addEventListener(type, onPanelActivity, { capture: true, passive: true });
+            win.addEventListener('pagehide', onPanelPageHide);
+            panelIdleCleanup = () => {
+                clearIdleTimer();
+                for (const type of activityEvents) panel.removeEventListener(type, onPanelActivity, true);
+                win.removeEventListener('pagehide', onPanelPageHide);
+            };
             function setOpen(open) {
+                clearIdleTimer();
                 panel.hidden = !open;
                 toggle.setAttribute('aria-expanded', String(open));
                 if (open) {
@@ -1526,6 +1557,7 @@
                     scan();
                     for (const entry of entries.values()) if (!entry.target) probe(entry);
                     close.focus({ preventScroll: true });
+                    armIdleTimer();
                 }
             }
             toggle.addEventListener('click', () => setOpen(panel.hidden));
@@ -1579,6 +1611,8 @@
         function dispose() {
             if (disposed) return;
             disposed = true;
+            panelIdleCleanup?.();
+            panelIdleCleanup = null;
             recoveryFlow?.dispose();
             clearPreparation();
             if (watchStartTimer !== null) win.clearTimeout(watchStartTimer);

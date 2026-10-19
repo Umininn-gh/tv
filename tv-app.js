@@ -988,10 +988,40 @@ function watchSelectedChannels() {
     syncActivePlayers(fullSelected, '未選擇任何頻道');
 }
 
+const channelSelectionIdleTimer = (() => {
+    const panel = document.getElementById('channel-selection');
+    let timer = null;
+    let visible = false;
+    function reset() {
+        if (timer !== null) clearTimeout(timer);
+        timer = visible ? setTimeout(() => setChannelSelectionVisible(false), 30000) : null;
+    }
+    function onActivity(event) {
+        if (!visible || event.isTrusted !== true) return;
+        // Count the input gesture, never scroll itself: script-written scrollTop
+        // can also generate trusted scroll events during a background refresh.
+        reset();
+    }
+    for (const type of ['pointermove', 'pointerdown', 'pointerup', 'click', 'keydown', 'keyup',
+        'input', 'change', 'wheel', 'touchstart', 'touchmove', 'touchend']) {
+        panel?.addEventListener(type, onActivity, { capture: true, passive: true });
+    }
+    window.addEventListener('pagehide', () => setChannelSelectionVisible(false));
+    return {
+        setVisible(next) {
+            next = Boolean(panel && next);
+            if (next === visible) return;
+            visible = next;
+            reset();
+        }
+    };
+})();
+
 function setChannelSelectionVisible(visible) {
     const panel = document.getElementById('channel-selection');
     if (panel) panel.style.display = visible ? 'block' : 'none';
     playerNameOverlay?.setVisible(visible);
+    channelSelectionIdleTimer.setVisible(visible);
 }
 
 /* =============== 頻道儲存 / 載入 =============== */
