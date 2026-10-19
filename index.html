@@ -289,6 +289,12 @@
         .toggle-switch input:checked + .slider::before { transform: translateX(20px); }
         .purple-toggle input:checked + .slider { background-color: var(--purple); }
         .toggle-label { color: var(--label); font-weight: 500; }
+        #chatToggleWrapper { position: relative; height: 24px; min-height: 24px; padding: 0 6px; gap: 6px; font-size: 12px; border-radius: 5px; }
+        #chatToggleWrapper .slider { width: 25.5px; height: 15.5px; }
+        #chatToggleWrapper .slider::before { width: 13.5px; height: 13.5px; left: 1px; top: 1px; }
+        #chatToggleWrapper input:checked + .slider::before { transform: translateX(10px); }
+        #chatToggleWrapper input { display: block; position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; border: 0; opacity: 0; }
+        #chatToggleWrapper input:focus-visible + .slider { outline: 2px solid var(--purple); outline-offset: 2px; }
 
         /* ---------------- 右側控制區 ---------------- */
         #input-container {
@@ -396,6 +402,10 @@
             flex-direction: column;
         }
         .chat { flex: 1; }
+        #chat-panel { display: flex; flex-direction: column; }
+        #chat-panel > #chat_embed { flex: 1 1 0; width: 100%; height: 100%; min-height: 0; border: 0; }
+        #chat-mode-home { display: flex; align-items: center; flex: 0 0 auto; padding: 3px 6px; background: var(--bg-1); }
+        #chat-mode-home[hidden] { display: none; }
 
         iframe, video { contain: layout paint; }
 
@@ -1404,7 +1414,7 @@
     </style>
     <link rel="stylesheet" href="./login.css">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261019-idle-panels"></script>
+    <script defer src="./login.js?v=20261019-chat-toggle"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">
@@ -1453,12 +1463,6 @@
                 <button id="toggle-all-audio" type="button" aria-pressed="false" onclick="toggleAllAudio()" title="同步支援的播放器聲音；部分外站播放器會重新載入">🔇 全部靜音</button>
                 <span id="global-audio-feedback" role="status" aria-live="polite" hidden></span>
                 <button id="more-channels-btn" onclick="toggleChannelSelection()">📺 看更台</button>
-   
-                <label class="toggle-switch purple-toggle" id="chatToggleWrapper">
-                    <span class="toggle-label" id="chatToggleLabel">TWITCH</span>
-                    <input type="checkbox" id="chatToggle">
-                    <span class="slider"></span>
-                </label>
             </div>
         </div>
     </div>
@@ -1547,7 +1551,16 @@
         <!-- 手機模式拖曳分隔條（已移除 title，避免 iOS 長按系統提示） -->
         <div id="mobile-resizer" aria-label="拖曳調整影片與聊天大小"></div>
 
-        <iframe class="chat" id="chat_embed" title="直播台聊天室" src="./test3.html?v=20261016-chat-bottom-arrow" allowfullscreen="true" scrolling="yes"></iframe>
+        <div class="chat" id="chat-panel">
+            <iframe id="chat_embed" title="直播台聊天室" src="./test3.html?v=20261019-chat-toggle" allowfullscreen="true" scrolling="yes"></iframe>
+            <div id="chat-mode-home">
+                <label class="toggle-switch purple-toggle" id="chatToggleWrapper">
+                    <span class="toggle-label" id="chatToggleLabel">TWITCH</span>
+                    <input type="checkbox" id="chatToggle" role="switch" aria-label="使用官方 Twitch 聊天室">
+                    <span class="slider"></span>
+                </label>
+            </div>
+        </div>
     </div>
 
     <div id="channel-menu" style="display: none;">

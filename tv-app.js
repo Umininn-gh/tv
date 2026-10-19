@@ -2265,24 +2265,48 @@ function showUserscript() {
 (function initChatToggle() {
     const toggle = document.getElementById('chatToggle');
     const iframe = document.getElementById('chat_embed');
-    if (!toggle || !iframe) return;
+    const control = document.getElementById('chatToggleWrapper');
+    const home = document.getElementById('chat-mode-home');
+    if (!toggle || !iframe || !control || !home) return;
+
+    function returnControl() {
+        home.appendChild(control);
+        home.hidden = false;
+    }
+    function placeControl() {
+        if (toggle.checked) return;
+        try {
+            const auth = iframe.contentDocument?.getElementById('auth-area');
+            if (!auth) { returnControl(); return; }
+            // Moving only our control keeps the chat's login button, handlers,
+            // active connection and login state in their original document.
+            auth.insertBefore(control, auth.firstChild);
+            home.hidden = true;
+        } catch (_) { returnControl(); }
+    }
 
     function applyChatState(isAltChat) {
+        // Rescue the same control before navigating away from its document.
+        returnControl();
         if (isAltChat) {
             iframe.src = `https://www.twitch.tv/embed/whitewing940920/chat?darkpopout&parent=${encodeURIComponent(parent)}`;
         } else {
-            iframe.src = './test3.html?v=20261016-chat-bottom-arrow';
+            const custom = new URL('./test3.html?v=20261019-chat-toggle', location.href).href;
+            if (iframe.src !== custom) iframe.src = custom;
+            else placeControl();
         }
     }
-    const savedState = localStorage.getItem('chatToggleState');
+    iframe.addEventListener('load', placeControl);
+    let savedState = null;
+    try { savedState = localStorage.getItem('chatToggleState'); } catch (_) {}
     const isChecked = savedState === 'true';
     toggle.checked = isChecked;
-    if (savedState !== null) applyChatState(isChecked);
+    applyChatState(isChecked);
 
     toggle.addEventListener('change', (e) => {
         const checked = e.target.checked;
         applyChatState(checked);
-        localStorage.setItem('chatToggleState', checked);
+        try { localStorage.setItem('chatToggleState', checked); } catch (_) {}
     });
 })();
 
@@ -2316,7 +2340,7 @@ function showUserscript() {
 
     const isMobile = window.innerWidth <= 768;
     const vp = document.getElementById('multi-stream-container');
-    const ce = document.getElementById('chat_embed');
+    const ce = document.getElementById('chat-panel') || document.getElementById('chat_embed');
     if (!vp || !ce) return;
 
     if (isMobile) {
@@ -2339,7 +2363,8 @@ function showUserscript() {
 }
 
     // 還原上次拖曳的比例
-    const saved = parseFloat(localStorage.getItem(STORAGE_KEY));
+    let saved = NaN;
+    try { saved = parseFloat(localStorage.getItem(STORAGE_KEY)); } catch (_) {}
     applyRatio(Number.isFinite(saved) ? saved : DEFAULT_RATIO);
 
     let dragging  = false;
@@ -2385,7 +2410,7 @@ function showUserscript() {
             try { resizer.releasePointerCapture(pointerId); } catch (_) {}
         }
         pointerId = null;
-        localStorage.setItem(STORAGE_KEY, String(currentRatio));
+        try { localStorage.setItem(STORAGE_KEY, String(currentRatio)); } catch (_) {}
     }
 
     // ★ 只在 resizer 上監聽 pointerdown，其餘掛在 document
@@ -2398,7 +2423,7 @@ function showUserscript() {
     resizer.addEventListener('dblclick', () => {
 	
         applyRatio(DEFAULT_RATIO);
-        localStorage.setItem(STORAGE_KEY, String(currentRatio));
+        try { localStorage.setItem(STORAGE_KEY, String(currentRatio)); } catch (_) {}
 		
     });
 	 window.addEventListener('resize', () => {
