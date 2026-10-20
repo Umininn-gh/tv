@@ -957,6 +957,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
             entry.channel = channel;
         }
         const visible = entry.resource ? entry.resource.element : entry.element;
+        visible.dataset.channelName = channel.name || '';
         visible.classList.toggle('full-screen-video', count === 1);
         visible.classList.toggle('video', count > 1);
         // Moving an iframe in the DOM can restart it; CSS order keeps it connected.
@@ -974,7 +975,10 @@ function pruneActivePlayers() {
     if (!activePlayers.size) { playerNameOverlay?.refresh(); return; }
     const available = new Map(channels.map(channel => [ChannelList.channelKey(channel), channel]));
     activePlayers.forEach((entry, key) => {
-        if (available.has(key)) entry.channel = available.get(key);
+        if (available.has(key)) {
+            entry.channel = available.get(key);
+            getPlayerElement(entry).dataset.channelName = entry.channel.name || '';
+        }
     });
     if (currentDisplayChannel) currentDisplayChannel = available.get(ChannelList.channelKey(currentDisplayChannel)) || null;
     const remaining = getPlayerPositionKeys().map(key => available.get(key)).filter(Boolean);

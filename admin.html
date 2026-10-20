@@ -1115,6 +1115,7 @@ textarea:focus {
                     }
                 }
                 player.channel = channel;
+                player.element.dataset.channelName = channel.name || '';
                 player.element.className = (isOnlyOne ? 'full-screen-video' : 'video') + (player.twitch ? ' twitch-wrapper' : '');
                 player.element.style.width = isOnlyOne ? '100%' : '48%';
                 player.element.style.height = isOnlyOne ? '100%' : '48%';
@@ -1223,7 +1224,12 @@ textarea:focus {
                     const scrollTop = selection.scrollTop;
                     channels = loaded.channels;
                     const available = new Map(channels.map(channel => [channelStatusKey(channel), channel]));
-                    adminPlayers.forEach((entry, key) => { if (available.has(key)) entry.channel = available.get(key); });
+                    adminPlayers.forEach((entry, key) => {
+                        if (available.has(key)) {
+                            entry.channel = available.get(key);
+                            entry.element.dataset.channelName = entry.channel.name || '';
+                        }
+                    });
                     const retained = Array.from(adminPlayers.values()).filter(entry => available.has(entry.key)).map(entry => entry.channel);
                     if (retained.length !== adminPlayers.size) renderAdminChannels(retained, '未選擇頻道');
                     generateButtons();

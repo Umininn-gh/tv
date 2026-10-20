@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.6
+// @version      1.0.7
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -29,7 +29,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.6",
+        userscriptVersion: "1.0.7",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -1182,6 +1182,8 @@
         function order(entry) { return Number(entry.element.style.order) || 0; }
         function currentEntries() { return [...entries.values()].sort((a, b) => order(a) - order(b) || a.id - b.id); }
         function describe(entry, index) {
+            const channelName = entry.element.getAttribute('data-channel-name')?.trim();
+            if (channelName) return `${index + 1}. ${channelName}`;
             const frame = entry.frame;
             if (!frame) return `${index + 1}. 原生播放器`;
             try {
@@ -1598,7 +1600,7 @@
             detectButton.addEventListener('click', () => { void runRecovery('manual'); });
             quickDetect.addEventListener('click', () => { void runRecovery('manual'); });
             observer = new win.MutationObserver(queueScan);
-            observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'class', 'style'] });
+            observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'class', 'style', 'data-channel-name'] });
             doc.addEventListener('click', originalMuteClick, true);
             doc.addEventListener('click', onWatchStart, true);
             win.addEventListener('message', onFrameMessage);
