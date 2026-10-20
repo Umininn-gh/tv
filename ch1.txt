@@ -33,7 +33,7 @@ k,krichure,at
 動,mrrock,at
 wc,no25no2502,kick
 QT,qt369,kick
-g（廣州電視）,https://tencentplaybusiness.gztv.com/live/zonghes.m3u8,m3u8
+廣州電視,https://tencentplaybusiness.gztv.com/live/zonghes.m3u8,m3u8
 12345,12345,twitch
 A,alancml01,twitch
 朗子,arlongjaijai2025,twitch
