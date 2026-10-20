@@ -202,6 +202,7 @@
         }
 
         #multi-stream-container-wrapper {
+            position: relative;
             display: flex;
             gap: 0.9375em;
             padding: 0.9375em;
@@ -285,6 +286,40 @@
             object-fit: contain;
             background: #000;
             border-radius: 8px;
+        }
+        #player-name-overlay {
+            position: absolute;
+            inset: 0;
+            z-index: 10;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        #player-name-overlay[hidden] { display: none; }
+        .player-name-cell {
+            position: absolute;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 0;
+            min-height: 0;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        .player-name-label {
+            max-width: calc(100% - 12px);
+            max-height: 100%;
+            padding: 6px 12px;
+            border-radius: 8px;
+            background: rgba(0, 0, 0, .62);
+            color: #fff;
+            font-size: clamp(12px, 1.3vw, 20px);
+            font-weight: 700;
+            line-height: 1.35;
+            text-align: center;
+            overflow-wrap: anywhere;
+            overflow: hidden;
+            text-shadow: 0 1px 3px #000;
+            pointer-events: none;
         }
         /* 漢堡菜單樣式 */
         #mobile-menu-btn {
@@ -1422,6 +1457,110 @@ textarea:focus {
             if (panel) panel.style.display = visible ? 'block' : 'none';
             channelSelectionIdleTimer.setVisible(visible);
         }
+
+        (function initAdminPlayerNameOverlay() {
+            const pane = document.getElementById('multi-stream-container');
+            const wrapper = document.getElementById('multi-stream-container-wrapper');
+            const selection = document.getElementById('channel-selection');
+            if (!pane || !wrapper || !selection) return;
+            const layer = document.createElement('div');
+            layer.id = 'player-name-overlay';
+            layer.hidden = true;
+            layer.setAttribute('aria-hidden', 'true');
+            wrapper.appendChild(layer);
+            const labels = new Map();
+            const observed = new Set();
+            let opened = false;
+            let suspended = false;
+            let frame = null;
+            const resizes = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+            const mutations = new MutationObserver(schedule);
+
+            function render() {
+                if (!opened) return;
+                const items = Array.from(adminPlayers, ([key, player]) => ({ key, element: player.element,
+                    name: player.element.dataset.channelName?.trim() || player.channel.name || '目前播放器' }));
+                const initial = !items.length && pane.querySelector('#MyFrame');
+                if (initial) {
+                    let name = initial.dataset.channelName?.trim();
+                    if (!name) {
+                        try {
+                            const path = new URL(initial.src, location.href).pathname;
+                            name = channels.find(channel => channel.platform === 'ok' &&
+                                path === '/videoembed/' + channel.id)?.name;
+                        } catch (_) {}
+                    }
+                    items.push({ key: 'initial-player', element: initial, name: name || '目前播放器' });
+                }
+                const bounds = wrapper.getBoundingClientRect();
+                const paneBounds = pane.getBoundingClientRect();
+                // Clip labels together with the internally scrolling video area.
+                const originLeft = bounds.left + wrapper.clientLeft - wrapper.scrollLeft;
+                const originTop = bounds.top + wrapper.clientTop - wrapper.scrollTop;
+                layer.style.clipPath = `inset(${Math.max(0, paneBounds.top + pane.clientTop - originTop)}px ${Math.max(0, wrapper.clientWidth - (paneBounds.left + pane.clientLeft + pane.clientWidth - originLeft))}px ${Math.max(0, wrapper.clientHeight - (paneBounds.top + pane.clientTop + pane.clientHeight - originTop))}px ${Math.max(0, paneBounds.left + pane.clientLeft - originLeft)}px)`;
+                const visible = items.filter(item => item.element.isConnected && pane.contains(item.element))
+                    .map(item => ({ ...item, rect: item.element.getBoundingClientRect() }));
+                const keys = new Set(visible.map(item => item.key));
+                for (const [key, cell] of labels) if (!keys.has(key)) { cell.remove(); labels.delete(key); }
+                const elements = new Set([pane, wrapper, ...visible.map(item => item.element)]);
+                for (const element of observed) if (!elements.has(element)) { resizes?.unobserve(element); observed.delete(element); }
+                for (const element of elements) if (!observed.has(element)) { resizes?.observe(element); observed.add(element); }
+                for (const { key, name, rect } of visible) {
+                    let cell = labels.get(key);
+                    if (!cell) {
+                        cell = document.createElement('div');
+                        cell.className = 'player-name-cell';
+                        cell.dataset.playerKey = key;
+                        const badge = document.createElement('span');
+                        badge.className = 'player-name-label';
+                        cell.appendChild(badge);
+                        layer.appendChild(cell);
+                        labels.set(key, cell);
+                    }
+                    if (cell.firstChild.textContent !== name) cell.firstChild.textContent = name;
+                    cell.style.left = `${rect.left - originLeft}px`;
+                    cell.style.top = `${rect.top - originTop}px`;
+                    cell.style.width = `${rect.width}px`;
+                    cell.style.height = `${rect.height}px`;
+                }
+                layer.hidden = !visible.length;
+            }
+            function schedule() {
+                if (!opened || frame !== null) return;
+                frame = requestAnimationFrame(() => { frame = null; render(); });
+            }
+            function setVisible(visible) {
+                if (visible === opened) { if (visible) schedule(); return; }
+                opened = visible;
+                if (visible) {
+                    render();
+                    mutations.observe(pane, { childList: true, subtree: true, attributes: true,
+                        attributeFilter: ['style', 'class', 'src', 'data-channel-name'] });
+                    window.addEventListener('resize', schedule);
+                    window.addEventListener('scroll', schedule, true);
+                } else {
+                    layer.hidden = true;
+                    resizes?.disconnect();
+                    observed.clear();
+                    mutations.disconnect();
+                    window.removeEventListener('resize', schedule);
+                    window.removeEventListener('scroll', schedule, true);
+                    if (frame !== null) cancelAnimationFrame(frame);
+                    frame = null;
+                }
+            }
+            function syncVisibility() {
+                setVisible(!suspended && (document.documentElement.hasAttribute('data-umininn-player-controls-open') ||
+                    (!selection.hidden && getComputedStyle(selection).display !== 'none')));
+            }
+            const visibilityObserver = new MutationObserver(syncVisibility);
+            visibilityObserver.observe(document.documentElement, { attributes: true,
+                attributeFilter: ['data-umininn-player-controls-open'] });
+            visibilityObserver.observe(selection, { attributes: true, attributeFilter: ['style', 'hidden', 'class'] });
+            window.addEventListener('pagehide', () => { suspended = true; setVisible(false); });
+            window.addEventListener('pageshow', () => { suspended = false; syncVisibility(); });
+            syncVisibility();
+        })();
 
         function toggleChannelSelection() {
             const div = document.getElementById("channel-selection");

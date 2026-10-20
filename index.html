@@ -553,7 +553,7 @@
         .player-window-buttons button:disabled { opacity: .35; cursor: default; }
         .player-window-buttons svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1; pointer-events: none; }
 
-        /* 看更台開啟時顯示台名；覆蓋層不攔截播放器操作。 */
+        /* 選台或播放控制開啟時顯示台名；覆蓋層不攔截播放器操作。 */
         #player-name-overlay {
             position: absolute;
             inset: 0;
@@ -1415,7 +1415,7 @@
     <link rel="stylesheet" href="./login.css">
     <link rel="stylesheet" href="./layout-bookmarks.css?v=20261019-shared-bookmarks">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261020-channel-names"></script>
+    <script defer src="./login.js?v=20261020-control-name-overlay"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">

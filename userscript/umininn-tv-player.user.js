@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.7
+// @version      1.0.8
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -29,7 +29,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.7",
+        userscriptVersion: "1.0.8",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -1555,6 +1555,7 @@
             function setOpen(open) {
                 clearIdleTimer();
                 panel.hidden = !open;
+                doc.documentElement.toggleAttribute('data-umininn-player-controls-open', open);
                 toggle.setAttribute('aria-expanded', String(open));
                 if (open) {
                     positionPanel();
@@ -1616,6 +1617,7 @@
         function dispose() {
             if (disposed) return;
             disposed = true;
+            doc.documentElement.removeAttribute('data-umininn-player-controls-open');
             panelIdleCleanup?.();
             panelIdleCleanup = null;
             recoveryFlow?.dispose();

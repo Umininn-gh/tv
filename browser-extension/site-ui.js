@@ -533,6 +533,7 @@
             function setOpen(open) {
                 clearIdleTimer();
                 panel.hidden = !open;
+                doc.documentElement.toggleAttribute('data-umininn-player-controls-open', open);
                 toggle.setAttribute('aria-expanded', String(open));
                 if (open) {
                     positionPanel();
@@ -594,6 +595,7 @@
         function dispose() {
             if (disposed) return;
             disposed = true;
+            doc.documentElement.removeAttribute('data-umininn-player-controls-open');
             panelIdleCleanup?.();
             panelIdleCleanup = null;
             recoveryFlow?.dispose();

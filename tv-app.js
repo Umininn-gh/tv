@@ -1973,7 +1973,7 @@ function applyPlayerBookmark(value) {
     wrapper.appendChild(layer);
     const labels = new Map();
     const observed = new Set();
-    let opened = false;
+    let opened = false, suspended = false;
     let frame = null;
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
     const mutations = new MutationObserver(schedule);
@@ -2024,19 +2024,22 @@ function applyPlayerBookmark(value) {
         frame = requestAnimationFrame(() => { frame = null; render(); });
     }
     function setVisible(visible) {
+        visible = !suspended && (visible || document.documentElement.hasAttribute('data-umininn-player-controls-open'));
         if (visible === opened) { if (visible) schedule(); return; }
         opened = visible;
         if (visible) {
             render();
             // Detect async error/retry replacements without inspecting iframe contents.
-            mutations.observe(pane, { childList: true, subtree: true });
+            mutations.observe(pane, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-channel-name'] });
             window.addEventListener('resize', schedule);
+            window.addEventListener('scroll', schedule, true);
         } else {
             layer.hidden = true;
             observer?.disconnect();
             observed.clear();
             mutations.disconnect();
             window.removeEventListener('resize', schedule);
+            window.removeEventListener('scroll', schedule, true);
             if (frame !== null) cancelAnimationFrame(frame);
             frame = null;
         }
@@ -2047,9 +2050,10 @@ function applyPlayerBookmark(value) {
     // Also cover future menu visibility changes outside the shared open/close helper.
     const visibilityObserver = new MutationObserver(syncVisibility);
     visibilityObserver.observe(panel, { attributes: true, attributeFilter: ['style', 'hidden', 'class'] });
+    visibilityObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-umininn-player-controls-open'] });
     playerNameOverlay = { setVisible, refresh: schedule };
-    window.addEventListener('pagehide', () => setVisible(false));
-    window.addEventListener('pageshow', syncVisibility);
+    window.addEventListener('pagehide', () => { suspended = true; setVisible(false); });
+    window.addEventListener('pageshow', () => { suspended = false; syncVisibility(); });
     syncVisibility();
 })();
 
