@@ -39,7 +39,8 @@ function productionTimer(source) {
     const start = source.indexOf('const channelSelectionIdleTimer =');
     const end = source.indexOf('function setChannelSelectionVisible(', start);
     assert.ok(start >= 0 && end > start, 'reviewed production timer seam exists');
-    return source.slice(start, end) + '\n' + productionFunction(source, 'setChannelSelectionVisible');
+    const timeoutSetting = source.match(/^const PLAYER_OVERLAY_TIMEOUT_SECONDS = \d+;/m)?.[0] || '';
+    return timeoutSetting + '\n' + source.slice(start, end) + '\n' + productionFunction(source, 'setChannelSelectionVisible');
 }
 
 const pages = [

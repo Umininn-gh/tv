@@ -474,6 +474,8 @@ const activePlayers = new Map();
 const playerResources = new WeakMap();
 const PLAYER_POSITION_STORAGE_KEY = 'playerPositionOrder';
 const PLAYER_ENLARGEMENT_STORAGE_KEY = 'playerEnlargementLayout';
+// Shared duration for the viewing page's temporary menus and editing overlays.
+const PLAYER_OVERLAY_TIMEOUT_SECONDS = 30;
 let preferredPlayerOrder = [];
 let enlargedPlayerFocus = null;
 let playerGeometry = null;
@@ -1010,7 +1012,7 @@ const channelSelectionIdleTimer = (() => {
     let visible = false;
     function reset() {
         if (timer !== null) clearTimeout(timer);
-        timer = visible ? setTimeout(() => setChannelSelectionVisible(false), 30000) : null;
+        timer = visible ? setTimeout(() => setChannelSelectionVisible(false), PLAYER_OVERLAY_TIMEOUT_SECONDS * 1000) : null;
     }
     function onActivity(event) {
         if (!visible || event.isTrusted !== true) return;
@@ -1547,6 +1549,8 @@ function applyPlayerBookmark(value) {
     let layoutSignature = null;
     let resizeDrag = null;
     let previewFrame = null;
+    let completionTimer = null;
+    let completionDeadline = 0;
     const buttons = new Map();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleLayout) : null;
 
@@ -1625,6 +1629,9 @@ function applyPlayerBookmark(value) {
     }
 
     function close(restoreFocus = true) {
+        if (completionTimer !== null) clearTimeout(completionTimer);
+        completionTimer = null;
+        completionDeadline = 0;
         if (!opened) return;
         opened = false;
         pickedKey = null;
@@ -1699,7 +1706,8 @@ function applyPlayerBookmark(value) {
         setChannelSelectionVisible(false);
         mode = nextMode;
         layer.dataset.mode = mode;
-        instructions.textContent = mode === 'enlarge' ? '拖拉四角預覽，放開套用；也可點格放大或按「縮小一格」；Esc 取消拖拉／完成' : '拖曳或點選兩格交換；方向鍵搬位，Esc 完成';
+        const help = mode === 'enlarge' ? '拖拉四角預覽，放開套用；也可點格放大或按「縮小一格」；Esc 取消拖拉／完成' : '拖曳或點選兩格交換；方向鍵搬位，Esc 完成';
+        instructions.textContent = `${help}；${PLAYER_OVERLAY_TIMEOUT_SECONDS} 秒後自動完成`;
         doneButton.textContent = mode === 'enlarge' ? '✅ 完成放大' : '✅ 完成搬位';
         opened = true;
         layer.hidden = false;
@@ -1710,7 +1718,20 @@ function applyPlayerBookmark(value) {
         observer?.observe(wrapper);
         window.addEventListener('resize', onViewportResize);
         buttons.values().next().value?.focus({ preventScroll: true });
+        if (completionTimer !== null) clearTimeout(completionTimer);
+        // Complete this editing session from its entry time, independent of
+        // clicks/reflows. close() also cancels any uncommitted drag preview.
+        completionDeadline = Date.now() + PLAYER_OVERLAY_TIMEOUT_SECONDS * 1000;
+        completionTimer = setTimeout(autoComplete, PLAYER_OVERLAY_TIMEOUT_SECONDS * 1000);
     }
+    function autoComplete() {
+        close(!document.hidden && layer.contains(document.activeElement));
+    }
+    document.addEventListener('visibilitychange', () => {
+        // A background tab can throttle its timeout. Honour the original
+        // deadline as soon as it becomes visible again.
+        if (opened && !document.hidden && Date.now() >= completionDeadline) autoComplete();
+    });
     for (const button of [startButton, enlargeButton]) {
         button?.setAttribute('aria-controls', layer.id);
         button?.setAttribute('aria-expanded', 'false');

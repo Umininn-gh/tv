@@ -126,7 +126,7 @@ fixture.grid=function(){const pane=document.getElementById('multi-stream-contain
 };
 fixture.mount();fixture.initialGrid=fixture.grid();fixture.initialGeometry=fixture.geometry();`;
 
-async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,hasTouch=false,framePlatform='at'}={}){
+async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,hasTouch=false,framePlatform='at',clock=false,overlayTimeoutSeconds}={}){
     const context=await browser.newContext({viewport,serviceWorkers:'block',...(hasTouch?{hasTouch:true}:{})});t.after(()=>context.close());
     if(storageSeed||denyStorage)await context.addInitScript(({storageSeed,denyStorage,origin})=>{
         if(location.origin!==origin)return;
@@ -137,6 +137,12 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     },{storageSeed,denyStorage,origin:new URL(siteUrl).origin});
     const navigations=new Map(),blocked=[];
     assert.ok(['at','kick'].includes(framePlatform));
+    let fixtureScript=appScript;
+    if(overlayTimeoutSeconds!==undefined){
+        assert.ok(Number.isInteger(overlayTimeoutSeconds)&&overlayTimeoutSeconds>0);
+        fixtureScript=appScript.replace(/(const\s+PLAYER_OVERLAY_TIMEOUT_SECONDS\s*=\s*)\d+(\s*;)/,(_,prefix,suffix)=>prefix+overlayTimeoutSeconds+suffix);
+        assert.notEqual(fixtureScript,appScript,'the reviewed timeout constant must be configurable in this fixture');
+    }
     const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body data-fixture-players="${players}" data-fixture-frame-platform="${framePlatform}">
     <div style="height:30px;flex:none"><button id="more-channels-btn" onclick="toggleChannelSelection()">看更台</button><button id="adjust-player-positions">調整位置</button><button id="enlarge-player">放大模式</button><button id="reset-player-positions">重設</button><button id="toggle-all-audio">聲音</button></div>
     <div id="channel-selection" style="display:none"><div id="channel-options"></div><button id="fixture-watch-selected" onclick="watchSelectedChannels()">開始觀看</button></div><div id="multi-stream-container-wrapper" style="flex:none;width:${width}px;height:${height}px;min-height:0"><div id="multi-stream-container" class="video-wrapper"></div></div>
@@ -149,7 +155,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
             if(request.url()===siteUrl)return route.fulfill({contentType:'text/html',body:main});
             if(url.origin===frameOrigin&&url.pathname==='/player')return route.fulfill({contentType:'text/html',body:child});
         }
-        const scripts={'/instrument.js':instrument,'/channel-list.js':channelScript,'/stream-performance.js':performanceScript,'/player-geometry.js':geometryScript,'/player-layout.js':layoutScript,'/fixture-app.js':appScript};
+        const scripts={'/instrument.js':instrument,'/channel-list.js':channelScript,'/stream-performance.js':performanceScript,'/player-geometry.js':geometryScript,'/player-layout.js':layoutScript,'/fixture-app.js':fixtureScript};
         if(url.origin===new URL(siteUrl).origin&&scripts[url.pathname])return route.fulfill({contentType:'application/javascript; charset=utf-8',body:scripts[url.pathname]});
         if(url.pathname==='/silent.wav'&&[new URL(siteUrl).origin,frameOrigin].includes(url.origin)){
             const range=/^bytes=(\d+)-(\d*)$/.exec(request.headers().range||'');const start=range?Number(range[1]):0;
@@ -160,6 +166,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     });
     const page=await context.newPage();page.setDefaultTimeout(8000);
     const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    if(clock)await page.clock.install({time:new Date('2026-10-20T04:00:00Z')});
     await page.goto(siteUrl,{waitUntil:'load'});
     try{await page.waitForFunction(()=>window.fixture?.keys.length===5&&fixtureMedia.every(saved=>saved.video.readyState>=2))}
     catch(error){console.error('Layout fixture diagnostic:',errors,await page.evaluate(()=>({keys:window.fixture?.keys,media:window.fixtureMedia?.map(saved=>({connected:saved.video.isConnected,state:saved.video.readyState,error:saved.video.error?.message,source:saved.video.currentSrc})),body:document.body.innerText.slice(0,150)})));throw error}
@@ -168,6 +175,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     await page.evaluate(async()=>{for(const [index,saved]of fixtureMedia.entries()){saved.video.volume=.21+index*.1;saved.video.currentTime=.375;if(index===1){saved.video.muted=false;saved.video.pause()}else await saved.video.play()}});
     for(const [index,frame]of frames.entries())await frame.evaluate(async index=>{const video=fixtureMedia[0].video;video.volume=.33+index*.1;video.currentTime=.375;if(index===1){video.muted=false;video.pause()}else await video.play()},index);
     await page.waitForFunction(()=>fixture.identity().loads.every(count=>count===1));
+    if(clock)await page.clock.pauseAt(await page.evaluate(()=>Date.now()+100));
     return {page,frames,navigations,blocked,errors};
 }
 async function snapshot(f){return {main:await f.page.evaluate(()=>fixture.snapshot()),frames:await Promise.all(f.frames.map(frame=>frame.evaluate(()=>({id:fixtureId,media:fixtureMedia.map(readMedia)}))))}}
@@ -1383,4 +1391,108 @@ test('window controls keep Kick-like fallback iframe documents and audio intact 
     assert.equal(await f.page.locator('#multi-stream-container').innerText(),'未選擇任何頻道');assert.equal(await f.page.locator('#player-window-controls').isVisible(),false);
     assert.deepEqual(await f.page.evaluate(()=>({channels:channels.length,checked:document.querySelectorAll('#channel-options input:checked').length,display:currentDisplayChannel})),{channels:5,checked:0,display:null});
     assert.ok([...f.navigations.values()].every(count=>count===1));assert.deepEqual(f.blocked,[]);assert.deepEqual(f.errors,[]);
+});
+
+async function editorTimeout(f){
+    const seconds=await f.page.evaluate(()=>PLAYER_OVERLAY_TIMEOUT_SECONDS);assert.equal(seconds,30);return seconds*1000;
+}
+async function savedPositionOrder(f){return f.page.evaluate(()=>localStorage.getItem('playerPositionOrder'))}
+
+test('both editor modes auto-complete at the configured entry deadline and retain committed layouts and media',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    for(const mode of ['move','enlarge'])await t.test(mode,async sub=>{
+        const f=await fixture(sub,{width:1300,height:1000,clock:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys),duration=await editorTimeout(f);
+        await f.page.locator(mode==='move'?'#adjust-player-positions':'#enlarge-player').click();
+        const hint=await f.page.locator('.player-position-instructions').innerText();assert.match(hint,/30\s*秒/);assert.match(hint,/自動/);
+        if(mode==='move'){await positionCell(f,keys[0]).click();await positionCell(f,keys[4]).click()}
+        else{await positionCell(f,keys[0]).click();await waitSpan(f,keys[0],2)}
+        const committed=await readLayout(f),savedOrder=await savedPositionOrder(f);
+        await f.page.clock.runFor(duration-1);assert.equal((await geometry(f)).opened,true,'the editor stays open until its full entry interval elapses');
+        await f.page.clock.runFor(1);const completed=await readLayout(f);assert.equal(completed.state.opened,false);
+        assert.deepEqual(completed.logical,committed.logical);assert.equal(completed.state.saved,committed.state.saved);assert.equal(await savedPositionOrder(f),savedOrder);
+        assert.equal(await f.page.locator('#adjust-player-positions').getAttribute('aria-expanded'),'false');assert.equal(await f.page.locator('#enlarge-player').getAttribute('aria-expanded'),'false');
+        assert.equal(await f.page.evaluate(()=>document.activeElement.id),'more-channels-btn','expiry restores focus when it remains inside the editor');
+        await f.page.clock.runFor(duration);assert.equal((await geometry(f)).opened,false);await assertContinuity(f,before);
+    });
+});
+
+test('editor auto-complete cancels previous deadlines on manual close, reentry and mode switches',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000,clock:true}),before=await snapshot(f),duration=await editorTimeout(f);
+    await f.page.locator('#adjust-player-positions').click();await f.page.clock.runFor(duration-1000);
+    await f.page.keyboard.press('Escape');assert.equal((await geometry(f)).opened,false);
+    await f.page.locator('#enlarge-player').click();await f.page.clock.runFor(1000);
+    assert.equal((await geometry(f)).opened,true,'the timer from the manually closed session cannot close a new session');
+    await f.page.locator('#adjust-player-positions').click();await f.page.clock.runFor(duration-1000);
+    assert.equal((await geometry(f)).opened,true,'switching modes replaces the previous deadline');assert.equal((await geometry(f)).mode,'move');
+    await f.page.clock.runFor(999);assert.equal((await geometry(f)).opened,true);
+    await f.page.clock.runFor(1);assert.equal((await geometry(f)).opened,false);await assertContinuity(f,before);
+});
+
+test('editor auto-complete is not postponed by editing, refresh or resize and does not steal external focus',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000,clock:true}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]),duration=await editorTimeout(f);
+    await f.page.locator('#enlarge-player').click();await f.page.clock.runFor(duration/2);
+    await positionCell(f,key).click();await waitSpan(f,key,2);
+    await f.page.locator('.player-position-toolbar-toggle').click();
+    await f.page.evaluate(()=>{playerPositionEditor.refresh();fixture.resize(1200,850)});await f.page.clock.runFor(250);
+    const committed=await readLayout(f);await f.page.locator('#toggle-all-audio').focus();
+    await f.page.clock.runFor(duration/2-251);assert.equal((await geometry(f)).opened,true);
+    await f.page.clock.runFor(1);const completed=await readLayout(f);assert.equal(completed.state.opened,false);
+    assert.deepEqual(completed.logical,committed.logical);assert.equal(completed.state.saved,committed.state.saved);
+    assert.equal(await f.page.evaluate(()=>document.activeElement.id),'toggle-all-audio');await assertContinuity(f,before);
+});
+
+test('editor auto-complete cancels uncommitted move drags and corner resize previews',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    for(const mode of ['move','enlarge'])await t.test(mode,async sub=>{
+        const f=await fixture(sub,{width:1300,height:1000,clock:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys),duration=await editorTimeout(f);
+        await f.page.locator(mode==='move'?'#adjust-player-positions':'#enlarge-player').click();
+        if(mode==='enlarge'){await positionCell(f,keys[0]).click();await waitSpan(f,keys[0],2)}
+        await f.page.clock.runFor(duration-500);const committed=await readLayout(f),savedOrder=await savedPositionOrder(f);
+        if(mode==='move'){
+            const source=await positionCell(f,keys[0]).boundingBox(),target=await positionCell(f,keys[4]).boundingBox();assert.ok(source&&target);
+            await f.page.mouse.move(source.x+source.width/2,source.y+source.height/2);await f.page.mouse.down();
+            await f.page.mouse.move(target.x+target.width/2,target.y+target.height/2,{steps:8});
+            assert.equal(await f.page.locator('.position-dragging').count(),1);
+        }else{
+            const drag=await startCornerDrag(f,keys[0],'se');await moveCornerDrag(f,drag,1.1);await f.page.clock.runFor(32);await assertPreviewOnly(f,drag);
+        }
+        await f.page.clock.runFor(mode==='enlarge'?468:500);assert.equal((await geometry(f)).opened,false);await f.page.mouse.up();await assertResizeIdle(f);
+        const completed=await readLayout(f);assert.deepEqual(completed.logical,committed.logical);assert.equal(completed.state.saved,committed.state.saved);assert.equal(await savedPositionOrder(f),savedOrder);
+        await f.page.locator('#enlarge-player').click();await positionCell(f,keys[1]).click();assertGeometry(await waitSpan(f,keys[1],2),{overlay:true});
+        await assertContinuity(f,before);
+    });
+});
+
+test('editor auto-complete timers are cleared on pagehide and a later session gets a fresh deadline',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000,clock:true}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]),duration=await editorTimeout(f);
+    await f.page.locator('#enlarge-player').click();await positionCell(f,key).click();await waitSpan(f,key,2);const committed=await readLayout(f);
+    await f.page.clock.runFor(duration-1000);await f.page.locator('#toggle-all-audio').focus();
+    await f.page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));
+    assert.equal((await geometry(f)).opened,false);await f.page.clock.runFor(500);
+    assert.equal(await f.page.evaluate(()=>document.activeElement.id),'toggle-all-audio','a discarded session must never restore focus later');
+    assert.deepEqual((await readLayout(f)).logical,committed.logical);
+    await f.page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})));
+    await f.page.locator('#adjust-player-positions').click();await f.page.clock.runFor(500);
+    assert.equal((await geometry(f)).opened,true,'the pagehide timer cannot close a restored session at the old deadline');
+    await f.page.clock.runFor(duration-501);assert.equal((await geometry(f)).opened,true);
+    await f.page.clock.runFor(1);assert.equal((await geometry(f)).opened,false);await assertContinuity(f,before);
+});
+
+test('editor auto-complete honors the absolute deadline when foregrounding after a throttled timer',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000,clock:true}),before=await snapshot(f),duration=await editorTimeout(f);
+    await f.page.locator('#adjust-player-positions').click();const committed=await readLayout(f);
+    await f.page.clock.setSystemTime(await f.page.evaluate(()=>Date.now())+duration+1);
+    assert.equal((await geometry(f)).opened,true,'changing wall time alone does not run the suspended timer');
+    await f.page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
+    assert.equal((await geometry(f)).opened,false);assert.deepEqual((await readLayout(f)).logical,committed.logical);await assertContinuity(f,before);
+});
+
+test('one configurable timeout value drives channel-menu idle completion, editor completion and its displayed hint',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const seconds=4,f=await fixture(t,{width:1300,height:1000,clock:true,overlayTimeoutSeconds:seconds}),before=await snapshot(f);
+    assert.equal(await f.page.evaluate(()=>PLAYER_OVERLAY_TIMEOUT_SECONDS),seconds);
+    await f.page.locator('#more-channels-btn').click();await f.page.clock.runFor(seconds*1000-1);
+    assert.equal(await f.page.locator('#channel-selection').isVisible(),true);await f.page.clock.runFor(1);assert.equal(await f.page.locator('#channel-selection').isVisible(),false);
+    await f.page.locator('#enlarge-player').click();assert.match(await f.page.locator('.player-position-instructions').innerText(),/4\s*秒/);
+    await f.page.clock.runFor(seconds*1000-1);assert.equal((await geometry(f)).opened,true);
+    await f.page.clock.runFor(1);assert.equal((await geometry(f)).opened,false);await assertContinuity(f,before);
 });

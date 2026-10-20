@@ -38,7 +38,8 @@ function fixture(source) {
         Date: { now() { return now; } },
         watchSelectedChannels() { applied++; }
     });
-    vm.runInContext(source.slice(start, end), context);
+    const timeoutSetting = source.match(/^const PLAYER_OVERLAY_TIMEOUT_SECONDS = \d+;/m)?.[0] || '';
+    vm.runInContext(timeoutSetting + '\n' + source.slice(start, end), context);
     function advance(milliseconds) {
         const until = now + milliseconds;
         while (true) {
