@@ -210,6 +210,59 @@
         return next.rows <= layout.rows ? next : layout;
     }
 
+    function relocate(layout, sourceKey, targetKey) {
+        if (!Array.isArray(layout?.items) || sourceKey === targetKey ||
+            !Number.isInteger(layout.columns) || layout.columns < 1 ||
+            !Number.isInteger(layout.rows) || layout.rows < 1 || layout.items.some(item =>
+                !validCell(item) || item.column + item.span > layout.columns || item.row + item.span > layout.rows) ||
+            new Set(layout.items.map(item => item.key)).size !== layout.items.length) return layout;
+        const source = layout.items.find(item => item.key === sourceKey);
+        const target = layout.items.find(item => item.key === targetKey);
+        const enlarged = layout.items.filter(item => item.span > 1);
+        if (!source || !target || enlarged.length !== 1) return layout;
+        const focus = enlarged[0];
+        if (source.key !== focus.key && target.key !== focus.key) return layout;
+        const other = source.key === focus.key ? target : source;
+        const nextFocus = { ...focus, row: Math.min(other.row, layout.rows - focus.span),
+            column: Math.min(other.column, layout.columns - focus.span) };
+        if (nextFocus.row === focus.row && nextFocus.column === focus.column) return layout;
+        const contains = (area, item) => item.row >= area.row && item.row < area.row + area.span &&
+            item.column >= area.column && item.column < area.column + area.span;
+        const ordinary = layout.items.filter(item => item.key !== focus.key).sort(compareCells);
+        const slots = new Map(build({ keys: layout.items.map(item => item.key),
+            columns: layout.columns, focus: nextFocus }).items.filter(item => item.span === 1)
+            .sort(compareCells).map(item => [`${item.row}:${item.column}`, { row: item.row, column: item.column }]));
+        const assigned = new Map([[focus.key, nextFocus]]);
+        function assign(item, position) {
+            if (!position) return;
+            assigned.set(item.key, { ...item, row: position.row, column: position.column });
+            slots.delete(`${position.row}:${position.column}`);
+        }
+        // Keep every unaffected original position that the canonical layout can
+        // still represent before assigning any tile covered by the new focus.
+        ordinary.filter(item => !contains(nextFocus, item)).forEach(item =>
+            assign(item, slots.get(`${item.row}:${item.column}`)));
+        const freed = [...slots.values()].filter(position => contains(focus, position));
+        let index = 0;
+        function takeFreed() {
+            while (index < freed.length) {
+                const position = freed[index++];
+                if (slots.has(`${position.row}:${position.column}`)) return position;
+            }
+            return undefined;
+        }
+        // The selected small tile takes the former focus anchor when that cell
+        // was actually freed; the other covered tiles follow in visual order.
+        assign(other, slots.get(`${focus.row}:${focus.column}`) || takeFreed());
+        for (const item of ordinary) if (contains(nextFocus, item) && !assigned.has(item.key)) assign(item, takeFreed());
+        const remaining = [...slots.values()];
+        index = 0;
+        for (const item of ordinary) if (!assigned.has(item.key)) assign(item, remaining[index++]);
+        const next = build({ keys: [...assigned.values()].sort(compareCells).map(item => item.key),
+            columns: layout.columns, focus: nextFocus });
+        return next.rows <= layout.rows ? next : layout;
+    }
+
     function choose({ keys, width, height, columnGap = 0, rowGap = 0, previous,
         focus, force = false, preserveAnchor = false } = {}) {
         keys = uniqueKeys(keys);
@@ -251,7 +304,7 @@
         return { ...build({ keys, columns: best.columns, focus }), area: best.area };
     }
 
-    const api = { build, grow, shrink, resize, swap, neighbor, neighbors, step, choose };
+    const api = { build, grow, shrink, resize, swap, neighbor, neighbors, step, relocate, choose };
     if (typeof module === 'object' && module.exports) module.exports = api;
     else root.PlayerGeometry = api;
 })(typeof globalThis === 'object' ? globalThis : this);

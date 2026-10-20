@@ -1536,6 +1536,14 @@ function assertDirectionStep(before,after,key,direction){
     assert.equal(after.layout.rows,before.layout.rows,'a direction step cannot expand the existing grid');
     assert.deepEqual(spans(after),spans(before));assertGeometry(after);
 }
+function assertEditorPlacement(before,after,key,targetKey){
+    const focus=before.layout.items.find(item=>item.key===key),target=before.layout.items.find(item=>item.key===targetKey);
+    const expected={...focus,row:Math.max(0,Math.min(before.layout.rows-focus.span,target.row)),
+        column:Math.max(0,Math.min(before.layout.columns-focus.span,target.column))};
+    assert.deepEqual(after.layout.items.find(item=>item.key===key),expected,'a distant pointer target places the enlarged anchor at its bounded grid coordinates');
+    assert.equal(after.layout.columns,before.layout.columns);assert.ok(after.layout.rows<=before.layout.rows,'placement cannot add tracks beyond the current grid');
+    assert.deepEqual(spans(after),spans(before));assertGeometry(after);
+}
 
 test('direction controls hide boundary and empty-tail sides, swap the touching cell once and retain native/iframe playback',{skip:!enabled,timeout:30000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),keys=await f.page.evaluate(()=>fixture.keys),before=await snapshot(f);
@@ -1852,7 +1860,7 @@ test('editor step stops at boundaries and empty gaps while ordinary remote excha
     await f.page.locator('#adjust-player-positions').click();state=await readLayout(f);
     for(const arrow of ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight']){await positionCell(f,key).press(arrow);assert.deepEqual((await readLayout(f)).logical,state.logical,'a direction key cannot cross empty tracks to a distant tile')}
     await positionCell(f,keys[2]).press('ArrowDown');assert.deepEqual((await readLayout(f)).logical,state.logical,'a small source cannot pull an enlarged player across an empty row');
-    await positionCell(f,key).click();await positionCell(f,keys[2]).click();assert.deepEqual((await readLayout(f)).logical,state.logical,'a distant pointer target cannot jump a large player over an empty row');
+    await positionCell(f,key).click();await positionCell(f,keys[2]).click();assertEditorPlacement(state.state,await geometry(f),key,keys[2]);
     await f.page.keyboard.press('Escape');await waitWindowGeometry(f);await f.page.locator('#adjust-player-positions').click();
     const beforeOrdinary=await geometry(f);await positionCell(f,keys[0]).click();await positionCell(f,keys[3]).click();const ordinary=await geometry(f);
     assert.deepEqual(ordinary.layout.items.find(item=>item.key===keys[0]),{...beforeOrdinary.layout.items.find(item=>item.key===keys[3]),key:keys[0]});
@@ -1861,25 +1869,41 @@ test('editor step stops at boundaries and empty gaps while ordinary remote excha
     assertGeometry(ordinary,{overlay:true});await f.page.keyboard.press('Escape');await assertContinuity(f,before);
 });
 
-test('editor step remote clicks and drags involving a large player approach the chosen tile by only one base cell',{skip:!enabled,timeout:30000},async t=>{
-    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f),key=keys[4];
-    const grid={columns:3,focus:{key,row:1,column:1,span:2},order:keys};
-    for(const gesture of ['click','drag'])for(const reversed of [false,true]){
-        await fixedDirectionGrid(f,grid);const start=await geometry(f);
-        assert.equal((await directionTargets(f,key)).up.includes(keys[0]),false);assert.equal((await directionTargets(f,key)).left.includes(keys[0]),false,'the chosen corner tile is not an immediate neighbor');
-        await f.page.locator('#adjust-player-positions').click();
-        await editorStepGesture(f,reversed?keys[0]:key,reversed?key:keys[0],'left',gesture);
-        const moved=await geometry(f);assertDirectionStep(start,moved,key,'left');assertGeometry(moved,{overlay:true});
-        await f.page.keyboard.press('Escape');await waitWindowGeometry(f);
-    }
-    await assertContinuity(f,before);
+test('editor placement distinguishes adjacent one-cell moves from remote placement and clamps all four corners',{skip:!enabled,timeout:90000},async t=>{
+    if(!optional(t))return;
+    for(const [span,columns]of [[3,5],[2,4]])await t.test(`${span} by ${span} in ${columns} columns`,async st=>{
+        const f=await fixture(st,{width:1500,height:1000,players:columns*columns-span*span+1}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f),key=keys[4];
+        const corner={columns,focus:{key,row:0,column:0,span},order:keys};
+        for(const gesture of ['click','drag'])for(const reversed of [false,true])for(const adjacent of [true,false]){
+            await fixedDirectionGrid(f,corner);const start=await geometry(f),column=adjacent?span:columns-1;
+            const target=start.layout.items.find(item=>item.span===1&&item.row===0&&item.column===column).key;
+            assert.equal((await directionTargets(f,key)).right.includes(target),adjacent);
+            await f.page.locator('#adjust-player-positions').click();
+            await editorStepGesture(f,reversed?target:key,reversed?key:target,'right',gesture);
+            const moved=await geometry(f);
+            if(adjacent)assertDirectionStep(start,moved,key,'right');
+            else{assertEditorPlacement(start,moved,key,target);assert.equal(moved.layout.items.find(item=>item.key===key).column,2,'the far-right tile can move the anchor across two columns')}
+            assertGeometry(moved,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));
+            await f.page.keyboard.press('Escape');await waitWindowGeometry(f);
+        }
+        const middle={columns,focus:{key,row:1,column:1,span},order:keys};
+        for(const gesture of ['click','drag'])for(const reversed of [false,true])for(const [row,column]of [[0,0],[0,columns-1],[columns-1,0],[columns-1,columns-1]]){
+            await fixedDirectionGrid(f,middle);const start=await geometry(f),target=start.layout.items.find(item=>item.span===1&&item.row===row&&item.column===column).key;
+            const adjacent=Object.values(await directionTargets(f,key)).flat().includes(target);assert.equal(adjacent,false,'the requested corner is a remote destination');
+            await f.page.locator('#adjust-player-positions').click();await editorStepGesture(f,reversed?target:key,reversed?key:target,'right',gesture);
+            const moved=await geometry(f);assertEditorPlacement(start,moved,key,target);assertGeometry(moved,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));
+            await f.page.keyboard.press('Escape');await waitWindowGeometry(f);
+        }
+        await assertContinuity(f,before);
+    });
 });
 
 test('editor step commits remain saved after Escape, the automatic deadline and reopening the page',{skip:!enabled,timeout:30000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1500,height:1000,players:17,clock:true}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f),key=keys[4];
-    await fixedDirectionGrid(f,{columns:5,focus:{key,row:1,column:1,span:3},order:keys});
-    let start=await geometry(f);await f.page.locator('#adjust-player-positions').click();await positionCell(f,key).press('ArrowRight');
-    const committed=await readLayout(f);assertDirectionStep(start,committed.state,key,'right');const savedOrder=await savedPositionOrder(f),duration=await editorTimeout(f);
+    await fixedDirectionGrid(f,{columns:5,focus:{key,row:0,column:0,span:3},order:keys});
+    let start=await geometry(f);const remote=start.layout.items.find(item=>item.row===0&&item.column===4).key;
+    await f.page.locator('#adjust-player-positions').click();await positionCell(f,key).click();await positionCell(f,remote).click();
+    const committed=await readLayout(f);assertEditorPlacement(start,committed.state,key,remote);const savedOrder=await savedPositionOrder(f),duration=await editorTimeout(f);
     await f.page.clock.runFor(duration-1);assert.equal((await geometry(f)).opened,true);
     await f.page.clock.runFor(1);assert.equal((await geometry(f)).opened,false);
     assert.deepEqual((await readLayout(f)).logical,committed.logical);assert.equal(await savedPositionOrder(f),savedOrder);
@@ -1887,7 +1911,7 @@ test('editor step commits remain saved after Escape, the automatic deadline and 
     const second=await readLayout(f);assertDirectionStep(start,second.state,key,'down');await f.page.keyboard.press('Escape');
     assert.equal((await geometry(f)).opened,false);assert.deepEqual((await readLayout(f)).logical,second.logical);
     const storage=await f.page.evaluate(()=>({playerPositionOrder:localStorage.getItem('playerPositionOrder'),playerEnlargementLayout:localStorage.getItem('playerEnlargementLayout')}));
-    assert.deepEqual(JSON.parse(storage.playerEnlargementLayout).focus,{key,row:2,column:2,span:3});await assertContinuity(f,before);
+    assert.deepEqual(JSON.parse(storage.playerEnlargementLayout).focus,{key,row:1,column:2,span:3});await assertContinuity(f,before);
     const reopened=await fixture(t,{width:1500,height:1000,players:17,storageSeed:storage});await waitWindowGeometry(reopened);
     assert.deepEqual((await readLayout(reopened)).logical,second.logical);assert.deepEqual(reopened.errors,[]);assert.deepEqual(reopened.blocked,[]);
 });
