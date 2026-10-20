@@ -1536,7 +1536,7 @@ function applyPlayerBookmark(value) {
     layer.dataset.toolbarPosition = 'top';
     layer.innerHTML = `<div class="player-position-cells"></div>
         <div class="player-resize-preview" aria-hidden="true" hidden></div>
-        <div class="player-position-toolbar"><span class="player-position-instructions">拖曳或點選兩格交換；方向鍵搬位，Esc 完成</span>
+        <div class="player-position-toolbar"><span class="player-position-instructions">拖曳或點選目標搬位；大格一次移一格；方向鍵搬位，Esc 完成</span>
         <button class="player-position-shrink" type="button" hidden disabled>－ 縮小一格</button>
         <button class="player-position-toolbar-toggle" type="button" title="將操作列移到播放區底部">↓ 移到底部</button>
         <button class="player-position-reset" type="button" title="還原全部播放器的大小及排列">↺ 重設佈局</button>
@@ -1692,7 +1692,7 @@ function applyPlayerBookmark(value) {
             button.className = 'player-position-cell';
             button.dataset.playerKey = key;
             const span = sizes.get(key) || 1;
-            button.setAttribute('aria-label', `第 ${index + 1} 格：${entry.channel.name}，${span}×${span}，${mode === 'enlarge' ? '點選放大一格，或拖拉四角調整大小' : '拖曳或點選交換位置'}`);
+            button.setAttribute('aria-label', `第 ${index + 1} 格：${entry.channel.name}，${span}×${span}，${mode === 'enlarge' ? '點選放大一格，或拖拉四角調整大小' : span > 1 ? '拖曳或點選目標移動一格' : '拖曳或點選搬位'}`);
             const number = document.createElement('span');
             number.className = 'player-position-number';
             number.textContent = mode === 'enlarge' ? `＋ ${span}×${span} → ${span + 1}×${span + 1}` : `↔ 第 ${index + 1} 格${span > 1 ? ` · ${span}×${span}` : ''}`;
@@ -1721,6 +1721,35 @@ function applyPlayerBookmark(value) {
     function exchange(source, target) {
         const sourceName = activePlayers.get(source)?.channel.name;
         const targetName = activePlayers.get(target)?.channel.name;
+        const geometry = getCurrentPlayerGeometry();
+        const sourceItem = geometry.items.find(item => item.key === source);
+        const targetItem = geometry.items.find(item => item.key === target);
+        if (sourceItem && targetItem && (sourceItem.span > 1 || targetItem.span > 1)) {
+            const focus = sourceItem.span > 1 ? sourceItem : targetItem;
+            const destination = sourceItem.span > 1 ? targetItem : sourceItem;
+            const dx = destination.column + destination.span / 2 - focus.column - focus.span / 2;
+            const dy = destination.row + destination.span / 2 - focus.row - focus.span / 2;
+            const choices = [
+                { direction: destination.column < focus.column ? 'left' :
+                    destination.column >= focus.column + focus.span ? 'right' : null, distance: Math.abs(dx) },
+                { direction: destination.row < focus.row ? 'up' :
+                    destination.row >= focus.row + focus.span ? 'down' : null, distance: Math.abs(dy) }
+            ].filter(choice => choice.direction).sort((a, b) => b.distance - a.distance);
+            // A distant drop still requests just one step towards the target.
+            // Use only an occupied touching edge, never a diagonal/full jump.
+            for (const { direction } of choices) {
+                const neighbors = PlayerGeometry.neighbors(geometry, focus.key, direction);
+                const neighbor = neighbors.find(item => item.key === destination.key) ||
+                    PlayerGeometry.neighbor(geometry, focus.key, direction);
+                if (!neighbor) continue;
+                const labels = { up: '上', down: '下', left: '左', right: '右' };
+                if (movePlayerDirection(focus.key, direction, neighbor.key))
+                    announcement.textContent = `${sourceItem.span > 1 ? sourceName : targetName} 已向${labels[direction]}平移一格`;
+                return;
+            }
+            announcement.textContent = '該方向沒有相鄰格可供搬位';
+            return;
+        }
         if (swapPlayerPositions(source, target)) announcement.textContent = `${sourceName} 與 ${targetName} 已交換位置`;
     }
 
@@ -1730,7 +1759,7 @@ function applyPlayerBookmark(value) {
         setChannelSelectionVisible(false);
         mode = nextMode;
         layer.dataset.mode = mode;
-        const help = mode === 'enlarge' ? '拖拉四角預覽，放開套用；也可點格放大或按「縮小一格」；Esc 取消拖拉／完成' : '拖曳或點選兩格交換；方向鍵搬位，Esc 完成';
+        const help = mode === 'enlarge' ? '拖拉四角預覽，放開套用；也可點格放大或按「縮小一格」；Esc 取消拖拉／完成' : '拖曳或點選目標搬位；大格一次移一格；方向鍵搬位，Esc 完成';
         instructions.textContent = `${help}；${PLAYER_OVERLAY_TIMEOUT_SECONDS} 秒後自動完成`;
         doneButton.textContent = mode === 'enlarge' ? '✅ 完成放大' : '✅ 完成搬位';
         opened = true;
@@ -1823,6 +1852,13 @@ function applyPlayerBookmark(value) {
         if (playerGeometry || mode === 'enlarge') {
             const geometry = getCurrentPlayerGeometry();
             const source = geometry.items.find(item => item.key === button.dataset.playerKey);
+            if (!source) return;
+            const direction = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' }[event.key];
+            const adjacent = PlayerGeometry.neighbor(geometry, source.key, direction);
+            if (mode === 'move' && source.span > 1) {
+                if (adjacent) exchange(source.key, adjacent.key);
+                return;
+            }
             const vertical = event.key === 'ArrowUp' || event.key === 'ArrowDown';
             const backwards = event.key === 'ArrowUp' || event.key === 'ArrowLeft';
             const axis = vertical ? 'row' : 'column';
@@ -1837,7 +1873,8 @@ function applyPlayerBookmark(value) {
             candidates.sort((a, b) => distance(a) - distance(b));
             if (candidates[0]) {
                 if (mode === 'enlarge') buttons.get(candidates[0].key)?.focus({ preventScroll: true });
-                else exchange(source.key, candidates[0].key);
+                else if (candidates[0].span <= 1 || adjacent?.key === candidates[0].key)
+                    exchange(source.key, candidates[0].key);
             }
             return;
         }

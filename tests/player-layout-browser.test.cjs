@@ -178,7 +178,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     for(const [index,frame]of frames.entries())await frame.evaluate(async index=>{const video=fixtureMedia[0].video;video.volume=.33+index*.1;video.currentTime=.375;if(index===1){video.muted=false;video.pause()}else await video.play()},index);
     await page.waitForFunction(()=>fixture.identity().loads.every(count=>count===1));
     if(clock)await page.clock.pauseAt(await page.evaluate(()=>Date.now()+100));
-    return {page,frames,navigations,blocked,errors};
+    return {page,frames,navigations,blocked,errors,clockInstalled:clock};
 }
 async function snapshot(f){return {main:await f.page.evaluate(()=>fixture.snapshot()),frames:await Promise.all(f.frames.map(frame=>frame.evaluate(()=>({id:fixtureId,media:fixtureMedia.map(readMedia)}))))}}
 function stable(media){const {time,...rest}=media;return rest}
@@ -1507,6 +1507,7 @@ async function fixedDirectionGrid(f,{columns=3,focus=null,order=null}={}){
         pendingPlayerGeometry={...PlayerGeometry.build({keys:getPlayerPositionKeys(),columns,focus}),intent:'bookmark'};
         updatePlayerLayout({force:true});
     },{columns,focus,order});
+    if(f.clockInstalled)await f.page.clock.runFor(50);
     await f.page.waitForFunction(columns=>playerGrid.getColumns()===columns,columns);
     await waitWindowGeometry(f);
 }
@@ -1803,4 +1804,90 @@ test('direction controls hide through fullscreen and editor modes and disable mo
     await f.page.mouse.move(1990,1290);await f.page.locator('#toggle-all-audio').focus();
     await f.page.waitForFunction(()=>{const button=document.querySelector('.player-window-move');return button&&Number(getComputedStyle(button).opacity)===0});
     await assertActiveContinuity(f,retained);
+});
+
+async function editorStepGesture(f,source,target,direction,gesture){
+    const sourceCell=positionCell(f,source),targetCell=positionCell(f,target);
+    if(gesture==='key')await sourceCell.press('Arrow'+direction[0].toUpperCase()+direction.slice(1));
+    else if(gesture==='click'){await sourceCell.click();await targetCell.click()}
+    else{
+        const from=await sourceCell.boundingBox(),to=await targetCell.boundingBox();assert.ok(from&&to);
+        await f.page.mouse.move(from.x+from.width/2,from.y+from.height/2);await f.page.mouse.down();
+        await f.page.mouse.move(to.x+to.width/2,to.y+to.height/2,{steps:8});await f.page.mouse.up();
+    }
+}
+
+test('editor step moves span-two and span-three players one cell with keys, every adjacent click and released drags from either side',{skip:!enabled,timeout:90000},async t=>{
+    if(!optional(t))return;const inverse={up:'down',down:'up',left:'right',right:'left'};
+    for(const span of [2,3])await t.test('span '+span,async st=>{
+        const f=await fixture(st,{width:1500,height:1000,players:26-span*span}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f);
+        const key=keys[4],focus={key,row:1,column:1,span},grid={columns:5,focus,order:keys};
+        for(const gesture of ['key','click','drag'])for(const direction of Object.keys(inverse)){
+            await fixedDirectionGrid(f,grid);const targets=(await directionTargets(f,key))[direction];assert.equal(targets.length,span);
+            const selected=gesture==='click'?targets:[targets[targets.length-1]];
+            for(const target of selected){
+                await fixedDirectionGrid(f,grid);const start=await geometry(f);await f.page.locator('#adjust-player-positions').click();
+                await editorStepGesture(f,key,target,direction,gesture);const stepped=await geometry(f);assertDirectionStep(start,stepped,key,direction);
+                assert.equal(stepped.opened,true);assert.equal(stepped.mode,'move');assertGeometry(stepped,{overlay:true});
+                await f.page.keyboard.press('Escape');await waitWindowGeometry(f);
+            }
+            await fixedDirectionGrid(f,grid);const start=await geometry(f),small=targets[targets.length-1];
+            await f.page.locator('#adjust-player-positions').click();await editorStepGesture(f,small,key,inverse[direction],gesture);
+            const stepped=await geometry(f);assertDirectionStep(start,stepped,key,direction);assertGeometry(stepped,{overlay:true});
+            await f.page.keyboard.press('Escape');await waitWindowGeometry(f);
+        }
+        await assertContinuity(f,before);
+    });
+});
+
+test('editor step stops at boundaries and empty gaps while ordinary remote exchanges remain available',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f),key=keys[4];
+    await fixedDirectionGrid(f,{columns:3,focus:{key,row:0,column:0,span:2},order:keys});
+    await f.page.locator('#adjust-player-positions').click();let state=await readLayout(f);
+    for(const arrow of ['ArrowUp','ArrowLeft']){await positionCell(f,key).press(arrow);assert.deepEqual((await readLayout(f)).logical,state.logical)}
+    await positionCell(f,key).press('ArrowRight');assertDirectionStep(state.state,await geometry(f),key,'right');state=await readLayout(f);
+    await positionCell(f,key).press('ArrowRight');assert.deepEqual((await readLayout(f)).logical,state.logical,'a key at the right edge cannot wrap or grow the grid');
+    await f.page.keyboard.press('Escape');await waitWindowGeometry(f);
+    await fixedDirectionGrid(f,{columns:6,focus:{key,row:2,column:2,span:2},order:keys});
+    await f.page.locator('#adjust-player-positions').click();state=await readLayout(f);
+    for(const arrow of ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight']){await positionCell(f,key).press(arrow);assert.deepEqual((await readLayout(f)).logical,state.logical,'a direction key cannot cross empty tracks to a distant tile')}
+    await positionCell(f,keys[2]).press('ArrowDown');assert.deepEqual((await readLayout(f)).logical,state.logical,'a small source cannot pull an enlarged player across an empty row');
+    await positionCell(f,key).click();await positionCell(f,keys[2]).click();assert.deepEqual((await readLayout(f)).logical,state.logical,'a distant pointer target cannot jump a large player over an empty row');
+    await f.page.keyboard.press('Escape');await waitWindowGeometry(f);await f.page.locator('#adjust-player-positions').click();
+    const beforeOrdinary=await geometry(f);await positionCell(f,keys[0]).click();await positionCell(f,keys[3]).click();const ordinary=await geometry(f);
+    assert.deepEqual(ordinary.layout.items.find(item=>item.key===keys[0]),{...beforeOrdinary.layout.items.find(item=>item.key===keys[3]),key:keys[0]});
+    assert.deepEqual(ordinary.layout.items.find(item=>item.key===keys[3]),{...beforeOrdinary.layout.items.find(item=>item.key===keys[0]),key:keys[3]});
+    assert.deepEqual(ordinary.layout.items.find(item=>item.key===key),beforeOrdinary.layout.items.find(item=>item.key===key));
+    assertGeometry(ordinary,{overlay:true});await f.page.keyboard.press('Escape');await assertContinuity(f,before);
+});
+
+test('editor step remote clicks and drags involving a large player approach the chosen tile by only one base cell',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f),key=keys[4];
+    const grid={columns:3,focus:{key,row:1,column:1,span:2},order:keys};
+    for(const gesture of ['click','drag'])for(const reversed of [false,true]){
+        await fixedDirectionGrid(f,grid);const start=await geometry(f);
+        assert.equal((await directionTargets(f,key)).up.includes(keys[0]),false);assert.equal((await directionTargets(f,key)).left.includes(keys[0]),false,'the chosen corner tile is not an immediate neighbor');
+        await f.page.locator('#adjust-player-positions').click();
+        await editorStepGesture(f,reversed?keys[0]:key,reversed?key:keys[0],'left',gesture);
+        const moved=await geometry(f);assertDirectionStep(start,moved,key,'left');assertGeometry(moved,{overlay:true});
+        await f.page.keyboard.press('Escape');await waitWindowGeometry(f);
+    }
+    await assertContinuity(f,before);
+});
+
+test('editor step commits remain saved after Escape, the automatic deadline and reopening the page',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1500,height:1000,players:17,clock:true}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f),key=keys[4];
+    await fixedDirectionGrid(f,{columns:5,focus:{key,row:1,column:1,span:3},order:keys});
+    let start=await geometry(f);await f.page.locator('#adjust-player-positions').click();await positionCell(f,key).press('ArrowRight');
+    const committed=await readLayout(f);assertDirectionStep(start,committed.state,key,'right');const savedOrder=await savedPositionOrder(f),duration=await editorTimeout(f);
+    await f.page.clock.runFor(duration-1);assert.equal((await geometry(f)).opened,true);
+    await f.page.clock.runFor(1);assert.equal((await geometry(f)).opened,false);
+    assert.deepEqual((await readLayout(f)).logical,committed.logical);assert.equal(await savedPositionOrder(f),savedOrder);
+    start=await geometry(f);await f.page.locator('#adjust-player-positions').click();await positionCell(f,key).press('ArrowDown');
+    const second=await readLayout(f);assertDirectionStep(start,second.state,key,'down');await f.page.keyboard.press('Escape');
+    assert.equal((await geometry(f)).opened,false);assert.deepEqual((await readLayout(f)).logical,second.logical);
+    const storage=await f.page.evaluate(()=>({playerPositionOrder:localStorage.getItem('playerPositionOrder'),playerEnlargementLayout:localStorage.getItem('playerEnlargementLayout')}));
+    assert.deepEqual(JSON.parse(storage.playerEnlargementLayout).focus,{key,row:2,column:2,span:3});await assertContinuity(f,before);
+    const reopened=await fixture(t,{width:1500,height:1000,players:17,storageSeed:storage});await waitWindowGeometry(reopened);
+    assert.deepEqual((await readLayout(reopened)).logical,second.logical);assert.deepEqual(reopened.errors,[]);assert.deepEqual(reopened.blocked,[]);
 });
