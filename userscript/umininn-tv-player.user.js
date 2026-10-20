@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.11
+// @version      1.0.12
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -29,7 +29,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.11",
+        userscriptVersion: "1.0.12",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -1268,7 +1268,8 @@
         let sequence = 0, scanTimer = null, disposed = false, globalMuted = null;
         let preparation = null, preparedCohort = new Set(), watchStartTimer = null, unreadyWrappers = 0;
         let preparationWaiting = '', lastRecoveryStatus = null;
-        let panelIdleCleanup = null, highlightObserver = null, highlightStyle = null, highlightFrame = null, touchPointer = false;
+        let panelIdleCleanup = null, highlightObserver = null, highlightStyle = null, highlightFrame = null, touchPointer = false, revealedEntry = null;
+        let revealOrder = '', revealViewport = '';
 
         // Each menu publishes only its own pointer state. Reading the other
         // menu's marker for the row alone prevents a two-way observer loop.
@@ -1281,6 +1282,21 @@
             const key = entry.element.dataset.channelKey || (entry.element.id === 'MyFrame' ? 'initial-player' : '');
             return Boolean(key && (windowKeys || hoveredWindowKeys()).has(key));
         }
+        function revealHoveredEntry(entry) {
+            if (entry === revealedEntry) return;
+            revealedEntry = entry;
+            if (!entry || disposed || panel?.hidden || doc.hidden || touchPointer || !entry.row?.isConnected) return;
+            const bounds = panel.getBoundingClientRect();
+            const top = bounds.top + panel.clientTop, bottom = top + panel.clientHeight;
+            const row = entry.row.getBoundingClientRect(), viewportHeight = bottom - top;
+            // Scroll only this menu, by the smallest amount needed. Oversized
+            // rows already spanning the viewport require no movement.
+            let delta = 0;
+            if (row.top < top && row.bottom > bottom) return;
+            if (row.top < top) delta = row.height > viewportHeight ? row.bottom - bottom : row.top - top;
+            else if (row.bottom > bottom) delta = row.height > viewportHeight ? row.top - top : row.bottom - bottom;
+            if (Math.abs(delta) > 0.5) panel.scrollTop += delta;
+        }
         function updateHighlight(entry, windowKeys) {
             const live = !disposed && !doc.hidden && !panel?.hidden && entries.get(entry.element) === entry &&
                 entry.element.parentElement === doc.getElementById('multi-stream-container');
@@ -1292,7 +1308,18 @@
         }
         function updateHighlights() {
             const keys = !disposed && !doc.hidden && !panel?.hidden ? hoveredWindowKeys() : new Set();
-            for (const entry of entries.values()) updateHighlight(entry, keys);
+            if (!disposed && !doc.hidden && !panel?.hidden) {
+                const viewport = `${panel.clientWidth},${panel.clientHeight}`;
+                if (viewport !== revealViewport) { revealViewport = viewport; revealedEntry = null; }
+            }
+            let hovered = null;
+            const canHover = !disposed && !doc.hidden && !panel?.hidden && !touchPointer && (!win.matchMedia || win.matchMedia('(any-hover: hover)').matches);
+            for (const entry of entries.values()) {
+                updateHighlight(entry, keys);
+                if (canHover && entry.element.parentElement === doc.getElementById('multi-stream-container') &&
+                    (entry.element.matches(':hover') || windowControlsHovered(entry, keys))) hovered = entry;
+            }
+            revealHoveredEntry(hovered);
         }
         function scheduleHighlights() {
             if (disposed || !panel || panel.hidden || doc.hidden || highlightFrame !== null) return;
@@ -1608,6 +1635,7 @@
             for (const delay of [1000, 3000]) entry.probeTimers.push(win.setTimeout(() => { if (!entry.target && entry.element.isConnected) probe(entry); }, delay));
         }
         function removeEntry(entry) {
+            if (revealedEntry === entry) revealedEntry = null;
             entry.hoverCleanup?.();
             clearProbeTimers(entry);
             entry.generation++;
@@ -1647,7 +1675,9 @@
                 }
             }
             for (const entry of [...entries.values()]) if (!desired.has(entry.element)) removeEntry(entry);
-            currentEntries().forEach((entry, index) => {
+            const ordered = currentEntries(), nextOrder = ordered.map(entry => entry.id).join(',');
+            if (nextOrder !== revealOrder) { revealOrder = nextOrder; revealedEntry = null; }
+            ordered.forEach((entry, index) => {
                 entry.name.textContent = describe(entry, index);
                 entry.row.style.order = String(index);
                 entry.volume.setAttribute('aria-label', `${entry.name.textContent} 音量`);
@@ -1747,6 +1777,9 @@
             const style = node('style', `:host{font:12px system-ui,sans-serif;color:#eee}*{box-sizing:border-box}button,input{font:inherit}button{background:#292d36;color:#fff;border:1px solid #596172;border-radius:5px;cursor:pointer;padding:4px 7px}button:disabled,input:disabled{opacity:.45;cursor:default}button:focus-visible,input:focus-visible{outline:2px solid #58c8ff;outline-offset:2px}#toggle{height:18px;min-height:18px;line-height:16px;padding:0 5px;font-size:11px;white-space:nowrap}#panel{position:fixed;right:12px;top:44px;width:min(470px,calc(100vw - 24px));max-height:75vh;overflow:auto;z-index:2147483646;background:#16191f;border:1px solid #657084;border-radius:10px;padding:12px;box-shadow:0 8px 28px #0009}#panel[hidden]{display:none}.row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.heading{justify-content:space-between}.state,#summary,.help{color:#bac5d7;font-size:11px;line-height:1.5;margin:5px 0;overflow-wrap:anywhere}#players{display:flex;flex-direction:column;gap:8px}.player{border-top:1px solid #3c4351;padding-top:8px}.player strong{display:block;margin-bottom:5px;overflow-wrap:anywhere}.player input{width:140px;max-width:32vw}.level{min-width:34px;text-align:right}.master{margin:9px 0}a{color:#83cfff}`);
             style.textContent += '.player[data-player-highlighted="true"]{background:#193a50;box-shadow:inset 0 0 0 2px #58c8ff;border-radius:5px}';
             highlightStyle = node('style', `#multi-stream-container > [${controlsHighlight}],#multi-stream-container > [${selectionHighlight}]{outline:3px solid #58c8ff;outline-offset:-3px}`, { id: 'umininn-player-highlight-style' });
+            // A positioned scaled iframe paints over its parent's inner outline.
+            // Paint the Kick ring above the frame without adding a hit target.
+            highlightStyle.textContent += `#multi-stream-container .kick-wrapper,#multi-stream-container .kick-iframe{border-radius:0}#multi-stream-container > .kick-wrapper[${controlsHighlight}],#multi-stream-container > .kick-wrapper[${selectionHighlight}]{outline:none}#multi-stream-container > .kick-wrapper[${controlsHighlight}]::after,#multi-stream-container > .kick-wrapper[${selectionHighlight}]::after{content:'';position:absolute;inset:0;z-index:2;pointer-events:none;box-shadow:inset 0 0 0 3px #58c8ff;border-radius:0}`;
             (doc.head || doc.documentElement).appendChild(highlightStyle);
             toggle = node('button', '🎚 播放控制', { id: 'toggle', type: 'button', 'aria-expanded': 'false', 'aria-haspopup': 'dialog' });
             const quickMute = node('button', '🔇', { id: 'quick-mute', type: 'button', title: '全部靜音', 'aria-label': '全部靜音' });
@@ -1909,6 +1942,7 @@
         function dispose() {
             if (disposed) return;
             disposed = true;
+            revealedEntry = null;
             doc.documentElement.removeAttribute('data-umininn-player-controls-open');
             panelIdleCleanup?.();
             panelIdleCleanup = null;

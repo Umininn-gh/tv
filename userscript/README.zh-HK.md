@@ -1,6 +1,10 @@
 # Umininn TV 播放器控制 Userscript
 
-版本：1.0.11。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+版本：1.0.12。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+
+## 1.0.12 縮放播放器標示及選單定位
+
+修正 Kick 縮放 iframe 蓋住 highlight 邊框及內外層圓角不一致的問題，邊框改在影片上方繪畫並保持點擊穿透。滑鼠進入影片格時，若選單內對應項目未完全可見，會以最小距離捲動該選單；已可見時不移動，亦不持續拉回手動捲動的位置。
 
 ## 1.0.11 選單與播放器雙向標示
 

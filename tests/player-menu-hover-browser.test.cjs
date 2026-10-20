@@ -41,7 +41,7 @@ async function fixture(t, extra = {}) {
             body{margin:0;background:#111;color:white;font:14px sans-serif}#input-container{height:30px}
             #multi-stream-container{display:flex;flex-wrap:wrap;width:650px;gap:12px;padding:12px}
             #multi-stream-container > *{width:300px;height:190px;display:block;background:#283441;border:0}
-            #multi-stream-container video,#multi-stream-container iframe{width:100%;height:100%;border:0;display:block}
+            #multi-stream-container > div video,#multi-stream-container > div iframe{width:100%;height:100%;border:0;display:block}
             #outside{position:fixed;bottom:5px;left:5px}
             </style></head><body><div id="input-container"></div><div id="multi-stream-container">
             <div id="native" data-channel-key="native-key" data-channel-name="同名台"><video controls muted></video></div>
@@ -278,6 +278,198 @@ test('source/frame replacement clears old entry hover handlers and the new row b
     await page.locator(rows).filter({ hasText: '2. 同名台' }).hover();
     await expectHighlights(page, ['nested'], ['2. 同名台']);
     assert.equal(await page.locator(rows).count(), 4, 'replacement does not leave a duplicate row');
+});
+
+async function compactPanel(page) {
+    await page.evaluate(() => {
+        const root = document.getElementById('umininn-player-panel-host').shadowRoot;
+        root.getElementById('panel').style.maxHeight = '260px';
+        const style = document.createElement('style'); style.textContent = '.player{min-height:110px}'; root.append(style);
+    });
+}
+async function panelPosition(page) {
+    return page.locator(panel).evaluate(element => ({ top: element.scrollTop, pageX: scrollX, pageY: scrollY }));
+}
+async function rowVisible(page, index) {
+    return page.locator(rows).nth(index).evaluate(element => {
+        const panel = element.closest('#panel'), rect = panel.getBoundingClientRect(), row = element.getBoundingClientRect();
+        const top = rect.top + panel.clientTop, bottom = top + panel.clientHeight;
+        return row.top >= top - 1 && row.bottom <= bottom + 1;
+    });
+}
+async function assertVisiblePlayerEdges(page, selector) {
+    const clip = await page.locator(selector).boundingBox();
+    const screenshot = (await page.screenshot({ clip })).toString('base64');
+    const pixels = await page.evaluate(async png => {
+        const image = new Image(); image.src = 'data:image/png;base64,' + png; await image.decode();
+        const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+        const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
+        return [[image.width / 2, 1], [image.width / 2, image.height - 2], [1, image.height / 2], [image.width - 2, image.height / 2]]
+            .map(([x, y]) => [...context.getImageData(Math.floor(x), Math.floor(y), 1, 1).data]);
+    }, screenshot);
+    assert.deepEqual(pixels, Array.from({ length: 4 }, () => [88, 200, 255, 255]), 'all four player edges are painted above the positioned scaled iframe');
+}
+
+test('actual player hover reveals an offscreen matching control row by scrolling only the panel, minimally in either direction', options, async t => {
+    const page = await fixture(t);
+    await open(page); await compactPanel(page);
+    const before = await panelPosition(page);
+    assert.equal(await rowVisible(page, 2), false);
+    await hoverCenter(page, '#direct');
+    await expectHighlights(page, ['direct'], ['3. 原生']);
+    await page.waitForFunction(() => document.getElementById('umininn-player-panel-host').shadowRoot.getElementById('panel').scrollTop > 0);
+    assert.equal(await rowVisible(page, 2), true);
+    const down = await panelPosition(page);
+    assert.equal(down.pageX, before.pageX); assert.equal(down.pageY, before.pageY);
+    const gap = await page.locator(rows).nth(2).evaluate(element => {
+        const panel = element.closest('#panel'), rect = panel.getBoundingClientRect();
+        return rect.top + panel.clientTop + panel.clientHeight - element.getBoundingClientRect().bottom;
+    });
+    assert.ok(Math.abs(gap) < 2, 'downward reveal aligns only the clipped bottom edge');
+    await hoverCenter(page, '#native');
+    await expectHighlights(page, ['native'], ['1. 同名台']);
+    assert.equal(await rowVisible(page, 0), true);
+    const up = await panelPosition(page);
+    assert.ok(up.top < down.top); assert.equal(up.pageX, before.pageX); assert.equal(up.pageY, before.pageY);
+});
+
+test('visible rows and menu-row hover do not jump; manual panel scrolling is respected until the player hover changes', options, async t => {
+    const page = await fixture(t);
+    await open(page); await compactPanel(page);
+    await hoverCenter(page, '#direct');
+    await expectHighlights(page, ['direct'], ['3. 原生']);
+    const revealed = await panelPosition(page);
+    await outside(page); await hoverCenter(page, '#direct');
+    await expectHighlights(page, ['direct'], ['3. 原生']);
+    assert.deepEqual(await panelPosition(page), revealed, 'an already visible row needs no extra movement');
+    await page.locator(panel).evaluate(element => element.scrollTop = 0);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal((await panelPosition(page)).top, 0, 'the same player does not fight a manual menu scroll');
+    await page.locator(rows).nth(0).hover();
+    const afterHover = await panelPosition(page);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+    assert.deepEqual(await panelPosition(page), afterHover, 'hovering controls themselves never schedules another reveal');
+});
+
+test('rapid player changes, removal and closing discard stale auto-reveal targets', options, async t => {
+    const page = await fixture(t);
+    await open(page); await compactPanel(page);
+    await hoverCenter(page, '#direct'); await hoverCenter(page, '#native');
+    await expectHighlights(page, ['native'], ['1. 同名台']);
+    assert.equal(await rowVisible(page, 0), true);
+    await page.evaluate(() => { document.getElementById('native').remove(); hoverController.scan(); });
+    await outside(page); await expectHighlights(page, [], []);
+    await page.locator(panelHost).getByRole('button', { name: '關閉', exact: true }).click();
+    const closed = await panelPosition(page);
+    await hoverCenter(page, '#direct');
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+    assert.deepEqual(await panelPosition(page), closed, 'closed menus cannot receive queued or new hover scrolling');
+});
+
+test('window controls can reveal their row, while a foreign menu marker and touch taps never scroll the panel', options, async t => {
+    const page = await fixture(t);
+    await open(page); await compactPanel(page); await outside(page);
+    const before = await panelPosition(page);
+    await page.locator('#direct').evaluate(element => element.setAttribute('data-umininn-selection-highlight', ''));
+    await expectHighlights(page, [], ['3. 原生']);
+    assert.deepEqual(await panelPosition(page), before, 'another menu must not pull this one away from its current position');
+    await page.locator('#direct').evaluate(element => element.removeAttribute('data-umininn-selection-highlight'));
+    await page.evaluate(() => {
+        const rect = document.getElementById('direct').getBoundingClientRect(), cell = document.createElement('div');
+        cell.className = 'player-window-cell'; cell.dataset.playerKey = 'direct-key';
+        cell.style.cssText = `position:fixed;left:${rect.left}px;top:${rect.top}px;width:160px;height:25px;z-index:50;`;
+        const button = document.createElement('button'); button.id = 'scroll-window-control'; button.textContent = 'Window';
+        cell.append(button); document.body.append(cell);
+    });
+    await page.locator('#scroll-window-control').hover();
+    await expectHighlights(page, ['direct'], ['3. 原生']);
+    assert.equal(await rowVisible(page, 2), true);
+    assert.equal(await page.locator('#direct').evaluate(element => element.matches(':hover')), false);
+    const touchPage = await fixture(t, { hasTouch: true });
+    await touchPage.locator(toggle).tap(); await compactPanel(touchPage);
+    const untouched = await panelPosition(touchPage);
+    await touchPage.locator('#direct').tap();
+    await expectHighlights(touchPage, [], []);
+    assert.deepEqual(await panelPosition(touchPage), untouched, 'touching a player never starts hover scrolling');
+});
+
+test('a real control-row order change resamples a stationary player, while unchanged scans do not fight manual menu scrolling', options, async t => {
+    const page = await fixture(t);
+    await page.evaluate(() => {
+        const pane = document.getElementById('multi-stream-container'), paneRect = pane.getBoundingClientRect();
+        const positions = [...pane.children].map(tile => ({ tile, rect: tile.getBoundingClientRect() }));
+        for (const { tile, rect } of positions) {
+            tile.style.position = 'absolute'; tile.style.left = `${rect.left - paneRect.left}px`; tile.style.top = `${rect.top - paneRect.top}px`;
+        }
+        pane.style.position = 'relative'; pane.style.height = '500px';
+    });
+    await open(page); await compactPanel(page);
+    await hoverCenter(page, '#native');
+    await expectHighlights(page, ['native'], ['1. 同名台']);
+    await page.evaluate(() => { document.getElementById('native').style.order = '8'; hoverController.scan(); });
+    await expectHighlights(page, ['native'], ['4. 同名台']);
+    await page.waitForFunction(() => document.getElementById('umininn-player-panel-host').shadowRoot.getElementById('panel').scrollTop > 250);
+    assert.equal(await rowVisible(page, 0), true, 'the original native row is still DOM row zero, now last in CSS order');
+    await page.locator(panel).evaluate(element => element.scrollTop = 0);
+    await page.evaluate(() => { document.getElementById('native').dataset.channelName = '背景改名'; hoverController.scan(); });
+    await expectHighlights(page, ['native'], ['4. 背景改名']);
+    assert.equal((await panelPosition(page)).top, 0, 'rename and background scans preserve a deliberate menu position');
+});
+
+test('a resized panel reveals the stationary hovered player again after a deliberate prior scroll', options, async t => {
+    const page = await fixture(t);
+    await page.evaluate(() => {
+        const pane = document.getElementById('multi-stream-container');
+        for (let index = 0; index < 10; index++) {
+            const tile = document.createElement('video'); tile.dataset.channelName = `額外台${index}`;
+            tile.style.cssText = `position:fixed;left:-1000px;top:-1000px;order:${index - 10};`;
+            pane.append(tile);
+        }
+        hoverController.scan();
+    });
+    await open(page); await compactPanel(page);
+    await hoverCenter(page, '#native');
+    await expectHighlights(page, ['native'], ['11. 同名台']);
+    assert.equal(await rowVisible(page, 0), true);
+    await page.locator(panel).evaluate(element => element.scrollTop = 0);
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)));
+    assert.equal((await panelPosition(page)).top, 0);
+    await page.setViewportSize({ width: 1200, height: 700 });
+    await page.waitForFunction(() => document.getElementById('umininn-player-panel-host').shadowRoot.getElementById('panel').scrollTop > 100);
+    assert.equal(await rowVisible(page, 0), true);
+    assert.equal(await page.evaluate(() => scrollY), 0);
+});
+
+test('scaled Kick iframe with production 220 percent scaling, containment and clipping keeps outer player hover and reveals its row', { ...options, skip: !enabled || engine !== 'firefox' }, async t => {
+    const page = await fixture(t);
+    await page.evaluate(() => {
+        document.getElementById('multi-stream-container').style.borderRadius = '14px';
+        const wrapper = document.getElementById('nested'), iframe = wrapper.querySelector('iframe');
+        wrapper.className = 'video1 kick-wrapper';
+        wrapper.style.cssText += ';position:relative;overflow:hidden;contain:layout paint';
+        iframe.className = 'kick-iframe';
+        iframe.style.cssText = 'position:absolute;top:0;left:0;width:220%;height:220%;transform:scale(.454545);transform-origin:top left;border:0;contain:layout paint';
+        const productionRadius = document.createElement('style'); productionRadius.textContent = '.kick-wrapper,.kick-iframe{border-radius:inherit}'; document.head.append(productionRadius);
+    });
+    await open(page); await compactPanel(page);
+    await hoverCenter(page, '#nested');
+    await expectHighlights(page, ['nested'], ['2. 同名台']);
+    assert.equal(await page.locator('#nested').evaluate(element => element.matches(':hover')), true);
+    assert.equal(await rowVisible(page, 1), true);
+    await assertVisiblePlayerEdges(page, '#nested');
+    assert.deepEqual(await page.locator('#nested').evaluate(element => [getComputedStyle(element).borderRadius, getComputedStyle(element.querySelector('iframe')).borderRadius]), ['0px', '0px']);
+    const box = await page.locator('#nested').boundingBox();
+    await page.mouse.move(box.x + 20, box.y + 20);
+    await expectHighlights(page, ['nested'], ['2. 同名台']);
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    const inner = await (await page.locator('#nested iframe').elementHandle()).contentFrame();
+    assert.equal(await inner.evaluate(() => clicks), 1);
+    await expectHighlights(page, ['nested'], ['2. 同名台']);
+    await outside(page); await expectHighlights(page, [], []);
+    await page.locator('#nested').evaluate(element => element.setAttribute('data-umininn-selection-highlight', ''));
+    await expectHighlights(page, [], ['2. 同名台']);
+    await assertVisiblePlayerEdges(page, '#nested');
+    assert.deepEqual(await page.evaluate(() => hoverCommands), [], 'paint and hover changes never issue audio commands');
 });
 
 for (const close of ['manual', 'Escape', 'idle', 'pagehide', 'dispose']) {

@@ -2198,8 +2198,9 @@ function applyPlayerBookmark(value) {
     const bindings = new Set();
     let items = new Map(), cards = new Map();
     let opened = false, suspended = false, touchPointer = false, frame = null;
+    let revealedKey = null, cardOrder = '';
     const mutations = new MutationObserver(schedule);
-    const resizes = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+    const resizes = typeof ResizeObserver === 'function' ? new ResizeObserver(resized) : null;
     function marked(node, active) {
         if (active) {
             if (node.getAttribute('data-player-highlighted') !== 'true') node.setAttribute('data-player-highlighted', 'true');
@@ -2216,6 +2217,24 @@ function applyPlayerBookmark(value) {
         node.removeEventListener('pointerenter', pointer);
         node.removeEventListener('pointerleave', pointer);
         node.removeEventListener('pointermove', pointer);
+    }
+    function revealCard(key) {
+        if (key === null) { revealedKey = null; return; }
+        if (key === revealedKey) return;
+        const cell = [...cards].find(([cell, candidate]) => candidate === key && cell.getClientRects().length)?.[0];
+        if (!cell || !panel.clientHeight) return;
+        const bounds = panel.getBoundingClientRect(), rect = cell.getBoundingClientRect();
+        const top = bounds.top + panel.clientTop, bottom = top + panel.clientHeight;
+        let delta = 0;
+        if (rect.height > panel.clientHeight) {
+            if (rect.top > top) delta = rect.top - top;
+            else if (rect.bottom < bottom) delta = rect.bottom - bottom;
+        } else if (rect.top < top) delta = rect.top - top;
+        else if (rect.bottom > bottom) delta = rect.bottom - bottom;
+        revealedKey = key;
+        // Scroll this menu alone, once per physical player entry. scrollIntoView
+        // could also move the document; repeated correction would fight the user.
+        if (Math.abs(delta) > .5) panel.scrollTop += delta;
     }
     function render() {
         if (!opened) return;
@@ -2245,6 +2264,8 @@ function applyPlayerBookmark(value) {
         for (const element of items.keys()) if (!nextItems.has(element)) element.removeAttribute(ownAttribute);
         for (const cell of cards.keys()) if (!nextCards.has(cell)) marked(cell, false);
         items = nextItems; cards = nextCards;
+        const nextOrder = JSON.stringify([...options.children].filter(cell => cards.has(cell)).map(cell => cards.get(cell)));
+        if (nextOrder !== cardOrder) { cardOrder = nextOrder; revealedKey = null; }
         const nodes = new Set([...items.keys(), ...cards.keys()]);
         for (const node of bindings) if (!nodes.has(node)) { unbind(node); bindings.delete(node); }
         for (const node of nodes) if (!bindings.has(node)) {
@@ -2259,23 +2280,27 @@ function applyPlayerBookmark(value) {
         const hoveredWindows = new Set(Array.from(pane.parentElement.querySelectorAll('#player-window-controls .player-window-cell'))
             .filter(cell => hover && cell.matches(':hover')).map(cell => cell.dataset.playerKey));
         const highlightedKeys = new Set();
+        let directKey = null;
         for (const [element, key] of items) {
-            const ownHover = hover && (element.matches(':hover') || key !== null && hoveredKeys.has(key) ||
-                hoveredWindows.has(element === initial ? 'initial-player' : key));
+            const physicalHover = hover && (element.matches(':hover') || hoveredWindows.has(element === initial ? 'initial-player' : key));
+            const ownHover = physicalHover || hover && key !== null && hoveredKeys.has(key);
+            if (physicalHover) directKey = key;
             element.toggleAttribute(ownAttribute, ownHover);
             if (key !== null && (ownHover || element.hasAttribute(controlsAttribute))) highlightedKeys.add(key);
         }
         for (const [cell, key] of cards) marked(cell, highlightedKeys.has(key));
+        revealCard(directKey);
     }
     function schedule() {
         if (!opened || frame !== null) return;
         frame = requestAnimationFrame(() => { frame = null; render(); });
     }
+    function resized() { revealedKey = null; schedule(); }
     function clear() {
         if (frame !== null) cancelAnimationFrame(frame);
         frame = null;
         mutations.disconnect(); resizes?.disconnect();
-        window.removeEventListener('resize', schedule);
+        window.removeEventListener('resize', resized);
         window.removeEventListener('scroll', schedule, true);
         document.removeEventListener('pointerover', windowPointer, true);
         document.removeEventListener('pointerout', windowPointer, true);
@@ -2284,6 +2309,7 @@ function applyPlayerBookmark(value) {
         for (const element of items.keys()) element.removeAttribute(ownAttribute);
         for (const cell of cards.keys()) marked(cell, false);
         items.clear(); cards.clear();
+        revealedKey = null; cardOrder = '';
     }
     function syncVisibility() {
         const visible = !suspended && !document.hidden && !panel.hidden && getComputedStyle(panel).display !== 'none';
@@ -2296,7 +2322,8 @@ function applyPlayerBookmark(value) {
         mutations.observe(options, { childList: true, subtree: true, attributes: true,
             attributeFilter: ['style', 'class', 'value', 'data-platform'] });
         resizes?.observe(pane);
-        window.addEventListener('resize', schedule);
+        resizes?.observe(panel);
+        window.addEventListener('resize', resized);
         window.addEventListener('scroll', schedule, true);
         document.addEventListener('pointerover', windowPointer, true);
         document.addEventListener('pointerout', windowPointer, true);

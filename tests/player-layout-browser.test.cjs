@@ -76,10 +76,17 @@ fixture.mount=function(){
  channels.forEach((channel,index)=>{
    let element,resource=null;
    if(index===2||index===3){
-      element=document.createElement('iframe');element.id='frame-'+index;element.src='${frameOrigin}/player?index='+index;element.allow='autoplay';
-      element.addEventListener('load',()=>{element.dataset.loads=String(Number(element.dataset.loads||0)+1)});
-      new MutationObserver(records=>{fixture.frameSources+=records.length}).observe(element,{attributes:true,attributeFilter:['src']});
-      fixture.frames.push({element,window:null});
+      let frame;
+      if(document.body.dataset.fixtureProductionKick==='true'){
+          element=RENDERERS.scaledIframe(channel,{buildUrl:()=> '${frameOrigin}/player?index='+index},true,'video');
+          frame=element.querySelector('iframe');
+      }else{
+          element=document.createElement('iframe');element.src='${frameOrigin}/player?index='+index;element.allow='autoplay';frame=element;
+      }
+      frame.id='frame-'+index;
+      frame.addEventListener('load',()=>{frame.dataset.loads=String(Number(frame.dataset.loads||0)+1)});
+      new MutationObserver(records=>{fixture.frameSources+=records.length}).observe(frame,{attributes:true,attributeFilter:['src']});
+      fixture.frames.push({element:frame,window:null});
    }else{
       element=document.createElement('video');element.id='native-'+index;element.className='hls-video-element';element.loop=true;element.playsInline=true;
       element.src='/silent.wav?native='+index;element.muted=true;instrumentMedia(element);
@@ -99,6 +106,8 @@ fixture.mount=function(){
  new MutationObserver(records=>{for(const record of records)for(const node of record.removedNodes)if(fixture.elements.includes(node))fixture.removals++}).observe(pane,{childList:true});
  fixture.frames.forEach(frame=>frame.window=frame.element.contentWindow);
  syncActivePlayers(channels);
+ const catalogCount=Number(document.body.dataset.fixtureCatalogChannels||0);
+ if(catalogCount)channels.splice(2,0,...Array.from({length:catalogCount},(_,index)=>({platform:'at',id:'catalog-'+index,name:'未播放目錄 '+index})));
 };
 fixture.resize=function(width,height){const host=document.getElementById('multi-stream-container-wrapper');host.style.width=width+'px';host.style.height=height+'px'};
 fixture.addPlaceholder=function(channel){
@@ -130,7 +139,7 @@ fixture.grid=function(){const pane=document.getElementById('multi-stream-contain
 };
 fixture.mount();fixture.initialGrid=fixture.grid();fixture.initialGeometry=fixture.geometry();`;
 
-async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,hasTouch=false,framePlatform='at',clock=false,overlayTimeoutSeconds,audioUserscript=false,fixtureBrowser=browser}={}){
+async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,catalogChannels=0,hasTouch=false,framePlatform='at',productionKick=false,clock=false,overlayTimeoutSeconds,audioUserscript=false,fixtureBrowser=browser}={}){
     const context=await fixtureBrowser.newContext({viewport,serviceWorkers:'block',...(hasTouch?{hasTouch:true}:{})});t.after(()=>context.close());
     if(storageSeed||denyStorage)await context.addInitScript(({storageSeed,denyStorage,origin})=>{
         if(location.origin!==origin)return;
@@ -141,6 +150,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     },{storageSeed,denyStorage,origin:new URL(siteUrl).origin});
     const navigations=new Map(),blocked=[];
     assert.ok(['at','kick'].includes(framePlatform));
+    if(productionKick)framePlatform='kick';
     const modelFrameOrigin=audioUserscript?'https://player.kick.com':frameOrigin;
     let fixtureScript=audioUserscript?appScript.replaceAll(frameOrigin,modelFrameOrigin):appScript;
     if(overlayTimeoutSeconds!==undefined){
@@ -148,7 +158,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
         fixtureScript=fixtureScript.replace(/(const\s+PLAYER_OVERLAY_TIMEOUT_SECONDS\s*=\s*)\d+(\s*;)/,(_,prefix,suffix)=>prefix+overlayTimeoutSeconds+suffix);
         assert.notEqual(fixtureScript,appScript,'the reviewed timeout constant must be configurable in this fixture');
     }
-    const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body data-fixture-players="${players}" data-fixture-frame-platform="${framePlatform}" data-fixture-audio-userscript="${audioUserscript}">
+    const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body data-fixture-players="${players}" data-fixture-catalog-channels="${catalogChannels}" data-fixture-frame-platform="${framePlatform}" data-fixture-production-kick="${productionKick}" data-fixture-audio-userscript="${audioUserscript}">
     <div ${audioUserscript?'id="input-container"':''} style="height:${audioUserscript?40:30}px;flex:none;${audioUserscript?'margin-left:0;width:100%;padding-left:0':''}"><button id="more-channels-btn" onclick="toggleChannelSelection()">看更台</button><button id="adjust-player-positions">調整位置</button><button id="enlarge-player">放大模式</button><button id="reset-player-positions">重設</button><button id="toggle-all-audio">聲音</button></div>
     <div id="channel-selection" style="display:none"><div id="channel-options"></div><button id="fixture-watch-selected" onclick="watchSelectedChannels()">開始觀看</button></div><div id="multi-stream-container-wrapper" style="flex:none;width:${width}px;height:${height}px;min-height:0"><div id="multi-stream-container" class="video-wrapper"></div></div>
     <script src="/instrument.js"></script><script src="/channel-list.js"></script><script src="/stream-performance.js"></script><script src="/player-geometry.js"></script><script src="/player-layout.js"></script><script src="/layout-bookmarks.js"></script><script src="/fixture-app.js"></script></body></html>`;
@@ -171,7 +181,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     });
     if(audioUserscript){
         const built=fs.readFileSync(path.join(root,'userscript/umininn-tv-player.user.js'),'utf8');
-        assert.match(built,/\/\/ @version\s+1\.0\.11\b/,'integrated userscript tests must use the newly built distribution');
+        assert.equal(built.match(/^\/\/ @version\s+(\S+)/m)?.[1],require('../tools/build-player-userscript.cjs').RELEASE_VERSION,'integrated userscript tests must use the newly built distribution');
         await context.addInitScript({content:`
             window.fixtureAudioMessages=[];window.fixtureAudioGate={hold:false,targetId:'frame-2',held:[]};
             addEventListener('message',event=>{
@@ -2254,13 +2264,23 @@ async function waitMenuHover(f,{selection=[],controls=[],cards=selection}={}){
     },expected);
     assert.deepEqual(await menuHoverState(f),expected);
 }
-async function hoverSelectionTile(f,key){
+async function hoverSelectionTile(f,key,{steps=8}={}){
     const point=await f.page.evaluate(key=>{const element=getPlayerElement(activePlayers.get(key)),rect=element.getBoundingClientRect();return {x:rect.left+rect.width/2,y:rect.top+rect.height/2}},key);
-    await f.page.mouse.move(point.x,point.y,{steps:8});return point;
+    await f.page.mouse.move(point.x,point.y,{steps});return point;
 }
 async function assertTileOutline(f,key){
     assert.deepEqual(await f.page.evaluate(key=>{const style=getComputedStyle(getPlayerElement(activePlayers.get(key)));return {color:style.outlineColor,width:style.outlineWidth,offset:style.outlineOffset,style:style.outlineStyle}},key),
         {color:'rgb(88, 200, 255)',width:'3px',offset:'-3px',style:'solid'});
+}
+async function assertVisibleTileEdges(f,key){
+    const clip=await f.page.evaluate(key=>{const r=getPlayerElement(activePlayers.get(key)).getBoundingClientRect();return {x:r.left,y:r.top,width:r.width,height:r.height}},key);
+    const png=(await f.page.screenshot({clip})).toString('base64');
+    const pixels=await f.page.evaluate(async png=>{
+        const image=new Image();image.src='data:image/png;base64,'+png;await image.decode();
+        const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;const context=canvas.getContext('2d');context.drawImage(image,0,0);
+        return [[image.width/2,1],[image.width/2,image.height-2],[1,image.height/2],[image.width-2,image.height/2]].map(([x,y])=>Array.from(context.getImageData(Math.floor(x),Math.floor(y),1,1).data));
+    },png);
+    assert.deepEqual(pixels,Array.from({length:4},()=>[88,200,255,255]),'all four actual tile edges remain cyan above the scaled iframe pixels');
 }
 
 test('selection hover pairs real menu cards and native or foreign players by channel key without blocking media clicks',{skip:!enabled,timeout:60000},async t=>{
@@ -2365,7 +2385,7 @@ test('selection hover never leaves a sticky tile or menu marker after trusted to
 });
 
 test('selection hover integrates both real menus without echoing markers or clearing the other open owner',{skip:!enabled,timeout:30000},async t=>{
-    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:2200,height:1200},audioUserscript:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:2200,height:1200},audioUserscript:true,catalogChannels:48}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
     const toggle=f.page.locator('#umininn-player-control-host #toggle'),close=f.page.locator(audioPanel).getByRole('button',{name:'關閉',exact:true}),rows=f.page.locator(audioPanel).locator('.player');
     const titles=await rows.locator('strong').allTextContents();assert.equal(titles[0],'1. 播放器 0');assert.equal(titles[4],'5. 播放器 4');
     async function matched(expected,rowIndices=[]){
@@ -2389,8 +2409,10 @@ test('selection hover integrates both real menus without echoing markers or clea
     // testing their protocol; no synthetic hover or marker writes are used.
     await f.page.evaluate(()=>{const panel=document.getElementById('channel-selection');panel.style.left='1300px';panel.style.right='auto'});
     await selectionCard(f,keys[0]).hover();await matched({selection:[keys[0]],cards:[keys[0]]},[0]);
+    const menuScroll=await f.page.locator('#channel-selection').evaluate(panel=>panel.scrollTop);
     await rows.nth(4).evaluate(row=>{window.fixtureIntegratedRowTrusted=null;row.addEventListener('pointerenter',event=>{fixtureIntegratedRowTrusted=event.isTrusted},{once:true})});
     await rows.nth(4).locator('strong').hover();await matched({controls:[keys[4]],cards:[keys[4]]},[4]);
+    assert.equal(await f.page.locator('#channel-selection').evaluate(panel=>panel.scrollTop),menuScroll,'hovering the other menu row may highlight this card but cannot scroll this menu');
     assert.equal(await f.page.evaluate(()=>fixtureIntegratedRowTrusted),true);
     // Keyboard activation leaves the mouse on the still-open owner's row.
     await f.page.locator('#more-channels-btn').focus();await f.page.keyboard.press('Enter');await matched({controls:[keys[4]],cards:[]},[4]);
@@ -2402,4 +2424,134 @@ test('selection hover integrates both real menus without echoing markers or clea
     await close.focus();await f.page.keyboard.press('Enter');await matched({selection:[keys[0]],cards:[keys[0]]});
     await f.page.locator('#more-channels-btn').focus();await f.page.keyboard.press('Enter');await matched({});
     assert.equal((await nameGeometry(f)).hidden,true);await assertContinuity(f,before);
+});
+
+test('selection hover reaches real scaled Kick wrappers and keeps their iframe and corner geometry intact',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},productionKick:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    await f.page.locator('#more-channels-btn').click();await waitNames(f);
+    await f.page.evaluate(()=>{
+        window.fixtureKickHover=[];
+        for(const [key,entry]of activePlayers){const tile=getPlayerElement(entry);if(tile.matches('.kick-wrapper'))tile.addEventListener('pointerenter',event=>fixtureKickHover.push({key,trusted:event.isTrusted}))}
+    });
+    for(const [index,key]of [[0,keys[2]],[1,keys[3]]]){
+        const model=await f.page.evaluate(key=>{
+            const tile=getPlayerElement(activePlayers.get(key)),frame=tile.querySelector('iframe'),bounds=tile.getBoundingClientRect(),rect=frame.getBoundingClientRect(),style=getComputedStyle(frame);
+            return {wrapper:tile.matches('.video.kick-wrapper'),nested:frame.matches('.kick-iframe'),scaled:Number.parseFloat(style.width)/bounds.width,
+                size:{width:rect.width,height:rect.height},tileSize:{width:bounds.width,height:bounds.height},transform:style.transform,
+                frameRadius:style.borderTopLeftRadius,tileRadius:getComputedStyle(tile).borderTopLeftRadius};
+        },key);
+        assert.equal(model.wrapper,true);assert.equal(model.nested,true);assert.ok(Math.abs(model.scaled-2.2)<.02,JSON.stringify(model));assert.notEqual(model.transform,'none');
+        assert.ok(Math.abs(model.size.width-model.tileSize.width)<.1);assert.ok(Math.abs(model.size.height-model.tileSize.height)<.1);
+        await selectionCard(f,key).hover();await waitMenuHover(f,{selection:[key]});
+        await capture(f,'scaled-kick-card-'+index);
+        assert.equal(model.frameRadius,'0px','the oversized scaled iframe must not inherit a different effective corner radius');
+        assert.equal(model.tileRadius,'0px','Kick tiles use the same square geometry as other iframe tiles');
+        await assertVisibleTileEdges(f,key);
+        const point=await hoverSelectionTile(f,key);
+        assert.equal(await f.page.evaluate(({key,point})=>document.elementFromPoint(point.x,point.y)===getPlayerElement(activePlayers.get(key)).querySelector('iframe'),{key,point}),true,'the scaled frame receives media input through the wrapper highlight');
+        if(engine==='firefox'){
+            await waitMenuHover(f,{selection:[key]});
+            assert.equal(await f.page.evaluate(key=>fixtureKickHover.some(event=>event.key===key&&event.trusted),key),true,'actual scaled-iframe entry generates a trusted parent wrapper hover');
+            await windowCell(f,key).locator('[data-player-action="enlarge"]').hover();await waitMenuHover(f,{selection:[key]});
+        }
+        await f.frames[index].evaluate(()=>{window.fixtureKickClicks=[];document.addEventListener('click',event=>{fixtureKickClicks.push(event.isTrusted);event.preventDefault()},true)});
+        await f.page.mouse.click(point.x,point.y);assert.deepEqual(await f.frames[index].evaluate(()=>fixtureKickClicks),[true]);
+    }
+    await f.page.mouse.move(5,5);await waitMenuHover(f);await f.page.locator('#more-channels-btn').click();await assertContinuity(f,before);
+});
+
+async function selectionScrollState(f,key){
+    return f.page.evaluate(key=>{
+        const panel=document.getElementById('channel-selection'),cell=channelOptionControls.get(key).cell,panelRect=panel.getBoundingClientRect(),rect=cell.getBoundingClientRect();
+        const top=panelRect.top+panel.clientTop,bottom=top+panel.clientHeight;
+        return {scroll:panel.scrollTop,maximum:panel.scrollHeight-panel.clientHeight,page:[scrollX,scrollY],top:rect.top,bottom:rect.bottom,
+            viewportTop:top,viewportBottom:bottom,visible:rect.height>0&&rect.top>=top-.75&&rect.bottom<=bottom+.75};
+    },key);
+}
+async function waitSelectionCardVisible(f,key){
+    await f.page.waitForFunction(key=>{
+        const panel=document.getElementById('channel-selection'),cell=channelOptionControls.get(key)?.cell;
+        if(!cell)return false;const p=panel.getBoundingClientRect(),r=cell.getBoundingClientRect(),top=p.top+panel.clientTop;
+        return r.height>0&&r.top>=top-.75&&r.bottom<=top+panel.clientHeight+.75;
+    },key);
+    return selectionScrollState(f,key);
+}
+
+test('selection auto-scroll reveals the physical player card minimally without moving the document or fighting manual menu scrolling',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},catalogChannels:48}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    await f.page.locator('#more-channels-btn').click();await waitNames(f);
+    const first=await selectionScrollState(f,keys[0]),last=await selectionScrollState(f,keys[4]);
+    assert.equal(first.visible,true);assert.equal(last.visible,false);assert.ok(last.maximum>500,'the real catalog must overflow the menu');
+    await hoverSelectionTile(f,keys[0]);await waitMenuHover(f,{selection:[keys[0]]});assert.equal((await selectionScrollState(f,keys[0])).scroll,first.scroll);
+    await hoverSelectionTile(f,keys[4]);await waitMenuHover(f,{selection:[keys[4]]});const revealed=await waitSelectionCardVisible(f,keys[4]);
+    assert.ok(Math.abs(revealed.scroll-last.scroll-(last.bottom-last.viewportBottom))<1.5,'scroll only the distance needed to reveal the bottom of a normal card');
+    assert.deepEqual(revealed.page,last.page);
+    await f.page.mouse.move(5,5);await hoverSelectionTile(f,keys[4]);await f.page.waitForTimeout(80);
+    assert.equal((await selectionScrollState(f,keys[4])).scroll,revealed.scroll,'a fully visible target never jumps or centers');
+    await selectionCard(f,keys[4]).hover();await f.page.waitForTimeout(80);
+    assert.equal((await selectionScrollState(f,keys[4])).scroll,revealed.scroll,'menu-card hover does not trigger player-driven scrolling');
+    await hoverSelectionTile(f,keys[4]);await f.page.waitForTimeout(50);await f.page.evaluate(()=>{document.getElementById('channel-selection').scrollTop=0});
+    const point=await hoverSelectionTile(f,keys[4]);await f.page.mouse.move(point.x+3,point.y+3);await f.page.waitForTimeout(100);
+    assert.equal((await selectionScrollState(f,keys[4])).scroll,0,'the same hovered player must let the user read another part of the menu');
+    await settlePane(f,1180,780);await waitSelectionCardVisible(f,keys[4]);
+    await f.page.locator('#channel-selection').evaluate(panel=>{panel.style.maxHeight='400px'});await waitSelectionCardVisible(f,keys[4]);
+    await f.page.mouse.move(5,5);await hoverSelectionTile(f,keys[4]);await waitSelectionCardVisible(f,keys[4]);
+    await hoverSelectionTile(f,keys[0]);const returned=await waitSelectionCardVisible(f,keys[0]);
+    assert.ok(Math.abs(returned.scroll-(first.top-first.viewportTop))<1,'returning upward scrolls only as far as the first card, preserving the menu padding');assert.deepEqual(returned.page,first.page);
+    await assertContinuity(f,before);
+});
+
+test('selection auto-scroll uses the latest physical key after rapid hover and catalog reorder and cancels work when closed',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},catalogChannels:48}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    await f.page.locator('#more-channels-btn').click();await waitNames(f);
+    await hoverSelectionTile(f,keys[0]);await hoverSelectionTile(f,keys[4]);await waitMenuHover(f,{selection:[keys[4]]});await waitSelectionCardVisible(f,keys[4]);
+    await f.page.evaluate(()=>{channels.reverse();generateChannelOptions({preserveSelection:true})});
+    const reordered=await waitSelectionCardVisible(f,keys[4]);assert.ok(Math.abs(reordered.top-reordered.viewportTop)<1,'a real catalog reorder remaps and minimally reveals the same currently hovered key');
+    await f.page.evaluate(()=>generateChannelOptions({preserveSelection:true}));
+    await f.page.evaluate(()=>{document.getElementById('channel-selection').scrollTop=120});await f.page.waitForTimeout(80);
+    assert.equal((await selectionScrollState(f,keys[4])).scroll,120,'unchanged status/card refresh must not fight a manual menu scroll');
+    await hoverSelectionTile(f,keys[0]);await waitSelectionCardVisible(f,keys[0]);
+    await f.page.locator('#more-channels-btn').focus();await f.page.keyboard.press('Enter');const closed=await selectionScrollState(f,keys[0]);
+    await hoverSelectionTile(f,keys[4]);await f.page.waitForTimeout(100);assert.equal((await selectionScrollState(f,keys[0])).scroll,closed.scroll);await waitMenuHover(f);
+    await f.page.mouse.move(5,5);await f.page.keyboard.press('Enter');await waitNames(f);
+    await hoverSelectionTile(f,keys[0]);await waitSelectionCardVisible(f,keys[0]);
+    await f.page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));const hidden=await selectionScrollState(f,keys[0]);
+    await hoverSelectionTile(f,keys[4]);await f.page.waitForTimeout(80);assert.equal((await selectionScrollState(f,keys[0])).scroll,hidden.scroll);await waitMenuHover(f);
+    await assertContinuity(f,before);
+});
+
+test('selection auto-scroll skips hidden cards and keeps an oversized highlighted card stable',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},catalogChannels:48}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[4]);
+    await f.page.locator('#more-channels-btn').click();await waitNames(f);
+    await selectionCard(f,key).evaluate(cell=>{cell.style.display='none'});await hoverSelectionTile(f,key,{steps:1});await f.page.waitForTimeout(80);
+    assert.equal((await selectionScrollState(f,key)).scroll,0,'an offline/filtered card must not move the menu');
+    await selectionCard(f,key).evaluate(cell=>{cell.style.display='';cell.style.height=(document.getElementById('channel-selection').clientHeight+120)+'px'});
+    await f.page.waitForFunction(key=>{
+        const p=document.getElementById('channel-selection'),r=channelOptionControls.get(key).cell.getBoundingClientRect(),top=p.getBoundingClientRect().top+p.clientTop;
+        return p.scrollTop>0&&r.top<=top+.75&&r.bottom>=top+p.clientHeight-.75;
+    },key);
+    const oversized=await selectionScrollState(f,key);assert.ok(Math.abs(oversized.top-oversized.viewportTop)<1,'an oversized card reveals its leading edge');
+    const point=await hoverSelectionTile(f,key);await f.page.mouse.move(point.x+4,point.y+3);await f.page.waitForTimeout(120);
+    assert.equal((await selectionScrollState(f,key)).scroll,oversized.scroll,'an oversized card must not oscillate between its two edges');
+    assert.deepEqual((await selectionScrollState(f,key)).page,[0,0]);await assertContinuity(f,before);
+});
+
+test('selection auto-scroll ignores trusted touch input over a player',{skip:!enabled||engine!=='chromium',timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},catalogChannels:48,hasTouch:true}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[4]);
+    await f.page.locator('#more-channels-btn').tap();await waitNames(f);
+    const point=await f.page.evaluate(key=>{const r=getPlayerElement(activePlayers.get(key)).getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}},key);
+    await f.page.touchscreen.tap(point.x,point.y);await f.page.waitForTimeout(100);await waitMenuHover(f);
+    assert.equal((await selectionScrollState(f,key)).scroll,0);assert.deepEqual((await selectionScrollState(f,key)).page,[0,0]);await assertContinuity(f,before);
+});
+
+test('selection auto-scroll cancels an unpainted reveal on close and pagehide',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},catalogChannels:48,clock:true}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[4]);
+    await f.page.locator('#more-channels-btn').click();await f.page.clock.runFor(50);await waitNames(f);
+    await hoverSelectionTile(f,key,{steps:1});assert.equal((await selectionScrollState(f,key)).scroll,0,'the pointer entry is queued before the next animation frame');
+    await f.page.keyboard.press('Enter');await f.page.clock.runFor(100);assert.equal(await f.page.locator('#channel-selection').isVisible(),false);
+    assert.equal((await selectionScrollState(f,key)).scroll,0);await waitMenuHover(f);
+    await f.page.mouse.move(5,5);await f.page.keyboard.press('Enter');await f.page.clock.runFor(50);await waitNames(f);
+    await hoverSelectionTile(f,key,{steps:1});assert.equal((await selectionScrollState(f,key)).scroll,0);
+    await f.page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));await f.page.clock.runFor(100);
+    assert.equal((await selectionScrollState(f,key)).scroll,0);await waitMenuHover(f);await assertContinuity(f,before);
 });
