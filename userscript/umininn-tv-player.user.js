@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.12
+// @version      1.0.13
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -29,7 +29,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.12",
+        userscriptVersion: "1.0.13",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -1270,11 +1270,54 @@
         let preparationWaiting = '', lastRecoveryStatus = null;
         let panelIdleCleanup = null, highlightObserver = null, highlightStyle = null, highlightFrame = null, touchPointer = false, revealedEntry = null;
         let revealOrder = '', revealViewport = '';
+        let highlightLayer = null, highlightViewport = null, highlightResizeObserver = null;
+        const highlightRings = new Map();
 
         // Each menu publishes only its own pointer state. Reading the other
         // menu's marker for the row alone prevents a two-way observer loop.
         const controlsHighlight = 'data-umininn-controls-highlight';
         const selectionHighlight = 'data-umininn-selection-highlight';
+        function fullscreenActive() { return Boolean(doc.fullscreenElement || doc.webkitFullscreenElement); }
+        function paintHighlights() {
+            if (!highlightLayer) return;
+            const pane = doc.getElementById('multi-stream-container');
+            const selected = [...entries.values()].filter(entry => entry.element.parentElement === pane && entry.element.hasAttribute(controlsHighlight));
+            const suspended = disposed || doc.hidden || fullscreenActive() || panel?.hidden || pane?.hidden || !pane?.isConnected;
+            const paneBox = suspended ? null : pane.getBoundingClientRect();
+            if (suspended || !selected.length || !paneBox?.width || !paneBox?.height) {
+                highlightLayer.hidden = true;
+                for (const ring of highlightRings.values()) ring.remove();
+                highlightRings.clear();
+                return;
+            }
+            highlightLayer.hidden = false;
+            const layerBox = highlightLayer.getBoundingClientRect();
+            const scaleX = layerBox.width ? highlightLayer.clientWidth / layerBox.width : 1;
+            const scaleY = layerBox.height ? highlightLayer.clientHeight / layerBox.height : 1;
+            Object.assign(highlightViewport.style, {
+                left: `${(paneBox.left - layerBox.left) * scaleX}px`, top: `${(paneBox.top - layerBox.top) * scaleY}px`,
+                width: `${paneBox.width * scaleX}px`, height: `${paneBox.height * scaleY}px`,
+                borderRadius: win.getComputedStyle(pane).borderRadius
+            });
+            const keep = new Set();
+            for (const entry of selected) {
+                const box = entry.element.getBoundingClientRect();
+                const visibility = win.getComputedStyle(entry.element).visibility;
+                if (entry.element.hidden || visibility === 'hidden' || visibility === 'collapse' || !box.width || !box.height || box.right <= paneBox.left || box.left >= paneBox.right || box.bottom <= paneBox.top || box.top >= paneBox.bottom) continue;
+                keep.add(entry);
+                let ring = highlightRings.get(entry);
+                if (!ring) {
+                    ring = node('span', null, { 'data-player-ring': '', 'data-player-id': String(entry.id) });
+                    highlightRings.set(entry, ring); highlightViewport.appendChild(ring);
+                }
+                Object.assign(ring.style, {
+                    left: `${(box.left - paneBox.left) * scaleX}px`, top: `${(box.top - paneBox.top) * scaleY}px`,
+                    width: `${box.width * scaleX}px`, height: `${box.height * scaleY}px`
+                });
+            }
+            for (const [entry, ring] of highlightRings) if (!keep.has(entry)) { ring.remove(); highlightRings.delete(entry); }
+            highlightLayer.hidden = !highlightRings.size;
+        }
         function hoveredWindowKeys() {
             return new Set([...doc.querySelectorAll('.player-window-cell[data-player-key]')].filter(cell => cell.matches(':hover')).map(cell => cell.dataset.playerKey));
         }
@@ -1298,7 +1341,7 @@
             if (Math.abs(delta) > 0.5) panel.scrollTop += delta;
         }
         function updateHighlight(entry, windowKeys) {
-            const live = !disposed && !doc.hidden && !panel?.hidden && entries.get(entry.element) === entry &&
+            const live = !disposed && !doc.hidden && !fullscreenActive() && !panel?.hidden && entries.get(entry.element) === entry &&
                 entry.element.parentElement === doc.getElementById('multi-stream-container');
             const canHover = !touchPointer && (!win.matchMedia || win.matchMedia('(any-hover: hover)').matches);
             const ownHover = Boolean(live && canHover && (entry.row?.matches(':hover') || entry.element.matches(':hover') || windowControlsHovered(entry, windowKeys)));
@@ -1313,16 +1356,17 @@
                 if (viewport !== revealViewport) { revealViewport = viewport; revealedEntry = null; }
             }
             let hovered = null;
-            const canHover = !disposed && !doc.hidden && !panel?.hidden && !touchPointer && (!win.matchMedia || win.matchMedia('(any-hover: hover)').matches);
+            const canHover = !disposed && !doc.hidden && !fullscreenActive() && !panel?.hidden && !touchPointer && (!win.matchMedia || win.matchMedia('(any-hover: hover)').matches);
             for (const entry of entries.values()) {
                 updateHighlight(entry, keys);
                 if (canHover && entry.element.parentElement === doc.getElementById('multi-stream-container') &&
                     (entry.element.matches(':hover') || windowControlsHovered(entry, keys))) hovered = entry;
             }
             revealHoveredEntry(hovered);
+            paintHighlights();
         }
         function scheduleHighlights() {
-            if (disposed || !panel || panel.hidden || doc.hidden || highlightFrame !== null) return;
+            if (disposed || !panel || panel.hidden || doc.hidden || fullscreenActive() || highlightFrame !== null) return;
             highlightFrame = win.requestAnimationFrame(() => { highlightFrame = null; updateHighlights(); });
         }
         function windowControlsPointer(event) {
@@ -1332,13 +1376,14 @@
             scheduleHighlights();
         }
         function onHighlightVisibility() { updateHighlights(); if (!doc.hidden) scheduleHighlights(); }
+        function onHighlightFullscreen() { updateHighlights(); if (!fullscreenActive()) scheduleHighlights(); }
         function observeEntryHover(entry) {
             const update = event => {
                 if (disposed || !panel || panel.hidden || doc.hidden) return;
                 const previous = touchPointer;
                 if (event.pointerType) touchPointer = event.pointerType === 'touch';
                 if (previous !== touchPointer) updateHighlights();
-                else updateHighlight(entry);
+                else { updateHighlight(entry); paintHighlights(); }
                 // Firefox updates :hover after pointer boundary dispatch.
                 scheduleHighlights();
             };
@@ -1348,7 +1393,9 @@
             entry.row.addEventListener('pointerenter', update);
             entry.row.addEventListener('pointerleave', update);
             entry.row.addEventListener('pointermove', update);
+            highlightResizeObserver?.observe(entry.element);
             entry.hoverCleanup = () => {
+                highlightResizeObserver?.unobserve(entry.element);
                 entry.element.removeEventListener('pointerenter', update);
                 entry.element.removeEventListener('pointerleave', update);
                 entry.element.removeEventListener('pointermove', update);
@@ -1357,6 +1404,7 @@
                 entry.row.removeEventListener('pointermove', update);
                 entry.element.removeAttribute(controlsHighlight);
                 entry.row.removeAttribute('data-player-highlighted');
+                highlightRings.get(entry)?.remove(); highlightRings.delete(entry);
             };
         }
 
@@ -1776,11 +1824,17 @@
             shadow = host.attachShadow({ mode: 'open' });
             const style = node('style', `:host{font:12px system-ui,sans-serif;color:#eee}*{box-sizing:border-box}button,input{font:inherit}button{background:#292d36;color:#fff;border:1px solid #596172;border-radius:5px;cursor:pointer;padding:4px 7px}button:disabled,input:disabled{opacity:.45;cursor:default}button:focus-visible,input:focus-visible{outline:2px solid #58c8ff;outline-offset:2px}#toggle{height:18px;min-height:18px;line-height:16px;padding:0 5px;font-size:11px;white-space:nowrap}#panel{position:fixed;right:12px;top:44px;width:min(470px,calc(100vw - 24px));max-height:75vh;overflow:auto;z-index:2147483646;background:#16191f;border:1px solid #657084;border-radius:10px;padding:12px;box-shadow:0 8px 28px #0009}#panel[hidden]{display:none}.row{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.heading{justify-content:space-between}.state,#summary,.help{color:#bac5d7;font-size:11px;line-height:1.5;margin:5px 0;overflow-wrap:anywhere}#players{display:flex;flex-direction:column;gap:8px}.player{border-top:1px solid #3c4351;padding-top:8px}.player strong{display:block;margin-bottom:5px;overflow-wrap:anywhere}.player input{width:140px;max-width:32vw}.level{min-width:34px;text-align:right}.master{margin:9px 0}a{color:#83cfff}`);
             style.textContent += '.player[data-player-highlighted="true"]{background:#193a50;box-shadow:inset 0 0 0 2px #58c8ff;border-radius:5px}';
-            highlightStyle = node('style', `#multi-stream-container > [${controlsHighlight}],#multi-stream-container > [${selectionHighlight}]{outline:3px solid #58c8ff;outline-offset:-3px}`, { id: 'umininn-player-highlight-style' });
-            // A positioned scaled iframe paints over its parent's inner outline.
-            // Paint the Kick ring above the frame without adding a hit target.
-            highlightStyle.textContent += `#multi-stream-container .kick-wrapper,#multi-stream-container .kick-iframe{border-radius:0}#multi-stream-container > .kick-wrapper[${controlsHighlight}],#multi-stream-container > .kick-wrapper[${selectionHighlight}]{outline:none}#multi-stream-container > .kick-wrapper[${controlsHighlight}]::after,#multi-stream-container > .kick-wrapper[${selectionHighlight}]::after{content:'';position:absolute;inset:0;z-index:2;pointer-events:none;box-shadow:inset 0 0 0 3px #58c8ff;border-radius:0}`;
+            highlightStyle = node('style', '#umininn-player-hover-layer{position:absolute;inset:0;z-index:12;pointer-events:none;overflow:hidden;contain:layout paint}#umininn-player-hover-layer[hidden]{display:none}#umininn-player-hover-layer .umininn-player-ring-viewport{position:absolute;overflow:hidden;pointer-events:none}#umininn-player-hover-layer [data-player-ring]{position:absolute;display:block;box-sizing:border-box;box-shadow:inset 0 0 0 3px #58c8ff;pointer-events:none}#multi-stream-container .kick-wrapper,#multi-stream-container .kick-iframe{border-radius:0}', { id: 'umininn-player-highlight-style' });
             (doc.head || doc.documentElement).appendChild(highlightStyle);
+            highlightLayer = node('div', null, { id: 'umininn-player-hover-layer', 'aria-hidden': 'true', hidden: '' });
+            highlightViewport = node('div', null, { class: 'umininn-player-ring-viewport' }); highlightLayer.appendChild(highlightViewport);
+            const highlightRoot = doc.getElementById('multi-stream-container-wrapper') || doc.body;
+            if (highlightRoot === doc.body) highlightLayer.style.position = 'fixed';
+            highlightRoot.appendChild(highlightLayer);
+            if (typeof win.ResizeObserver === 'function') {
+                highlightResizeObserver = new win.ResizeObserver(scheduleHighlights);
+                highlightResizeObserver.observe(container); highlightResizeObserver.observe(highlightRoot);
+            }
             toggle = node('button', '🎚 播放控制', { id: 'toggle', type: 'button', 'aria-expanded': 'false', 'aria-haspopup': 'dialog' });
             const quickMute = node('button', '🔇', { id: 'quick-mute', type: 'button', title: '全部靜音', 'aria-label': '全部靜音' });
             quickMute.style.cssText = 'height:18px;min-height:18px;width:22px;line-height:16px;padding:0;font-size:12px;';
@@ -1912,14 +1966,15 @@
             }
             detectButton.addEventListener('click', () => { void runRecovery('manual'); });
             quickDetect.addEventListener('click', () => { void runRecovery('manual'); });
-            observer = new win.MutationObserver(queueScan);
-            observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'class', 'style', 'data-channel-name', 'data-channel-key'] });
+            observer = new win.MutationObserver(() => { queueScan(); scheduleHighlights(); });
+            observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'class', 'style', 'hidden', 'data-channel-name', 'data-channel-key'] });
             highlightObserver = new win.MutationObserver(records => {
                 for (const record of records) {
                     if (record.type === 'childList') { updateHighlights(); break; }
                     const entry = entries.get(record.target);
                     if (entry) updateHighlight(entry);
                 }
+                paintHighlights();
             });
             highlightObserver.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: [selectionHighlight] });
             doc.addEventListener('click', originalMuteClick, true);
@@ -1929,6 +1984,8 @@
             doc.addEventListener('pointerout', windowControlsPointer, true);
             doc.addEventListener('pointermove', windowControlsPointer, true);
             doc.addEventListener('visibilitychange', onHighlightVisibility);
+            doc.addEventListener('fullscreenchange', onHighlightFullscreen);
+            doc.addEventListener('webkitfullscreenchange', onHighlightFullscreen);
             win.addEventListener('message', onFrameMessage);
             scan();
             return true;
@@ -1953,7 +2010,7 @@
             if (scanTimer !== null) win.clearTimeout(scanTimer);
             if (highlightFrame !== null) win.cancelAnimationFrame(highlightFrame);
             highlightFrame = null;
-            observer?.disconnect(); lateObserver?.disconnect(); highlightObserver?.disconnect();
+            observer?.disconnect(); lateObserver?.disconnect(); highlightObserver?.disconnect(); highlightResizeObserver?.disconnect();
             for (const entry of [...entries.values()]) removeEntry(entry);
             doc.removeEventListener('click', originalMuteClick, true);
             doc.removeEventListener('click', onWatchStart, true);
@@ -1962,6 +2019,8 @@
             doc.removeEventListener('pointerout', windowControlsPointer, true);
             doc.removeEventListener('pointermove', windowControlsPointer, true);
             doc.removeEventListener('visibilitychange', onHighlightVisibility);
+            doc.removeEventListener('fullscreenchange', onHighlightFullscreen);
+            doc.removeEventListener('webkitfullscreenchange', onHighlightFullscreen);
             win.removeEventListener('message', onFrameMessage);
             win.removeEventListener('resize', positionPanel);
             win.removeEventListener('scroll', positionPanel, true);
@@ -1970,6 +2029,7 @@
             panel?.removeEventListener('scroll', updateHighlights, true);
             panel?.removeEventListener('scroll', scheduleHighlights, true);
             highlightStyle?.remove();
+            highlightLayer?.remove(); highlightRings.clear();
         }
         return { start, dispose, scan };
     }

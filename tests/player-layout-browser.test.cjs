@@ -14,7 +14,7 @@ const executablePath = process.env.UMININN_BROWSER_EXECUTABLE;
 const root = path.resolve(__dirname, '..');
 const siteUrl = 'https://umininn-gh.github.io/tv/';
 const frameOrigin = 'https://layout-player.invalid';
-let browser, unavailable, playwrightRuntime, appScript, layoutScript, geometryScript, channelScript, performanceScript, bookmarkScript, css;
+let browser, unavailable, playwrightRuntime, appScript, layoutScript, geometryScript, channelScript, performanceScript, bookmarkScript, qualityScript, css;
 
 test.before(async () => {
     if (!enabled) return;
@@ -41,6 +41,7 @@ test.before(async () => {
     assert.ok(coreEnd>0&&statusClassStart>coreEnd&&statusClassEnd>statusClassStart&&summaryStart>statusClassEnd&&selectionStart>summaryStart&&editorStart>selectionStart&&editorEnd>editorStart,'reviewed production core/status/selection/editor seams must exist');
     appScript=source.slice(0,coreEnd)+'\n'+source.slice(statusClassStart,statusClassEnd)+'\n'+source.slice(summaryStart,editorEnd)+'\n'+fixtureApp;
     layoutScript=read('player-layout.js');geometryScript=read('player-geometry.js');channelScript=read('channel-list.js');performanceScript=read('stream-performance.js');bookmarkScript=read('layout-bookmarks.js');
+    qualityScript=read('stream-quality.js');
     css=[...read('index.html').matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match=>match[1]).join('\n');
     console.log(`Player layout model: ${engine} ${browser.version()} (headless; production CSS/app sections; all network intercepted; no live platform).`);
 });
@@ -70,6 +71,22 @@ const fixtureApp=`
 // providers are outside this closed model, so no metadata request is needed.
 function fetchAllStatuses(){return Promise.resolve([])}
 window.fixture={elements:[],entries:[],keys:[],frames:[],removals:0,frameSources:0};
+// Keep the production Twitch renderer and StreamQuality mounting paths. Only
+// the external SDK boundary is replaced: one nested embed and one constructor
+// failure exercise the two real local DOM paths without live Twitch requests.
+if(document.body.dataset.fixtureProductionTwitch==='true'){
+ window.fixtureTwitchCalls={play:0,pause:0,muted:0,quality:0,destroy:0};
+ window.Twitch={Player:class{
+  constructor(wrapper,options){
+   if(options.channel==='layout-3')throw new Error('closed fixture SDK fallback');
+   const host=document.createElement('div');host.dataset.fixtureTwitchSdkHost='true';host.style.cssText='position:relative;width:100%;height:100%';
+   const frame=document.createElement('iframe');frame.src='${frameOrigin}/player?index=2';frame.allow='autoplay';frame.style.cssText='position:relative;z-index:1000000';host.appendChild(frame);wrapper.appendChild(host);
+  }
+  addEventListener(){} removeEventListener(){}
+  play(){fixtureTwitchCalls.play++} pause(){fixtureTwitchCalls.pause++} setMuted(){fixtureTwitchCalls.muted++}
+  setQuality(){fixtureTwitchCalls.quality++} destroy(){fixtureTwitchCalls.destroy++}
+ }};
+}
 fixture.mount=function(){
  const pane=document.getElementById('multi-stream-container');
  channels=Array.from({length:5},(_,index)=>({id:'layout-'+index,platform:index===2||index===3?document.body.dataset.fixtureFramePlatform||'at':'m3u8',name:'播放器 '+index}));
@@ -77,16 +94,23 @@ fixture.mount=function(){
    let element,resource=null;
    if(index===2||index===3){
       let frame;
-      if(document.body.dataset.fixtureProductionKick==='true'){
+      const trackFrame=frame=>{
+          frame.id='frame-'+index;
+          frame.addEventListener('load',()=>{frame.dataset.loads=String(Number(frame.dataset.loads||0)+1)});
+          new MutationObserver(records=>{fixture.frameSources+=records.length}).observe(frame,{attributes:true,attributeFilter:['src']});
+          fixture.frames.push({element:frame,window:frame.contentWindow,index});fixture.frames.sort((a,b)=>a.index-b.index);
+      };
+      if(document.body.dataset.fixtureProductionTwitch==='true'){
+          element=RENDERERS.twitch(channel,{buildUrl:()=> '${frameOrigin}/player?index='+index},true,'video');resource=playerResources.get(element);
+          const mountObserver=new MutationObserver(()=>{const mounted=element.querySelector('iframe');if(mounted){mountObserver.disconnect();trackFrame(mounted)}});
+          mountObserver.observe(element,{childList:true,subtree:true});
+      }else if(document.body.dataset.fixtureProductionKick==='true'){
           element=RENDERERS.scaledIframe(channel,{buildUrl:()=> '${frameOrigin}/player?index='+index},true,'video');
           frame=element.querySelector('iframe');
       }else{
           element=document.createElement('iframe');element.src='${frameOrigin}/player?index='+index;element.allow='autoplay';frame=element;
       }
-      frame.id='frame-'+index;
-      frame.addEventListener('load',()=>{frame.dataset.loads=String(Number(frame.dataset.loads||0)+1)});
-      new MutationObserver(records=>{fixture.frameSources+=records.length}).observe(frame,{attributes:true,attributeFilter:['src']});
-      fixture.frames.push({element:frame,window:null});
+      if(frame)trackFrame(frame);
    }else{
       element=document.createElement('video');element.id='native-'+index;element.className='hls-video-element';element.loop=true;element.playsInline=true;
       element.src='/silent.wav?native='+index;element.muted=true;instrumentMedia(element);
@@ -139,7 +163,7 @@ fixture.grid=function(){const pane=document.getElementById('multi-stream-contain
 };
 fixture.mount();fixture.initialGrid=fixture.grid();fixture.initialGeometry=fixture.geometry();`;
 
-async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,catalogChannels=0,hasTouch=false,framePlatform='at',productionKick=false,clock=false,overlayTimeoutSeconds,audioUserscript=false,fixtureBrowser=browser}={}){
+async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,catalogChannels=0,hasTouch=false,framePlatform='at',productionKick=false,productionTwitch=false,clock=false,overlayTimeoutSeconds,audioUserscript=false,fixtureBrowser=browser}={}){
     const context=await fixtureBrowser.newContext({viewport,serviceWorkers:'block',...(hasTouch?{hasTouch:true}:{})});t.after(()=>context.close());
     if(storageSeed||denyStorage)await context.addInitScript(({storageSeed,denyStorage,origin})=>{
         if(location.origin!==origin)return;
@@ -149,19 +173,20 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
         });
     },{storageSeed,denyStorage,origin:new URL(siteUrl).origin});
     const navigations=new Map(),blocked=[];
-    assert.ok(['at','kick'].includes(framePlatform));
+    assert.ok(['at','kick','twitch'].includes(framePlatform));
     if(productionKick)framePlatform='kick';
-    const modelFrameOrigin=audioUserscript?'https://player.kick.com':frameOrigin;
+    if(productionTwitch)framePlatform='twitch';
+    const modelFrameOrigin=audioUserscript?(productionTwitch?'https://player.twitch.tv':'https://player.kick.com'):frameOrigin;
     let fixtureScript=audioUserscript?appScript.replaceAll(frameOrigin,modelFrameOrigin):appScript;
     if(overlayTimeoutSeconds!==undefined){
         assert.ok(Number.isInteger(overlayTimeoutSeconds)&&overlayTimeoutSeconds>0);
         fixtureScript=fixtureScript.replace(/(const\s+PLAYER_OVERLAY_TIMEOUT_SECONDS\s*=\s*)\d+(\s*;)/,(_,prefix,suffix)=>prefix+overlayTimeoutSeconds+suffix);
         assert.notEqual(fixtureScript,appScript,'the reviewed timeout constant must be configurable in this fixture');
     }
-    const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body data-fixture-players="${players}" data-fixture-catalog-channels="${catalogChannels}" data-fixture-frame-platform="${framePlatform}" data-fixture-production-kick="${productionKick}" data-fixture-audio-userscript="${audioUserscript}">
+    const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body data-fixture-players="${players}" data-fixture-catalog-channels="${catalogChannels}" data-fixture-frame-platform="${framePlatform}" data-fixture-production-kick="${productionKick}" data-fixture-production-twitch="${productionTwitch}" data-fixture-audio-userscript="${audioUserscript}">
     <div ${audioUserscript?'id="input-container"':''} style="height:${audioUserscript?40:30}px;flex:none;${audioUserscript?'margin-left:0;width:100%;padding-left:0':''}"><button id="more-channels-btn" onclick="toggleChannelSelection()">看更台</button><button id="adjust-player-positions">調整位置</button><button id="enlarge-player">放大模式</button><button id="reset-player-positions">重設</button><button id="toggle-all-audio">聲音</button></div>
     <div id="channel-selection" style="display:none"><div id="channel-options"></div><button id="fixture-watch-selected" onclick="watchSelectedChannels()">開始觀看</button></div><div id="multi-stream-container-wrapper" style="flex:none;width:${width}px;height:${height}px;min-height:0"><div id="multi-stream-container" class="video-wrapper"></div></div>
-    <script src="/instrument.js"></script><script src="/channel-list.js"></script><script src="/stream-performance.js"></script><script src="/player-geometry.js"></script><script src="/player-layout.js"></script><script src="/layout-bookmarks.js"></script><script src="/fixture-app.js"></script></body></html>`;
+    <script src="/instrument.js"></script><script src="/channel-list.js"></script><script src="/stream-performance.js"></script><script src="/player-geometry.js"></script><script src="/player-layout.js"></script><script src="/layout-bookmarks.js"></script>${productionTwitch?'<script src="/stream-quality.js"></script>':''}<script src="/fixture-app.js"></script></body></html>`;
     const child=`<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0"><video id="frame-video" loop muted playsinline preload="auto" src="/silent.wav" style="width:100%;height:100%"></video><script>${instrument}\ninstrumentMedia(document.getElementById('frame-video'));</script></body></html>`;
     await context.route('**/*',route=>{
         const request=route.request(),url=new URL(request.url());
@@ -170,7 +195,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
             if(request.url()===siteUrl)return route.fulfill({contentType:'text/html',body:main});
             if(url.origin===modelFrameOrigin&&url.pathname==='/player')return route.fulfill({contentType:'text/html',body:child});
         }
-        const scripts={'/instrument.js':instrument,'/channel-list.js':channelScript,'/stream-performance.js':performanceScript,'/player-geometry.js':geometryScript,'/player-layout.js':layoutScript,'/layout-bookmarks.js':bookmarkScript,'/fixture-app.js':fixtureScript};
+        const scripts={'/instrument.js':instrument,'/channel-list.js':channelScript,'/stream-performance.js':performanceScript,'/player-geometry.js':geometryScript,'/player-layout.js':layoutScript,'/layout-bookmarks.js':bookmarkScript,'/stream-quality.js':qualityScript,'/fixture-app.js':fixtureScript};
         if(url.origin===new URL(siteUrl).origin&&scripts[url.pathname])return route.fulfill({contentType:'application/javascript; charset=utf-8',body:scripts[url.pathname]});
         if(url.pathname==='/silent.wav'&&[new URL(siteUrl).origin,modelFrameOrigin].includes(url.origin)){
             const range=/^bytes=(\d+)-(\d*)$/.exec(request.headers().range||'');const start=range?Number(range[1]):0;
@@ -2268,19 +2293,25 @@ async function hoverSelectionTile(f,key,{steps=8}={}){
     const point=await f.page.evaluate(key=>{const element=getPlayerElement(activePlayers.get(key)),rect=element.getBoundingClientRect();return {x:rect.left+rect.width/2,y:rect.top+rect.height/2}},key);
     await f.page.mouse.move(point.x,point.y,{steps});return point;
 }
-async function assertTileOutline(f,key){
-    assert.deepEqual(await f.page.evaluate(key=>{const style=getComputedStyle(getPlayerElement(activePlayers.get(key)));return {color:style.outlineColor,width:style.outlineWidth,offset:style.outlineOffset,style:style.outlineStyle}},key),
-        {color:'rgb(88, 200, 255)',width:'3px',offset:'-3px',style:'solid'});
-}
-async function assertVisibleTileEdges(f,key){
+async function tileEdgePixels(f,key){
     const clip=await f.page.evaluate(key=>{const r=getPlayerElement(activePlayers.get(key)).getBoundingClientRect();return {x:r.left,y:r.top,width:r.width,height:r.height}},key);
     const png=(await f.page.screenshot({clip})).toString('base64');
-    const pixels=await f.page.evaluate(async png=>{
+    return f.page.evaluate(async png=>{
         const image=new Image();image.src='data:image/png;base64,'+png;await image.decode();
         const canvas=document.createElement('canvas');canvas.width=image.width;canvas.height=image.height;const context=canvas.getContext('2d');context.drawImage(image,0,0);
         return [[image.width/2,1],[image.width/2,image.height-2],[1,image.height/2],[image.width-2,image.height/2]].map(([x,y])=>Array.from(context.getImageData(Math.floor(x),Math.floor(y),1,1).data));
     },png);
-    assert.deepEqual(pixels,Array.from({length:4},()=>[88,200,255,255]),'all four actual tile edges remain cyan above the scaled iframe pixels');
+}
+async function assertVisibleTileEdges(f,key){
+    const expected=Array.from({length:4},()=>[88,200,255,255]);let pixels;
+    // Hover ownership and sibling-layer painting settle on separate animation
+    // frames. Observe the rendered result after that normal delivery boundary.
+    for(let attempt=0;attempt<5;attempt++){
+        pixels=await tileEdgePixels(f,key);
+        if(JSON.stringify(pixels)===JSON.stringify(expected))return;
+        await f.page.waitForTimeout(20);
+    }
+    assert.deepEqual(pixels,expected,'all four actual tile edges remain cyan above the embedded media pixels');
 }
 
 test('selection hover pairs real menu cards and native or foreign players by channel key without blocking media clicks',{skip:!enabled,timeout:60000},async t=>{
@@ -2297,7 +2328,7 @@ test('selection hover pairs real menu cards and native or foreign players by cha
     });
     await f.page.locator('#more-channels-btn').click();await waitNames(f);
     for(const key of [keys[0],keys[1],keys[2]]){
-        await selectionCard(f,key).hover();await waitMenuHover(f,{selection:[key]});await assertTileOutline(f,key);
+        await selectionCard(f,key).hover();await waitMenuHover(f,{selection:[key]});await assertVisibleTileEdges(f,key);
     }
     await selectionCard(f,inactive).hover();await waitMenuHover(f);
     await hoverSelectionTile(f,keys[0]);await waitMenuHover(f,{selection:[keys[0]]});
@@ -2310,7 +2341,7 @@ test('selection hover pairs real menu cards and native or foreign players by cha
         skip:engine==='chromium'?'Chromium Playwright OOPIF input does not update the parent hover chain; Firefox exercises actual trusted iframe entry':false
     },async()=>{
         for(const key of [keys[2],keys[3]]){
-            await hoverSelectionTile(f,key);await waitMenuHover(f,{selection:[key]});await assertTileOutline(f,key);
+            await hoverSelectionTile(f,key);await waitMenuHover(f,{selection:[key]});await assertVisibleTileEdges(f,key);
             assert.equal(await f.page.evaluate(key=>fixtureHoverEvents.some(event=>event.kind==='tile'&&event.key===key&&event.trusted),key),true);
             await windowCell(f,key).locator('[data-player-action="close"]').hover();await waitMenuHover(f,{selection:[key]});
         }
@@ -2331,7 +2362,7 @@ test('selection hover pairs real menu cards and native or foreign players by cha
 test('selection hover coexists with the playback-controls bridge and never echoes the other menu marker',{skip:!enabled,timeout:30000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
     await f.page.evaluate(key=>{document.documentElement.setAttribute('data-umininn-player-controls-open','');getPlayerElement(activePlayers.get(key)).setAttribute('data-umininn-controls-highlight','')},keys[3]);
-    await waitMenuHover(f,{controls:[keys[3]],cards:[]});await assertTileOutline(f,keys[3]);
+    await waitMenuHover(f,{controls:[keys[3]],cards:[]});
     await f.page.locator('#more-channels-btn').click();await waitNames(f);await waitMenuHover(f,{controls:[keys[3]],cards:[keys[3]]});
     await selectionCard(f,keys[0]).hover();await waitMenuHover(f,{selection:[keys[0]],controls:[keys[3]],cards:[keys[0],keys[3]]});
     await f.page.mouse.move(5,5);await waitMenuHover(f,{controls:[keys[3]],cards:[keys[3]]});
@@ -2350,7 +2381,7 @@ test('selection hover follows reflow, clears removed tiles, and resumes without 
     if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
     const extra=await f.page.evaluate(()=>{const channel={platform:'at',id:'hover-inert',name:'可移除本地格'};channels.push(channel);fixture.addPlaceholder(channel);syncActivePlayers(channels);return ChannelList.channelKey(channel)});
     await f.page.locator('#more-channels-btn').click();await selectionCard(f,extra).hover();await waitMenuHover(f,{selection:[extra]});
-    await settlePane(f,900,800);await waitMenuHover(f,{selection:[extra]});await assertTileOutline(f,extra);assertFits(await f.page.evaluate(()=>fixture.grid()));
+    await settlePane(f,900,800);await waitMenuHover(f,{selection:[extra]});await assertVisibleTileEdges(f,extra);assertFits(await f.page.evaluate(()=>fixture.grid()));
     await f.page.evaluate(key=>{window.removedHoverTile=getPlayerElement(activePlayers.get(key));closePlayer(key)},extra);await waitMenuHover(f);
     assert.equal(await f.page.evaluate(()=>removedHoverTile.hasAttribute('data-umininn-selection-highlight')),false);
     assert.equal(await selectionCard(f,extra).locator('input').isChecked(),false);
@@ -2368,7 +2399,7 @@ test('selection hover transfers to an asynchronous error replacement and clears 
     await f.page.locator('#more-channels-btn').click();await selectionCard(f,keys[1]).hover();await waitMenuHover(f,{selection:[keys[1]]});
     await f.page.evaluate(()=>{window.oldHoverVideo=fixture.entries[1].resource.element;setTimeout(()=>replacePlayerWithError(fixture.entries[1].resource,'本地懸停測試錯誤'),20)});
     await f.page.waitForFunction(()=>fixture.entries[1].resource.element!==oldHoverVideo);await waitMenuHover(f,{selection:[keys[1]]});
-    assert.equal(await f.page.evaluate(()=>oldHoverVideo.hasAttribute('data-umininn-selection-highlight')),false);await assertTileOutline(f,keys[1]);
+    assert.equal(await f.page.evaluate(()=>oldHoverVideo.hasAttribute('data-umininn-selection-highlight')),false);await assertVisibleTileEdges(f,keys[1]);
     await f.page.evaluate(key=>{window.removedHoverError=getPlayerElement(activePlayers.get(key));closePlayer(key)},keys[1]);await waitMenuHover(f);
     assert.equal(await f.page.evaluate(()=>removedHoverError.hasAttribute('data-umininn-selection-highlight')),false);
     await assertActiveContinuity(f,before);
@@ -2554,4 +2585,101 @@ test('selection auto-scroll cancels an unpainted reveal on close and pagehide',{
     await hoverSelectionTile(f,key,{steps:1});assert.equal((await selectionScrollState(f,key)).scroll,0);
     await f.page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));await f.page.clock.runFor(100);
     assert.equal((await selectionScrollState(f,key)).scroll,0);await waitMenuHover(f);await assertContinuity(f,before);
+});
+
+test('selection hover paints all four Twitch SDK and direct fallback edges above their real iframe children',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},productionTwitch:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    assert.deepEqual(await f.page.evaluate(()=>fixture.keys.slice(2,4).map(key=>{
+        const tile=getPlayerElement(activePlayers.get(key)),frame=tile.querySelector('iframe');
+        return {wrapper:tile.matches('.twitch-wrapper'),nested:frame.parentElement!==tile,recovery:tile.querySelectorAll('.twitch-recover-button').length,fallback:tile.dataset.streamQualityMode==='platform-auto'};
+    })),[{wrapper:true,nested:true,recovery:1,fallback:false},{wrapper:true,nested:false,recovery:0,fallback:true}]);
+    await f.page.evaluate(()=>{window.fixtureTwitchDOM=fixture.elements.flatMap(element=>[element,...element.querySelectorAll('*')])});
+    await f.page.locator('#more-channels-btn').click();await waitNames(f);
+    for(const [index,key]of [[0,keys[2]],[1,keys[3]]]){
+        await selectionCard(f,key).hover();await waitMenuHover(f,{selection:[key]});await capture(f,'twitch-'+(index?'fallback':'sdk')+'-card');
+        await assertVisibleTileEdges(f,key);
+        const point=await hoverSelectionTile(f,key);
+        assert.equal(await f.page.evaluate(({key,point})=>document.elementFromPoint(point.x,point.y)===getPlayerElement(activePlayers.get(key)).querySelector('iframe'),{key,point}),true,'a Twitch highlight cannot intercept actual iframe input');
+        if(engine==='firefox')await waitMenuHover(f,{selection:[key]});
+        await f.frames[index].evaluate(()=>{window.fixtureTwitchClicks=[];document.addEventListener('click',event=>{fixtureTwitchClicks.push(event.isTrusted);event.preventDefault()},true)});
+        await f.page.mouse.click(point.x,point.y);assert.deepEqual(await f.frames[index].evaluate(()=>fixtureTwitchClicks),[true]);
+    }
+    const recovery=f.page.locator('.twitch-wrapper .twitch-recover-button');
+    await recovery.evaluate(button=>{window.fixtureRecoveryTrusted=null;button.addEventListener('click',event=>{fixtureRecoveryTrusted=event.isTrusted},{once:true})});
+    await recovery.click();assert.equal(await f.page.evaluate(()=>fixtureRecoveryTrusted),true,'the inset border preserves the real recovery control hit target');
+    await f.page.mouse.move(5,5);await f.page.locator('#more-channels-btn').click();await waitMenuHover(f);
+    assert.deepEqual(await f.page.evaluate(()=>fixtureTwitchCalls),{play:0,pause:0,muted:0,quality:0,destroy:0});
+    assert.equal(await f.page.evaluate(()=>{const actual=fixture.elements.flatMap(element=>[element,...element.querySelectorAll('*')]);return actual.length===fixtureTwitchDOM.length&&actual.every((node,index)=>node===fixtureTwitchDOM[index])}),true,'highlighting cannot add, wrap, detach or replace the playback DOM');
+    await assertContinuity(f,before);
+});
+
+test('Twitch highlight follows enlargement, swapping and portrait reflow without changing the playback subtree or state',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1200},productionTwitch:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys),focus=keys[2];
+    await f.page.evaluate(()=>{window.fixtureTwitchLayoutDOM=fixture.elements.flatMap(element=>[element,...element.querySelectorAll('*')])});
+    await f.page.locator('#enlarge-player').click();await positionCell(f,focus).click();await waitSpan(f,focus,2);await f.page.keyboard.press('Escape');
+    await f.page.locator('#more-channels-btn').click();await selectionCard(f,focus).hover();await waitMenuHover(f,{selection:[focus]});await assertVisibleTileEdges(f,focus);assertGeometry(await geometry(f));
+    await f.page.locator('#more-channels-btn').click();const enlarged=await readLayout(f);
+    await f.page.locator('#adjust-player-positions').click();await positionCell(f,focus).click();await positionCell(f,keys[0]).click();await f.page.keyboard.press('Escape');
+    const moved=await readLayout(f);assert.notDeepEqual(moved.logical,enlarged.logical,'the real move editor commits a different enlarged layout');
+    assert.equal(moved.state.layout.items.find(item=>item.key===focus).span,2);assertGeometry(moved.state);assertFits(moved.grid);
+    await f.page.locator('#more-channels-btn').click();await selectionCard(f,focus).hover();await waitMenuHover(f,{selection:[focus]});await assertVisibleTileEdges(f,focus);
+    await f.page.evaluate(key=>{getPlayerElement(activePlayers.get(key)).dataset.streamPlaybackState='playing'},focus);
+    assert.equal(await f.page.locator('.twitch-recover-button').isVisible(),false,'the actual playing-state CSS hides recovery');await assertVisibleTileEdges(f,focus);
+    await settlePane(f,420,1040);await selectionCard(f,focus).hover();await waitMenuHover(f,{selection:[focus]});await assertVisibleTileEdges(f,focus);assertFits(await f.page.evaluate(()=>fixture.grid()));
+    await f.page.evaluate(key=>{getPlayerElement(activePlayers.get(key)).hidden=true},focus);
+    await f.page.waitForFunction(key=>!Array.from(document.querySelectorAll('#player-name-overlay .player-name-cell')).some(cell=>cell.dataset.playerKey===key),focus);
+    await f.page.evaluate(key=>{getPlayerElement(activePlayers.get(key)).hidden=false},focus);await assertVisibleTileEdges(f,focus);
+    await f.page.locator('#multi-stream-container-wrapper').evaluate(wrapper=>{wrapper.style.transformOrigin='top left';wrapper.style.transform='scale(.9)'});await assertVisibleTileEdges(f,focus);
+    await selectionCard(f,keys[3]).hover();await waitMenuHover(f,{selection:[keys[3]]});await assertVisibleTileEdges(f,keys[3]);
+    assert.equal(await f.page.evaluate(()=>{const actual=fixture.elements.flatMap(element=>[element,...element.querySelectorAll('*')]);return actual.length===fixtureTwitchLayoutDOM.length&&actual.every((node,index)=>node===fixtureTwitchLayoutDOM[index])}),true);
+    assert.deepEqual(await f.page.evaluate(()=>fixtureTwitchCalls),{play:0,pause:0,muted:0,quality:0,destroy:0});await assertContinuity(f,before);
+});
+
+test('Twitch highlights from the real userscript row and both menu owners survive closing either owner',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:2200,height:1200},productionTwitch:true,audioUserscript:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    const toggle=f.page.locator('#umininn-player-control-host #toggle'),close=f.page.locator(audioPanel).getByRole('button',{name:'關閉',exact:true}),rows=f.page.locator(audioPanel).locator('.player');
+    await f.page.locator('#more-channels-btn').click();await toggle.click();await waitNames(f);
+    // As in the general two-menu integration, separate only the existing fixed
+    // fixture panels so trusted input can reach both actual control surfaces.
+    await f.page.locator('#channel-selection').evaluate(panel=>{panel.style.left='1300px';panel.style.right='auto'});
+    for(const [index,key]of [[2,keys[2]],[3,keys[3]]]){
+        await rows.nth(index).locator('strong').hover();await waitMenuHover(f,{controls:[key],cards:[key]});await assertVisibleTileEdges(f,key);
+        await selectionCard(f,key).hover();await waitMenuHover(f,{selection:[key]});await assertVisibleTileEdges(f,key);
+    }
+    // The real recovery strip is parent-document input even in Chromium's
+    // OOPIF model and belongs to the same live Twitch wrapper for both menus.
+    await f.page.locator('.twitch-recover-button').hover();await waitMenuHover(f,{selection:[keys[2]],controls:[keys[2]],cards:[keys[2]]});await assertVisibleTileEdges(f,keys[2]);
+    await f.page.locator('#more-channels-btn').focus();await f.page.keyboard.press('Enter');await waitMenuHover(f,{controls:[keys[2]],cards:[]});await assertVisibleTileEdges(f,keys[2]);
+    await f.page.keyboard.press('Enter');await waitMenuHover(f,{selection:[keys[2]],controls:[keys[2]],cards:[keys[2]]});
+    await close.focus();await f.page.keyboard.press('Enter');await waitMenuHover(f,{selection:[keys[2]]});await assertVisibleTileEdges(f,keys[2]);
+    await f.page.locator('#more-channels-btn').focus();await f.page.keyboard.press('Enter');await waitMenuHover(f);
+    assert.equal((await tileEdgePixels(f,keys[2])).some(pixel=>JSON.stringify(pixel)==='[88,200,255,255]'),false,'closing both owners clears all four painted edges');
+    await assertContinuity(f,before);
+});
+
+test('selection highlight suspends during actual Twitch fullscreen and resumes after exit',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},productionTwitch:true}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[2]);
+    if(!await f.page.evaluate(()=>document.fullscreenEnabled&&typeof document.documentElement.requestFullscreen==='function')){t.skip('This browser does not expose the actual fullscreen API');return}
+    await f.page.locator('#more-channels-btn').click();await selectionCard(f,key).hover();await waitMenuHover(f,{selection:[key]});await assertVisibleTileEdges(f,key);
+    await f.page.locator('.twitch-recover-button').evaluate(button=>{
+        window.fixtureFullscreenError=null;
+        button.addEventListener('click',()=>{
+            const request=document.fullscreenElement?document.exitFullscreen():button.closest('.twitch-wrapper').requestFullscreen();
+            request.catch(error=>{fixtureFullscreenError=error.name+': '+error.message});
+        });
+    });
+    await f.page.locator('.twitch-recover-button').hover();await waitMenuHover(f,{selection:[key]});await f.page.locator('.twitch-recover-button').click();
+    await f.page.waitForFunction(()=>document.fullscreenElement||fixtureFullscreenError);
+    const failure=await f.page.evaluate(()=>fixtureFullscreenError);if(failure){t.skip('Headless browser denied trusted fullscreen: '+failure);return}
+    assert.equal(await f.page.evaluate(key=>document.fullscreenElement===getPlayerElement(activePlayers.get(key)),key),true);
+    await waitMenuHover(f);assert.equal(await f.page.locator('#player-name-overlay').evaluate(layer=>layer.hidden),true,'the sibling name/highlight layer is suspended for actual fullscreen');
+    await f.page.locator('.twitch-recover-button').click();await f.page.waitForFunction(()=>!document.fullscreenElement);
+    await f.page.mouse.move(5,5);await selectionCard(f,key).hover();
+    try{await waitMenuHover(f,{selection:[key]})}catch(error){
+        console.error('Fullscreen hover diagnostic:',await f.page.evaluate(key=>({hidden:document.hidden,fullscreen:Boolean(document.fullscreenElement),viewport:[innerWidth,innerHeight],
+            panel:getComputedStyle(document.getElementById('channel-selection')).display,cardHovered:channelOptionControls.get(key).cell.matches(':hover'),
+            layerHidden:document.getElementById('player-name-overlay').hidden,marked:getPlayerElement(activePlayers.get(key)).hasAttribute('data-umininn-selection-highlight')}),key));throw error;
+    }
+    await assertVisibleTileEdges(f,key);
+    await assertContinuity(f,before);
 });

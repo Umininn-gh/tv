@@ -30,7 +30,8 @@ test.before(async () => {
 test.after(async () => { await browser?.close(); });
 
 async function fixture(t, extra = {}) {
-    const context = await browser.newContext({ viewport: { width: 1200, height: 820 }, serviceWorkers: 'block', ...extra });
+    const { withoutWrapper = false, ...browserOptions } = extra;
+    const context = await browser.newContext({ viewport: { width: 1200, height: 820 }, serviceWorkers: 'block', ...browserOptions });
     t.after(() => context.close());
     const page = await context.newPage();
     page.setDefaultTimeout(6000);
@@ -39,16 +40,17 @@ async function fixture(t, extra = {}) {
     await context.route('**/*', route => {
         if (route.request().url() === siteUrl) return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><meta charset="utf-8"><style>
             body{margin:0;background:#111;color:white;font:14px sans-serif}#input-container{height:30px}
+            #multi-stream-container-wrapper{position:relative;width:674px}
             #multi-stream-container{display:flex;flex-wrap:wrap;width:650px;gap:12px;padding:12px}
             #multi-stream-container > *{width:300px;height:190px;display:block;background:#283441;border:0}
             #multi-stream-container > div video,#multi-stream-container > div iframe{width:100%;height:100%;border:0;display:block}
             #outside{position:fixed;bottom:5px;left:5px}
-            </style></head><body><div id="input-container"></div><div id="multi-stream-container">
+            </style></head><body><div id="input-container"></div>${withoutWrapper ? '' : '<div id="multi-stream-container-wrapper">'}<div id="multi-stream-container">
             <div id="native" data-channel-key="native-key" data-channel-name="同名台"><video controls muted></video></div>
             <div id="nested" data-channel-key="nested-key" data-channel-name="同名台"><iframe src="${frameUrl}"></iframe></div>
             <video id="direct" data-channel-key="direct-key" data-channel-name="原生" controls muted></video>
             <iframe id="frame" data-channel-key="frame-key" data-channel-name="外站" src="${frameUrl}"></iframe>
-            </div><button id="outside">Outside</button></body></html>` });
+            </div>${withoutWrapper ? '' : '</div>'}<button id="outside">Outside</button></body></html>` });
         if (route.request().url() === frameUrl) return route.fulfill({ contentType: 'text/html', body: '<!doctype html><body style="margin:0;background:#263747;color:white"><button id="inner" style="width:100%;height:190px">Cross origin player</button><script>window.clicks=0;document.addEventListener("click",()=>clicks++);</script>' });
         return route.abort();
     });
@@ -111,7 +113,8 @@ test('row and child control hover identify the exact player despite duplicate na
     const before = await page.locator('#native').boundingBox();
     await page.locator(rows).nth(0).locator('strong').hover();
     await expectHighlights(page, ['native'], ['1. 同名台']);
-    assert.equal(await page.locator('#native').evaluate(element => getComputedStyle(element).outlineWidth), '3px');
+    await assertVisiblePlayerEdges(page, '#native');
+    assert.equal(await page.locator('#native').evaluate(element => getComputedStyle(element).outlineStyle), 'none', 'the media element no longer paints its own ring');
     assert.deepEqual(await page.locator('#native').boundingBox(), before);
     await page.locator(rows).nth(0).locator('input').hover();
     await expectHighlights(page, ['native'], ['1. 同名台']);
@@ -468,8 +471,128 @@ test('scaled Kick iframe with production 220 percent scaling, containment and cl
     await outside(page); await expectHighlights(page, [], []);
     await page.locator('#nested').evaluate(element => element.setAttribute('data-umininn-selection-highlight', ''));
     await expectHighlights(page, [], ['2. 同名台']);
-    await assertVisiblePlayerEdges(page, '#nested');
+    assert.equal(await page.locator('#umininn-player-hover-layer [data-player-ring]').count(), 0, 'the independent controls layer does not paint the other menu owner');
     assert.deepEqual(await page.evaluate(() => hoverCommands), [], 'paint and hover changes never issue audio commands');
+});
+
+for (const kind of ['native video', 'direct video', 'direct iframe', 'Twitch SDK wrapper', 'YouTube wrapper', 'scaled Kick']) {
+    test(`independent sibling ring paints four visible edges above ${kind} without touching live media`, options, async t => {
+        const page = await fixture(t);
+        const selector = await page.evaluate(kind => {
+            const nested = document.getElementById('nested'), iframe = nested.querySelector('iframe');
+            if (kind === 'Twitch SDK wrapper' || kind === 'YouTube wrapper' || kind === 'scaled Kick') {
+                nested.style.cssText += ';position:relative;contain:layout paint;overflow:hidden';
+                iframe.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;border:0;contain:layout paint;z-index:2147483647';
+            }
+            if (kind === 'Twitch SDK wrapper') {
+                nested.className = 'twitch-wrapper';
+                iframe.style.height = 'calc(100% - 30px)';
+                const recover = document.createElement('button'); recover.id = 'sdk-recover'; recover.textContent = '恢復播放';
+                recover.style.cssText = 'position:absolute;bottom:0;right:6px;height:26px';
+                recover.addEventListener('click', () => { window.sdkRecoverClicks = (window.sdkRecoverClicks || 0) + 1; });
+                nested.append(recover);
+            }
+            if (kind === 'YouTube wrapper') {
+                nested.className = 'youtube-wrapper';
+                const holder = document.createElement('div'); holder.style.cssText = 'position:absolute;inset:0';
+                holder.append(iframe); nested.append(holder);
+            }
+            if (kind === 'scaled Kick') {
+                nested.className = 'kick-wrapper'; iframe.className = 'kick-iframe';
+                iframe.style.cssText += ';width:220%;height:220%;transform:scale(.454545);transform-origin:top left';
+            }
+            hoverController.scan();
+            window.paintMedia = [...document.querySelectorAll('#multi-stream-container video,#multi-stream-container iframe')];
+            window.paintSources = paintMedia.map(element => element.getAttribute('src'));
+            return kind === 'native video' ? '#native' : kind === 'direct video' ? '#direct' : kind === 'direct iframe' ? '#frame' : '#nested';
+        }, kind);
+        await open(page);
+        const index = selector === '#native' ? 0 : selector === '#direct' ? 2 : selector === '#frame' ? 3 : 1;
+        await page.locator(rows).nth(index).locator('strong').hover();
+        await assertVisiblePlayerEdges(page, selector);
+        assert.equal(await page.locator('#umininn-player-hover-layer [data-player-ring]').count(), 1);
+        assert.equal(await page.locator('#umininn-player-hover-layer').getAttribute('aria-hidden'), 'true');
+        assert.equal(await page.locator('#umininn-player-hover-layer').evaluate(element => getComputedStyle(element).pointerEvents), 'none');
+        assert.equal(await page.locator('#umininn-player-hover-layer').evaluate(element => getComputedStyle(element).zIndex), '12');
+        if (kind === 'Twitch SDK wrapper') {
+            await page.locator('#sdk-recover').click();
+            assert.equal(await page.evaluate(() => sdkRecoverClicks), 1, 'the sibling ring never blocks the recovery button');
+        }
+        assert.equal(await page.evaluate(() => paintMedia.every((element, index) => element.isConnected && element === document.querySelectorAll('#multi-stream-container video,#multi-stream-container iframe')[index] && element.getAttribute('src') === paintSources[index])), true);
+        assert.deepEqual(await page.evaluate(() => hoverCommands), []);
+    });
+}
+
+test('sibling rings follow resize and scroll, clip to the pane, and disappear while the pane is hidden', options, async t => {
+    const page = await fixture(t);
+    await open(page); await page.locator(rows).nth(0).hover();
+    await expectHighlights(page, ['native'], ['1. 同名台']);
+    const ring = page.locator('#umininn-player-hover-layer [data-player-ring]');
+    await page.locator('#native').evaluate(element => { element.style.width = '240px'; element.style.height = '160px'; });
+    await page.waitForFunction(() => {
+        const ring = document.querySelector('#umininn-player-hover-layer [data-player-ring]'), tile = document.getElementById('native');
+        return ring && Math.abs(ring.getBoundingClientRect().width - tile.getBoundingClientRect().width) < 0.5;
+    });
+    assert.deepEqual(await ring.boundingBox(), await page.locator('#native').boundingBox());
+    await page.locator('#native').evaluate(element => element.style.transform = 'translateX(24px)');
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.deepEqual(await ring.boundingBox(), await page.locator('#native').boundingBox(), 'position-only transforms repaint without waiting for the delayed media scan');
+    await page.locator('#multi-stream-container').evaluate(element => { element.style.height = '220px'; element.style.overflow = 'hidden'; element.scrollTop = 70; });
+    await page.waitForFunction(() => {
+        const ring = document.querySelector('#umininn-player-hover-layer [data-player-ring]');
+        return ring && Math.abs(ring.getBoundingClientRect().top - document.getElementById('native').getBoundingClientRect().top) < 0.5;
+    });
+    assert.deepEqual(await ring.boundingBox(), await page.locator('#native').boundingBox());
+    assert.deepEqual(await page.locator('.umininn-player-ring-viewport').boundingBox(), await page.locator('#multi-stream-container').boundingBox());
+    assert.equal(await page.locator('.umininn-player-ring-viewport').evaluate(element => getComputedStyle(element).overflow), 'hidden');
+    await page.locator('#multi-stream-container').evaluate(element => element.style.display = 'none');
+    await page.locator('#umininn-player-hover-layer').waitFor({ state: 'hidden' });
+    await page.locator('#multi-stream-container').evaluate(element => element.style.display = 'flex');
+    await page.locator('#umininn-player-hover-layer').waitFor({ state: 'visible' });
+    await page.locator('#multi-stream-container').evaluate(element => element.scrollTop = 0);
+    await page.waitForFunction(() => {
+        const ring = document.querySelector('#umininn-player-hover-layer [data-player-ring]');
+        return ring && Math.abs(ring.getBoundingClientRect().top - document.getElementById('native').getBoundingClientRect().top) < 0.5;
+    });
+    await assertVisiblePlayerEdges(page, '#native');
+    for (const visibility of ['hidden', 'collapse']) {
+        await page.locator('#native').evaluate((element, visibility) => element.style.visibility = visibility, visibility);
+        await page.locator('#umininn-player-hover-layer').waitFor({ state: 'hidden' });
+        await page.locator('#native').evaluate(element => element.style.visibility = 'visible');
+        await page.locator('#umininn-player-hover-layer').waitFor({ state: 'visible' });
+        await assertVisiblePlayerEdges(page, '#native');
+    }
+    await page.locator('#native').evaluate(element => element.hidden = true);
+    await page.locator('#umininn-player-hover-layer').waitFor({ state: 'hidden' });
+    await page.locator('#native').evaluate(element => element.hidden = false);
+    await page.locator('#umininn-player-hover-layer').waitFor({ state: 'visible' });
+    await assertVisiblePlayerEdges(page, '#native');
+});
+
+test('the standalone fallback ring uses viewport coordinates when no website wrapper exists', options, async t => {
+    const page = await fixture(t, { withoutWrapper: true });
+    await open(page); await page.locator(rows).nth(2).hover();
+    await expectHighlights(page, ['direct'], ['3. 原生']);
+    assert.equal(await page.locator('#umininn-player-hover-layer').evaluate(element => getComputedStyle(element).position), 'fixed');
+    await assertVisiblePlayerEdges(page, '#direct');
+});
+
+test('fullscreen suspends all owned ring paint and markers, then exit restores the live pointer state', options, async t => {
+    const page = await fixture(t);
+    await open(page); await page.locator(rows).nth(0).hover();
+    await expectHighlights(page, ['native'], ['1. 同名台']);
+    await page.evaluate(() => document.addEventListener('keydown', event => {
+        if (event.key === 'f') void document.getElementById('multi-stream-container').requestFullscreen();
+    }, { once: true }));
+    await page.keyboard.press('f');
+    await page.waitForFunction(() => Boolean(document.fullscreenElement));
+    await page.waitForFunction(() => !document.getElementById('native').hasAttribute('data-umininn-controls-highlight') && !document.querySelector('#umininn-player-hover-layer [data-player-ring]'));
+    assert.equal(await page.locator('#native').getAttribute('data-umininn-controls-highlight'), null);
+    assert.equal(await page.locator('#umininn-player-hover-layer [data-player-ring]').count(), 0);
+    await page.evaluate(() => document.exitFullscreen());
+    await page.locator(rows).nth(0).hover();
+    await expectHighlights(page, ['native'], ['1. 同名台']);
+    await assertVisiblePlayerEdges(page, '#native');
 });
 
 for (const close of ['manual', 'Escape', 'idle', 'pagehide', 'dispose']) {
@@ -488,8 +611,12 @@ for (const close of ['manual', 'Escape', 'idle', 'pagehide', 'dispose']) {
         assert.equal(await page.locator('#native').getAttribute('data-umininn-controls-highlight'), null);
         assert.notEqual(await page.locator('#nested').getAttribute('data-umininn-selection-highlight'), null);
         assert.equal(await page.locator(rows + '[data-player-highlighted]').count(), 0);
+        assert.equal(await page.locator('#umininn-player-hover-layer [data-player-ring]').count(), 0);
         await hoverCenter(page, '#native');
         assert.equal(await page.locator('#native').getAttribute('data-umininn-controls-highlight'), null);
-        if (close === 'dispose') assert.equal(await page.locator('#umininn-player-highlight-style').count(), 0);
+        if (close === 'dispose') {
+            assert.equal(await page.locator('#umininn-player-highlight-style').count(), 0);
+            assert.equal(await page.locator('#umininn-player-hover-layer').count(), 0);
+        }
     });
 }

@@ -2089,7 +2089,8 @@ function applyPlayerBookmark(value) {
     refresh();
 })();
 
-/* Player names belong to a sibling layer so live iframes stay connected. */
+/* Names and selection highlights share a sibling layer above embedded media.
+   Positioned iframe descendants can cover an outline on the player itself. */
 (function initPlayerNameOverlay() {
     const pane = document.getElementById('multi-stream-container');
     const wrapper = document.getElementById('multi-stream-container-wrapper');
@@ -2109,6 +2110,8 @@ function applyPlayerBookmark(value) {
 
     function render() {
         if (!opened) return;
+        // Measure the layer's coordinate space after restoring it from hidden.
+        layer.hidden = false;
         const items = Array.from(activePlayers, ([key, entry]) => ({ key, name: entry.channel.name, element: getPlayerElement(entry) }));
         // The initial OK player predates a channel selection and is outside the map.
         const initial = !items.length && pane.querySelector('#MyFrame');
@@ -2121,14 +2124,21 @@ function applyPlayerBookmark(value) {
             } catch (_) {}
             items.push({ key: 'initial-player', name, element: initial });
         }
-        const bounds = wrapper.getBoundingClientRect();
-        const visible = items.filter(item => item.element.isConnected).map(item => ({ ...item, rect: item.element.getBoundingClientRect() }));
+        const bounds = layer.getBoundingClientRect();
+        const scaleX = bounds.width && layer.offsetWidth ? bounds.width / layer.offsetWidth : 1;
+        const scaleY = bounds.height && layer.offsetHeight ? bounds.height / layer.offsetHeight : 1;
+        const paneBounds = pane.getBoundingClientRect();
+        layer.style.clipPath = `inset(${Math.max(0, (paneBounds.top - bounds.top) / scaleY)}px ${Math.max(0, (bounds.right - paneBounds.right) / scaleX)}px ${Math.max(0, (bounds.bottom - paneBounds.bottom) / scaleY)}px ${Math.max(0, (paneBounds.left - bounds.left) / scaleX)}px round ${getComputedStyle(pane).borderRadius})`;
+        const visible = items.filter(item => item.element.isConnected && item.element.getClientRects().length &&
+            !['hidden', 'collapse'].includes(getComputedStyle(item.element).visibility))
+            .map(item => ({ ...item, rect: item.element.getBoundingClientRect() }))
+            .filter(item => item.rect.width > 0 && item.rect.height > 0);
         const keys = new Set(visible.map(item => item.key));
         for (const [key, cell] of labels) if (!keys.has(key)) { cell.remove(); labels.delete(key); }
         const elements = new Set([pane, wrapper, ...visible.map(item => item.element)]);
         for (const element of observed) if (!elements.has(element)) { observer?.unobserve(element); observed.delete(element); }
         for (const element of elements) if (!observed.has(element)) { observer?.observe(element); observed.add(element); }
-        for (const { key, name, rect } of visible) {
+        for (const { key, name, element, rect } of visible) {
             let cell = labels.get(key);
             if (!cell) {
                 cell = document.createElement('div');
@@ -2141,10 +2151,13 @@ function applyPlayerBookmark(value) {
                 labels.set(key, cell);
             }
             if (cell.firstChild.textContent !== name) cell.firstChild.textContent = name;
-            cell.style.left = `${rect.left - bounds.left - wrapper.clientLeft + wrapper.scrollLeft}px`;
-            cell.style.top = `${rect.top - bounds.top - wrapper.clientTop + wrapper.scrollTop}px`;
-            cell.style.width = `${rect.width}px`;
-            cell.style.height = `${rect.height}px`;
+            // Each menu paints only its own marker; closing either menu leaves
+            // the other menu's independent highlight intact.
+            cell.toggleAttribute('data-player-highlighted', element.hasAttribute('data-umininn-selection-highlight'));
+            cell.style.left = `${(rect.left - bounds.left) / scaleX}px`;
+            cell.style.top = `${(rect.top - bounds.top) / scaleY}px`;
+            cell.style.width = `${rect.width / scaleX}px`;
+            cell.style.height = `${rect.height / scaleY}px`;
         }
         layer.hidden = !visible.length;
     }
@@ -2153,13 +2166,15 @@ function applyPlayerBookmark(value) {
         frame = requestAnimationFrame(() => { frame = null; render(); });
     }
     function setVisible(visible) {
-        visible = !suspended && (visible || document.documentElement.hasAttribute('data-umininn-player-controls-open'));
+        visible = !suspended && !document.hidden && !document.fullscreenElement &&
+            (visible || document.documentElement.hasAttribute('data-umininn-player-controls-open'));
         if (visible === opened) { if (visible) schedule(); return; }
         opened = visible;
         if (visible) {
             render();
             // Detect async error/retry replacements without inspecting iframe contents.
-            mutations.observe(pane, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'data-channel-name'] });
+            mutations.observe(pane, { childList: true, subtree: true, attributes: true,
+                attributeFilter: ['style', 'class', 'hidden', 'data-channel-name', 'data-umininn-selection-highlight'] });
             window.addEventListener('resize', schedule);
             window.addEventListener('scroll', schedule, true);
         } else {
@@ -2181,6 +2196,8 @@ function applyPlayerBookmark(value) {
     visibilityObserver.observe(panel, { attributes: true, attributeFilter: ['style', 'hidden', 'class'] });
     visibilityObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-umininn-player-controls-open'] });
     playerNameOverlay = { setVisible, refresh: schedule };
+    document.addEventListener('visibilitychange', syncVisibility);
+    document.addEventListener('fullscreenchange', syncVisibility);
     window.addEventListener('pagehide', () => { suspended = true; setVisible(false); });
     window.addEventListener('pageshow', () => { suspended = false; syncVisibility(); });
     syncVisibility();
@@ -2312,7 +2329,7 @@ function applyPlayerBookmark(value) {
         revealedKey = null; cardOrder = '';
     }
     function syncVisibility() {
-        const visible = !suspended && !document.hidden && !panel.hidden && getComputedStyle(panel).display !== 'none';
+        const visible = !suspended && !document.hidden && !document.fullscreenElement && !panel.hidden && getComputedStyle(panel).display !== 'none';
         if (visible === opened) { if (visible) schedule(); return; }
         opened = visible;
         if (!opened) { clear(); return; }
@@ -2332,6 +2349,7 @@ function applyPlayerBookmark(value) {
     const visibility = new MutationObserver(syncVisibility);
     visibility.observe(panel, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
     document.addEventListener('visibilitychange', syncVisibility);
+    document.addEventListener('fullscreenchange', syncVisibility);
     window.addEventListener('pagehide', () => { suspended = true; opened = false; clear(); });
     window.addEventListener('pageshow', () => { suspended = false; syncVisibility(); });
     syncVisibility();

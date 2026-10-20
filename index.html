@@ -633,24 +633,9 @@
             pointer-events: none;
         }
 
-        #multi-stream-container > [data-umininn-selection-highlight],
-        #multi-stream-container > [data-umininn-controls-highlight] {
-            outline: 3px solid #58c8ff;
-            outline-offset: -3px;
-        }
-
-        /* The positioned, scaled Kick frame can paint over its parent's outline. */
-        #multi-stream-container > .kick-wrapper[data-umininn-selection-highlight],
-        #multi-stream-container > .kick-wrapper[data-umininn-controls-highlight] { outline: none; }
-        #multi-stream-container > .kick-wrapper[data-umininn-selection-highlight]::after,
-        #multi-stream-container > .kick-wrapper[data-umininn-controls-highlight]::after {
-            content: "";
-            position: absolute;
-            inset: 0;
-            z-index: 2;
-            border-radius: 0;
+        /* Paint outside iframe stacking/containment, including SDK wrappers. */
+        #player-name-overlay .player-name-cell[data-player-highlighted] {
             box-shadow: inset 0 0 0 3px #58c8ff;
-            pointer-events: none;
         }
 
         /* 搬位操作層獨立於播放器，交換位置不會重載直播。 */
@@ -1484,7 +1469,7 @@
     <link rel="stylesheet" href="./login.css">
     <link rel="stylesheet" href="./layout-bookmarks.css?v=20261019-shared-bookmarks">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261020-hover-reveal"></script>
+    <script defer src="./login.js?v=20261020-highlight-layer"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">
