@@ -888,6 +888,18 @@ function swapPlayerPositions(sourceKey, targetKey) {
     return true;
 }
 
+function movePlayerDirection(key, direction, targetKey) {
+    const layout = getCurrentPlayerGeometry();
+    const source = layout.items.find(item => item.key === key);
+    const target = PlayerGeometry.neighbors(layout, key, direction).find(item => item.key === targetKey);
+    if (!source || !target || !activePlayers.has(key) || !activePlayers.has(targetKey)) return false;
+    if (source.span === 1 && target.span === 1) return swapPlayerPositions(key, targetKey);
+    const next = PlayerGeometry.step(layout, key, direction, targetKey);
+    if (next === layout) return false;
+    // Apply the chosen tracks and order directly; never reparent live media.
+    return applyPlayerSize(next, { optimize: false });
+}
+
 function resetPlayerPositions() {
     preferredPlayerOrder = [];
     const hadEnlargement = Boolean(enlargedPlayerFocus);
@@ -2234,7 +2246,10 @@ function applyPlayerBookmark(value) {
                         cell.node.appendChild(button);
                         cell.directionButtons.set(identity, button);
                     }
-                    const description = `與${label}方「${target.channel.name}」交換位置：${name}`;
+                    const oppositeLabels = { up: '下', down: '上', left: '右', right: '左' };
+                    const description = source.span > 1 ? `向${label}平移一格：${name}（鄰格：${target.channel.name}）` :
+                        neighbor.span > 1 ? `將「${target.channel.name}」向${oppositeLabels[direction]}平移一格（靠近 ${name}）` :
+                        `與${label}方「${target.channel.name}」交換位置：${name}`;
                     button.title = description;
                     button.setAttribute('aria-label', description);
                     const vertical = direction === 'up' || direction === 'down';
@@ -2297,7 +2312,7 @@ function applyPlayerBookmark(value) {
             const neighbor = PlayerGeometry.neighbors(getCurrentPlayerGeometry(), key, direction)
                 .find(item => item.key === button.dataset.targetKey);
             if (!neighbor || !activePlayers.has(neighbor.key)) { render(); return; }
-            swapPlayerPositions(key, neighbor.key);
+            movePlayerDirection(key, direction, neighbor.key);
             render();
             // Follow the moved player without reparenting its media element.
             const next = cells.get(key)?.directionButtons.get(`${direction}:${neighbor.key}`);

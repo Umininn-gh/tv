@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { build, grow, shrink, resize, swap, neighbor, neighbors, choose } = require('../player-geometry.js');
+const { build, grow, shrink, resize, swap, neighbor, neighbors, step, choose } = require('../player-geometry.js');
 
 const keys = count => Array.from({ length: count }, (_, index) => `player-${index}`);
 const item = (layout, key) => layout.items.find(value => value.key === key);
@@ -371,6 +371,205 @@ test('neighbor rejects invalid inputs and leaves the geometry and item identitie
     touching.pop();
     assert.equal(neighbors(layout, 'player-0', 'right')[0], layout.items[1], 'results are fresh arrays, not the layout items array');
     assert.equal(JSON.stringify(layout), before);
+});
+
+test('directional focus steps move one base cell and exchange only the full entering and freed strips', () => {
+    const list = keys(17), focusKey = list[0];
+    const layout = build({ keys: list, columns: 5,
+        focus: { key: focusKey, row: 1, column: 1, span: 3 } });
+    assert.equal(layout.rows, 5);
+    const directions = { up: ['row', -1, 'down'], down: ['row', 1, 'up'],
+        left: ['column', -1, 'right'], right: ['column', 1, 'left'] };
+    for (const [direction, [axis, delta, reverse]] of Object.entries(directions)) {
+        const focus = item(layout, focusKey), expectedFocus = { ...focus, [axis]: focus[axis] + delta };
+        const targets = neighbors(layout, focusKey, direction);
+        assert.equal(targets.length, 3);
+        const next = step(layout, focusKey, direction, targets[0].key);
+        assert.deepEqual(item(next, focusKey), expectedFocus);
+        assert.equal(next.columns, layout.columns);
+        assert.equal(next.rows, layout.rows);
+        for (const current of layout.items.filter(value => value.key !== focusKey)) {
+            const entering = current.row >= expectedFocus.row && current.row < expectedFocus.row + expectedFocus.span &&
+                current.column >= expectedFocus.column && current.column < expectedFocus.column + expectedFocus.span;
+            const expected = entering ? { ...current, [axis]: current[axis] - delta * focus.span } : current;
+            assert.deepEqual(item(next, current.key), expected, `${direction}: ${current.key}`);
+        }
+        for (const target of targets) {
+            assert.deepEqual(step(layout, focusKey, direction, target.key), next,
+                'each segment on the same side moves the focus by the same one-cell amount');
+            assert.deepEqual(step(layout, target.key, reverse, focusKey), next,
+                'a small tile pointing at the focus moves the focus towards the small tile');
+        }
+        const restored = step(next, focusKey, reverse);
+        for (const current of layout.items) assert.deepEqual(item(restored, current.key), current);
+        assertLayout(next, list);
+        assertFirstFreePacking(next);
+    }
+});
+
+test('ordinary directional swaps keep all other cells and the enlarged focus fixed', () => {
+    const list = keys(17), layout = build({ keys: list, columns: 5,
+        focus: { key: list[0], row: 1, column: 1, span: 3 } });
+    const source = layout.items.find(value => value.row === 0 && value.column === 1);
+    const target = layout.items.find(value => value.row === 0 && value.column === 2);
+    const next = step(layout, source.key, 'right', target.key);
+    for (const current of layout.items) {
+        const expected = current.key === source.key ? { ...target, key: source.key } :
+            current.key === target.key ? { ...source, key: target.key } : current;
+        assert.deepEqual(item(next, current.key), expected);
+    }
+    const normal = build({ keys: keys(8), columns: 3 });
+    const normalNext = step(normal, 'player-4', 'right');
+    assert.deepEqual(item(normalNext, 'player-4'), { ...item(normal, 'player-5'), key: 'player-4' });
+    assert.deepEqual(item(normalNext, 'player-5'), { ...item(normal, 'player-4'), key: 'player-5' });
+});
+
+test('partial-tail focus steps stay one cell, inside existing tracks and canonically packed', () => {
+    let exercised = 0, trimmed = 0;
+    for (const columns of [3, 4, 5, 6]) for (const span of [2, 3]) {
+        if (span > columns) continue;
+        for (const count of [5, 8, 13, 17]) for (const row of [0, 1, 3]) {
+            const list = keys(count), layout = build({ keys: list, columns,
+                focus: { key: list[0], row, column: columns - span, span } });
+            const focus = item(layout, list[0]);
+            for (const [direction, axis, delta, reverse] of [['up', 'row', -1, 'down'], ['down', 'row', 1, 'up'],
+                ['left', 'column', -1, 'right'], ['right', 'column', 1, 'left']]) {
+                const targets = neighbors(layout, focus.key, direction);
+                if (!targets.length) continue;
+                const next = step(layout, focus.key, direction, targets[0].key);
+                const expected = { ...focus, [axis]: focus[axis] + delta };
+                const within = expected.row >= 0 && expected.column >= 0 && expected.row + span <= layout.rows &&
+                    expected.column + span <= layout.columns;
+                if (!within) { assert.equal(next, layout); continue; }
+                assert.notEqual(next, layout);
+                assert.deepEqual(item(next, focus.key), expected);
+                assert.equal(next.columns, layout.columns);
+                assert.ok(next.rows <= layout.rows, 'do not create a new row to finish an arrow move');
+                for (const target of targets) assert.deepEqual(step(layout, target.key, reverse, focus.key), next);
+                assertLayout(next, list);
+                assertFirstFreePacking(next);
+                const restored = build({ keys: visualKeys(next), columns: next.columns, focus: item(next, focus.key) });
+                for (const current of next.items) assert.deepEqual(item(restored, current.key), current);
+                if (next.rows < layout.rows) trimmed++;
+                exercised++;
+            }
+        }
+    }
+    assert.ok(exercised > 100);
+    assert.ok(trimmed > 0, 'moving a low focus up may reclaim an empty final row');
+});
+
+test('partial-tail steps pin unaffected tiles before filling freed-strip holes', () => {
+    const layout = build({ keys: ['p0', 'p1', 'p2', 'p3'], columns: 3,
+        focus: { key: 'p0', row: 0, column: 0, span: 2 } });
+    assert.deepEqual(item(layout, 'p1'), { key: 'p1', row: 0, column: 2, span: 1 });
+    assert.deepEqual(item(layout, 'p2'), { key: 'p2', row: 1, column: 2, span: 1 });
+    assert.deepEqual(item(layout, 'p3'), { key: 'p3', row: 2, column: 0, span: 1 });
+    const next = step(layout, 'p0', 'down', 'p3');
+    assert.deepEqual(item(next, 'p0'), { key: 'p0', row: 1, column: 0, span: 2 });
+    assert.deepEqual(item(next, 'p1'), item(layout, 'p1'), 'a representable unaffected tile must remain at its exact location');
+    assert.deepEqual(item(next, 'p3'), { key: 'p3', row: 0, column: 0, span: 1 });
+    assert.deepEqual(item(next, 'p2'), { key: 'p2', row: 0, column: 1, span: 1 },
+        'only the tile outside the canonical slot set needs to fill the remaining hole');
+    const reverse = step(next, 'p0', 'up', 'p3');
+    for (const current of layout.items) assert.deepEqual(item(reverse, current.key), current);
+    assertLayout(next, layout.items.map(value => value.key));
+    assertFirstFreePacking(next);
+});
+
+test('seeded focus steps preserve every representable unaffected tile before packing remaining tiles', () => {
+    const random = randomGenerator(0x51e9f0c5), directions = [
+        ['up', 'row', -1], ['down', 'row', 1], ['left', 'column', -1], ['right', 'column', 1]
+    ];
+    let exercised = 0, pinned = 0, displaced = 0;
+    for (let sample = 0; sample < 400; sample++) {
+        const columns = 2 + random(8), span = 2 + random(Math.min(4, columns) - 1);
+        const list = keys(2 + random(70)), layout = build({ keys: list, columns,
+            focus: { key: list[0], row: random(6), column: random(columns - span + 1), span } });
+        const focus = item(layout, list[0]), before = JSON.stringify(layout);
+        for (const [direction, axis, delta] of directions) {
+            const targets = neighbors(layout, focus.key, direction);
+            if (!targets.length) continue;
+            const expectedFocus = { ...focus, [axis]: focus[axis] + delta };
+            if (expectedFocus.row < 0 || expectedFocus.column < 0 || expectedFocus.row + span > layout.rows ||
+                expectedFocus.column + span > layout.columns) continue;
+            const next = step(layout, focus.key, direction, targets[random(targets.length)].key);
+            const slotSet = new Set(build({ keys: list, columns, focus: expectedFocus }).items
+                .filter(value => value.span === 1).map(value => `${value.row}:${value.column}`));
+            for (const current of layout.items.filter(value => value.span === 1)) {
+                const entering = current.row >= expectedFocus.row && current.row < expectedFocus.row + span &&
+                    current.column >= expectedFocus.column && current.column < expectedFocus.column + span;
+                if (entering) { displaced++; continue; }
+                if (slotSet.has(`${current.row}:${current.column}`)) {
+                    assert.deepEqual(item(next, current.key), current, `${sample}/${direction}: ${current.key} can stay pinned`);
+                    pinned++;
+                }
+            }
+            assert.deepEqual(item(next, focus.key), expectedFocus);
+            assert.equal(next.columns, columns);
+            assert.ok(next.rows <= layout.rows);
+            assertLayout(next, list);
+            assertFirstFreePacking(next);
+            const restored = build({ keys: visualKeys(next), columns, focus: expectedFocus });
+            for (const current of next.items) assert.deepEqual(item(restored, current.key), current);
+            assert.equal(JSON.stringify(layout), before);
+            exercised++;
+        }
+    }
+    assert.ok(exercised > 500);
+    assert.ok(pinned > 5000);
+    assert.ok(displaced > 1000);
+});
+
+test('directional steps validate actual targets, respect focus boundaries, and never mutate frozen input', () => {
+    const list = keys(8), layout = build({ keys: list, columns: 4,
+        focus: { key: list[0], row: 1, column: 2, span: 2 } });
+    const before = JSON.stringify(layout);
+    layout.items.forEach(Object.freeze);
+    Object.freeze(layout.items);
+    Object.freeze(layout);
+    assert.equal(step(layout, list[0], 'right'), layout);
+    assert.equal(step(layout, list[0], 'down'), layout);
+    assert.equal(step(layout, list[0], 'up', 'missing'), layout);
+    assert.equal(step(layout, list[0], 'up', list[0]), layout);
+    assert.equal(step(layout, list[0], 'up', neighbors(layout, list[0], 'left')[0].key), layout,
+        'a real neighboring key on the wrong side is still invalid');
+    assert.equal(step(layout, 'missing', 'up'), layout);
+    assert.equal(step(layout, list[0], 'diagonal'), layout);
+    assert.equal(step(null, list[0], 'up'), null);
+    assert.equal(step(undefined, list[0], 'up'), undefined);
+    const next = step(layout, list[0], 'up');
+    assert.deepEqual(item(next, list[0]), { ...item(layout, list[0]), row: 0 });
+    assert.equal(JSON.stringify(layout), before);
+    const leftEdge = build({ keys: list, columns: 4, focus: { key: list[0], row: 0, column: 0, span: 2 } });
+    assert.equal(step(leftEdge, list[0], 'left'), leftEdge);
+    assert.equal(step(leftEdge, list[0], 'up'), leftEdge);
+    const smallAtFocusBottom = layout.items.find(value => value.row === 0 && value.column === 2);
+    assert.deepEqual(step(layout, smallAtFocusBottom.key, 'down', list[0]), next);
+});
+
+test('repeated directional circuits keep one-cell focus steps and direct reversal restores every tile', () => {
+    const list = keys(28), focusKey = list[0];
+    const initial = build({ keys: list, columns: 6,
+        focus: { key: focusKey, row: 1, column: 1, span: 3 } });
+    assert.equal(initial.rows, 6);
+    let layout = initial;
+    for (let cycle = 0; cycle < 30; cycle++) {
+        for (const direction of ['right', 'right', 'down', 'down', 'left', 'left', 'up', 'up']) {
+            const before = item(layout, focusKey), next = step(layout, focusKey, direction);
+            assert.notEqual(next, layout);
+            const after = item(next, focusKey);
+            assert.equal(Math.abs(after.row - before.row) + Math.abs(after.column - before.column), 1);
+            assertLayout(next, list);
+            assertFirstFreePacking(next);
+            layout = next;
+        }
+        assert.deepEqual(item(layout, focusKey), item(initial, focusKey));
+    }
+    // A direct step followed by its reverse restores every ordinary tile;
+    // a longer circuit can intentionally rotate the small tiles around it.
+    const moved = step(layout, focusKey, 'right'), reversed = step(moved, focusKey, 'left');
+    for (const current of layout.items) assert.deepEqual(item(reversed, current.key), current);
 });
 
 test('adaptive columns score contained base video area and preserve the focus anchor', () => {

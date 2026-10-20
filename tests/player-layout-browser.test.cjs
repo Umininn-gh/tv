@@ -14,7 +14,7 @@ const executablePath = process.env.UMININN_BROWSER_EXECUTABLE;
 const root = path.resolve(__dirname, '..');
 const siteUrl = 'https://umininn-gh.github.io/tv/';
 const frameOrigin = 'https://layout-player.invalid';
-let browser, unavailable, appScript, layoutScript, geometryScript, channelScript, performanceScript, css;
+let browser, unavailable, appScript, layoutScript, geometryScript, channelScript, performanceScript, bookmarkScript, css;
 
 test.before(async () => {
     if (!enabled) return;
@@ -30,12 +30,14 @@ test.before(async () => {
     const read = file => fs.readFileSync(path.join(root, file), 'utf8');
     const source=read('tv-app.js');
     const coreEnd=source.indexOf('/* =============== 頻道儲存 / 載入');
+    const summaryStart=source.indexOf('function updateChannelSelectionSummary()');
+    const summaryEnd=source.indexOf('\nfunction createChannelOptionControl()',summaryStart);
     const selectionStart=source.indexOf('function toggleChannelSelection()');
     const editorStart=source.indexOf('(function initPlayerPositionEditor()');
     const editorEnd=source.indexOf('\nfunction toggleChannelMenu()',editorStart);
-    assert.ok(coreEnd>0&&selectionStart>coreEnd&&editorStart>selectionStart&&editorEnd>editorStart,'reviewed production core/selection/editor seams must exist');
-    appScript=source.slice(0,coreEnd)+'\n'+source.slice(selectionStart,editorEnd)+'\n'+fixtureApp;
-    layoutScript=read('player-layout.js');geometryScript=read('player-geometry.js');channelScript=read('channel-list.js');performanceScript=read('stream-performance.js');
+    assert.ok(coreEnd>0&&summaryStart>coreEnd&&summaryEnd>summaryStart&&selectionStart>summaryEnd&&editorStart>selectionStart&&editorEnd>editorStart,'reviewed production core/summary/selection/editor seams must exist');
+    appScript=source.slice(0,coreEnd)+'\n'+source.slice(summaryStart,summaryEnd)+'\n'+source.slice(selectionStart,editorEnd)+'\n'+fixtureApp;
+    layoutScript=read('player-layout.js');geometryScript=read('player-geometry.js');channelScript=read('channel-list.js');performanceScript=read('stream-performance.js');bookmarkScript=read('layout-bookmarks.js');
     css=[...read('index.html').matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match=>match[1]).join('\n');
     console.log(`Player layout model: ${engine} ${browser.version()} (headless; production CSS/app sections; all network intercepted; no live platform).`);
 });
@@ -146,7 +148,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body data-fixture-players="${players}" data-fixture-frame-platform="${framePlatform}">
     <div style="height:30px;flex:none"><button id="more-channels-btn" onclick="toggleChannelSelection()">看更台</button><button id="adjust-player-positions">調整位置</button><button id="enlarge-player">放大模式</button><button id="reset-player-positions">重設</button><button id="toggle-all-audio">聲音</button></div>
     <div id="channel-selection" style="display:none"><div id="channel-options"></div><button id="fixture-watch-selected" onclick="watchSelectedChannels()">開始觀看</button></div><div id="multi-stream-container-wrapper" style="flex:none;width:${width}px;height:${height}px;min-height:0"><div id="multi-stream-container" class="video-wrapper"></div></div>
-    <script src="/instrument.js"></script><script src="/channel-list.js"></script><script src="/stream-performance.js"></script><script src="/player-geometry.js"></script><script src="/player-layout.js"></script><script src="/fixture-app.js"></script></body></html>`;
+    <script src="/instrument.js"></script><script src="/channel-list.js"></script><script src="/stream-performance.js"></script><script src="/player-geometry.js"></script><script src="/player-layout.js"></script><script src="/layout-bookmarks.js"></script><script src="/fixture-app.js"></script></body></html>`;
     const child=`<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0"><video id="frame-video" loop muted playsinline preload="auto" src="/silent.wav" style="width:100%;height:100%"></video><script>${instrument}\ninstrumentMedia(document.getElementById('frame-video'));</script></body></html>`;
     await context.route('**/*',route=>{
         const request=route.request(),url=new URL(request.url());
@@ -155,7 +157,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
             if(request.url()===siteUrl)return route.fulfill({contentType:'text/html',body:main});
             if(url.origin===frameOrigin&&url.pathname==='/player')return route.fulfill({contentType:'text/html',body:child});
         }
-        const scripts={'/instrument.js':instrument,'/channel-list.js':channelScript,'/stream-performance.js':performanceScript,'/player-geometry.js':geometryScript,'/player-layout.js':layoutScript,'/fixture-app.js':fixtureScript};
+        const scripts={'/instrument.js':instrument,'/channel-list.js':channelScript,'/stream-performance.js':performanceScript,'/player-geometry.js':geometryScript,'/player-layout.js':layoutScript,'/layout-bookmarks.js':bookmarkScript,'/fixture-app.js':fixtureScript};
         if(url.origin===new URL(siteUrl).origin&&scripts[url.pathname])return route.fulfill({contentType:'application/javascript; charset=utf-8',body:scripts[url.pathname]});
         if(url.pathname==='/silent.wav'&&[new URL(siteUrl).origin,frameOrigin].includes(url.origin)){
             const range=/^bytes=(\d+)-(\d*)$/.exec(request.headers().range||'');const start=range?Number(range[1]):0;
@@ -1525,6 +1527,14 @@ async function directionTargets(f,key){return windowCell(f,key).locator('.player
     for(const button of buttons)if(!button.hidden)targets[button.dataset.playerAction.replace('swap-','')].push(button.dataset.targetKey);
     return targets;
 })}
+const directionDeltas={up:[-1,0],down:[1,0],left:[0,-1],right:[0,1]};
+function assertDirectionStep(before,after,key,direction){
+    const start=before.layout.items.find(item=>item.key===key),actual=after.layout.items.find(item=>item.key===key),[row,column]=directionDeltas[direction];
+    assert.deepEqual(actual,{...start,row:start.row+row,column:start.column+column},'an enlarged player moves exactly one base cell');
+    assert.equal(after.layout.columns,before.layout.columns,'a direction step cannot change the column count');
+    assert.equal(after.layout.rows,before.layout.rows,'a direction step cannot expand the existing grid');
+    assert.deepEqual(spans(after),spans(before));assertGeometry(after);
+}
 
 test('direction controls hide boundary and empty-tail sides, swap the touching cell once and retain native/iframe playback',{skip:!enabled,timeout:30000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),keys=await f.page.evaluate(()=>fixture.keys),before=await snapshot(f);
@@ -1585,13 +1595,13 @@ test('direction controls provide one accessible arrow for every touching neighbo
         const access=await button.evaluate(button=>({focused:document.activeElement===button,focusVisible:button.matches(':focus-visible'),opacity:getComputedStyle(button).opacity,pointerEvents:getComputedStyle(button).pointerEvents}));
         assert.equal(access.focused&&access.focusVisible&&Number(access.opacity)>.5&&access.pointerEvents==='auto',true,JSON.stringify({direction,targetKey,access}));
     }
-    await f.page.evaluate(()=>{window.fixtureDirectionSwaps=[];const original=swapPlayerPositions;
-        swapPlayerPositions=function(source,target){fixtureDirectionSwaps.push({source,target});return original(source,target)}});
+    await f.page.evaluate(()=>{window.fixtureDirectionMoves=[];const original=movePlayerDirection;
+        movePlayerDirection=function(source,direction,target){fixtureDirectionMoves.push({source,direction,target});return original(source,direction,target)}});
     const dispatched=[];
     for(const [direction,neighbors]of Object.entries(targets))for(const targetKey of neighbors){
-        await fixedDirectionGrid(f,grid);await clickDirection(f,keys[4],direction,targetKey);dispatched.push({source:keys[4],target:targetKey});
-        assert.deepEqual(await f.page.evaluate(()=>fixtureDirectionSwaps),dispatched,'clicking a non-central arrow must use that particular neighbor');
-        const after=await geometry(f);assertGeometry(after);assert.equal(spans(after)[keys[4]],3);
+        await fixedDirectionGrid(f,grid);const beforeStep=await geometry(f);await clickDirection(f,keys[4],direction,targetKey);dispatched.push({source:keys[4],direction,target:targetKey});
+        assert.deepEqual(await f.page.evaluate(()=>fixtureDirectionMoves),dispatched,'clicking a non-central arrow must validate that particular neighbor');
+        const after=await geometry(f);assertDirectionStep(beforeStep,after,keys[4],direction);assert.equal(spans(after)[keys[4]],3);
         assert.equal(after.layout.items.filter(item=>item.span>1).length,1);assertFits(await f.page.evaluate(()=>fixture.grid()));
     }
     await assertContinuity(f,before);
@@ -1603,24 +1613,23 @@ test('direction controls reject a stale arrow target after the touching neighbor
     const stale=await f.page.evaluate(({source,target,replacement})=>{
         const cell=Array.from(document.querySelectorAll('.player-window-cell')).find(cell=>cell.dataset.playerKey===source);
         const button=cell.querySelector(`[data-player-action="swap-up"][data-target-key="${target}"]`);
-        const original=swapPlayerPositions;window.fixtureStaleDirectionSwaps=[];
-        swapPlayerPositions=function(source,target){fixtureStaleDirectionSwaps.push({source,target});return original(source,target)};
         swapPlayerPositions(target,replacement);
-        const before=getPlayerPositionKeys(),connected=button.isConnected;
+        const before=getPlayerPositionKeys(),beforeGeometry=JSON.stringify(playerGeometry),connected=button.isConnected;
         // Intentionally stay in one browser task: the old connected button can
         // receive input before the scheduled overlay refresh has run.
         button.click();
-        return {connected,before,after:getPlayerPositionKeys(),calls:fixtureStaleDirectionSwaps.slice()};
+        return {connected,before,after:getPlayerPositionKeys(),beforeGeometry,afterGeometry:JSON.stringify(playerGeometry)};
     },{source:keys[4],target:keys[1],replacement:keys[13]});
     assert.equal(stale.connected,true,'the race checks the previous live overlay, rather than an already removed button');
-    assert.deepEqual(stale.after,stale.before);assert.deepEqual(stale.calls,[{source:keys[1],target:keys[13]}],'stale input cannot silently switch to a different adjacent player');
+    assert.deepEqual(stale.after,stale.before);assert.equal(stale.afterGeometry,stale.beforeGeometry,'stale input cannot silently step toward a different adjacent player');
     await waitWindowGeometry(f);await f.page.waitForFunction(({source,replacement})=>{
         const cell=Array.from(document.querySelectorAll('.player-window-cell')).find(cell=>cell.dataset.playerKey===source);
         return Boolean(cell.querySelector(`[data-player-action="swap-up"][data-target-key="${replacement}"]`));
     },{source:keys[4],replacement:keys[13]});
     assert.equal(await directionButton(f,keys[4],'up',keys[1]).count(),0);
+    const beforeStep=await geometry(f);
     await clickDirection(f,keys[4],'up',keys[13]);
-    assert.deepEqual(await f.page.evaluate(()=>fixtureStaleDirectionSwaps),[{source:keys[1],target:keys[13]},{source:keys[4],target:keys[13]}]);
+    assertDirectionStep(beforeStep,await geometry(f),keys[4],'up');
     assert.equal(spans(await geometry(f))[keys[4]],3);await assertContinuity(f,before);
 });
 
@@ -1641,14 +1650,97 @@ test('direction controls keep compact enlarged-edge hit targets distinct and dis
     assert.ok(hits.every(hit=>hit.hit&&hit.width>0&&hit.height>0),JSON.stringify(hits));
     const leftBounds=await left.boundingBox(),rightBounds=await directionButton(f,keys[4],'right',keys[7]).boundingBox();
     assert.ok(leftBounds.x+leftBounds.width<=rightBounds.x,'inward arrows on opposite sides cannot overlap in a roughly 60 px enlarged tile');
-    await f.page.evaluate(()=>{window.fixtureCompactDirectionSwaps=[];const original=swapPlayerPositions;
-        swapPlayerPositions=function(source,target){fixtureCompactDirectionSwaps.push({source,target});return original(source,target)}});
+    await f.page.evaluate(()=>{window.fixtureCompactDirectionMoves=[];const original=movePlayerDirection;
+        movePlayerDirection=function(source,direction,target){fixtureCompactDirectionMoves.push({source,direction,target});return original(source,direction,target)}});
     for(const [direction,target]of [['left',keys[6]],['right',keys[7]]]){
-        await fixedDirectionGrid(f,grid);await clickDirection(f,keys[4],direction,target);
-        assert.equal(spans(await geometry(f))[keys[4]],3);
+        await fixedDirectionGrid(f,grid);const beforeStep=await geometry(f);await clickDirection(f,keys[4],direction,target);
+        assertDirectionStep(beforeStep,await geometry(f),keys[4],direction);
     }
-    assert.deepEqual(await f.page.evaluate(()=>fixtureCompactDirectionSwaps),[{source:keys[4],target:keys[6]},{source:keys[4],target:keys[7]}]);
+    assert.deepEqual(await f.page.evaluate(()=>fixtureCompactDirectionMoves),[{source:keys[4],direction:'left',target:keys[6]},{source:keys[4],direction:'right',target:keys[7]}]);
     await assertContinuity(f,before);
+});
+
+test('direction controls move span-two and span-three players by one base cell from either side of every shared edge',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    const inverse={up:'down',down:'up',left:'right',right:'left'};
+    for(const span of [2,3])await t.test('span '+span,async st=>{
+        const f=await fixture(st,{width:1500,height:1000,players:26-span*span}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f);
+        const focus={key:keys[4],row:1,column:1,span},grid={columns:5,focus,order:keys};
+        for(const direction of Object.keys(inverse)){
+            await fixedDirectionGrid(f,grid);let start=await geometry(f),targets=(await directionTargets(f,keys[4]))[direction];
+            assert.equal(targets.length,span);const small=targets[targets.length-1];
+            await clickDirection(f,keys[4],direction,small);assertDirectionStep(start,await geometry(f),keys[4],direction);
+            await fixedDirectionGrid(f,grid);start=await geometry(f);
+            await clickDirection(f,small,inverse[direction],keys[4]);assertDirectionStep(start,await geometry(f),keys[4],direction);
+            assert.equal((await geometry(f)).opened,false);assertFits(await f.page.evaluate(()=>fixture.grid()));
+        }
+        await assertContinuity(f,before);
+    });
+});
+
+test('direction controls repeat one-cell moves to each boundary and handle a partially occupied final edge',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    await t.test('dense grid boundaries',async st=>{
+        const f=await fixture(st,{width:1500,height:1000,players:22}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f);
+        const key=keys[4],focus={key,row:1,column:1,span:2};await fixedDirectionGrid(f,{columns:5,focus,order:keys});
+        for(const [direction,expectedMoves]of [['right',2],['up',1],['left',3],['down',3]]){
+            let moved=0,lastTarget=null;
+            while((await directionTargets(f,key))[direction].length){
+                assert.ok(moved<5,'a boundary cannot wrap or create another grid strip');
+                const start=await geometry(f),targets=(await directionTargets(f,key))[direction];lastTarget=targets[targets.length-1];
+                await clickDirection(f,key,direction,lastTarget);assertDirectionStep(start,await geometry(f),key,direction);moved++;
+            }
+            assert.equal(moved,expectedMoves);assert.equal(await directionButton(f,key,direction).count(),0);
+            const stopped=await f.page.evaluate(({key,direction,target})=>{
+                const before=JSON.stringify(playerGeometry),result=movePlayerDirection(key,direction,target);
+                return {result,same:before===JSON.stringify(playerGeometry)};
+            },{key,direction,target:lastTarget});
+            assert.deepEqual(stopped,{result:false,same:true},'a repeated stale boundary action cannot extend or wrap the grid');
+        }
+        await assertContinuity(f,before);
+    });
+    await t.test('partial final strip',async st=>{
+        const f=await fixture(st,{width:1500,height:1000,players:15}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f);
+        const key=keys[4],focus={key,row:1,column:1,span:3};await fixedDirectionGrid(f,{columns:5,focus,order:keys});
+        const targets=(await directionTargets(f,key)).down;assert.equal(targets.length,2,'only the occupied parts of the lower edge have arrows');
+        const start=await geometry(f);await clickDirection(f,key,'down',targets[1]);assertDirectionStep(start,await geometry(f),key,'down');
+        assert.equal((await geometry(f)).layout.items.length,15);assert.equal(await directionButton(f,key,'down').count(),0);
+        assertFits(await f.page.evaluate(()=>fixture.grid()));await assertContinuity(f,before);
+    });
+    await t.test('sparse strip preserves representable unrelated positions',async st=>{
+        const f=await fixture(st,{width:1200,height:800}),keys=await f.page.evaluate(()=>getPlayerPositionKeys());
+        await f.page.evaluate(key=>closePlayer(key),keys[4]);
+        const key=keys[0],focus={key,row:0,column:0,span:2};await fixedDirectionGrid(f,{columns:3,focus,order:keys.slice(0,4)});
+        const before=await activeMediaSnapshot(f,keys.slice(0,4),{remember:true});
+        assert.deepEqual((await directionTargets(f,key)).down,[keys[3]]);await clickDirection(f,key,'down',keys[3]);
+        const state=await geometry(f);assert.deepEqual(Object.fromEntries(state.layout.items.map(item=>[item.key,{row:item.row,column:item.column,span:item.span}])),{
+            [key]:{row:1,column:0,span:2},[keys[1]]:{row:0,column:2,span:1},
+            [keys[2]]:{row:0,column:1,span:1},[keys[3]]:{row:0,column:0,span:1}
+        },'an unrelated top-right tile stays pinned while the entering tile fills the first released cell');
+        assert.equal(state.layout.columns,3);assertGeometry(state);assertFits(await f.page.evaluate(()=>fixture.grid()));await assertActiveContinuity(f,before);
+    });
+});
+
+test('direction controls persist the stepped layout through small pane changes, bookmark restore and reopening the browser state',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1500,height:1000,players:17}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f);
+    const key=keys[4],focus={key,row:1,column:1,span:3};await fixedDirectionGrid(f,{columns:5,focus,order:keys});
+    const target=(await directionTargets(f,key)).right[0],start=await geometry(f);await clickDirection(f,key,'right',target);
+    const stepped=await readLayout(f);assertDirectionStep(start,stepped.state,key,'right');
+    const saved=await f.page.evaluate(()=>({bookmark:capturePlayerBookmark(),storage:{
+        playerPositionOrder:localStorage.getItem('playerPositionOrder'),playerEnlargementLayout:localStorage.getItem('playerEnlargementLayout')
+    }}));
+    assert.deepEqual(saved.bookmark.focus,{...focus,column:2});assert.equal(saved.bookmark.columns,5);
+    assert.deepEqual(JSON.parse(saved.storage.playerEnlargementLayout).focus,{...focus,column:2});
+    for(const [width,height]of [[1490,990],[1510,1010],[1500,1000]]){
+        await settlePane(f,width,height);assert.deepEqual((await readLayout(f)).logical,stepped.logical,'a small pane change cannot undo a committed direction step');
+    }
+    await clickDirection(f,key,'left',(await directionTargets(f,key)).left[0]);
+    await f.page.evaluate(bookmark=>applyPlayerBookmark(bookmark),saved.bookmark);await waitWindowGeometry(f);
+    assert.deepEqual((await readLayout(f)).logical,stepped.logical,'the real bookmark capture/apply path restores the exact one-cell destination');
+    await assertContinuity(f,before);
+    const reopened=await fixture(t,{width:1500,height:1000,players:17,storageSeed:saved.storage});await waitWindowGeometry(reopened);
+    assert.deepEqual((await readLayout(reopened)).logical,stepped.logical,'saved order and enlargement reconstruct the stepped arrangement on a fresh page');
+    assert.deepEqual(reopened.errors,[]);assert.deepEqual(reopened.blocked,[]);
 });
 
 test('direction controls on foreign-frame players preserve hover handoff, document identity and media click isolation',{skip:!enabled,timeout:30000},async t=>{

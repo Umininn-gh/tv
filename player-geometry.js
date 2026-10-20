@@ -146,6 +146,70 @@
         return selected;
     }
 
+    function step(layout, key, direction, targetKey) {
+        const targets = neighbors(layout, key, direction);
+        const target = targetKey === undefined ? neighbor(layout, key, direction) :
+            targets.find(item => item.key === targetKey);
+        if (!target || !Number.isInteger(layout.columns) || layout.columns < 1 ||
+            !Number.isInteger(layout.rows) || layout.rows < 1 || layout.items.some(item =>
+                !validCell(item) || item.column + item.span > layout.columns || item.row + item.span > layout.rows)) return layout;
+        const source = layout.items.find(item => item.key === key);
+        const enlarged = layout.items.filter(item => item.span > 1);
+        if (enlarged.length > 1 || new Set(layout.items.map(item => item.key)).size !== layout.items.length) return layout;
+        const focus = enlarged[0];
+        let nextFocus = focus;
+        let desired;
+        if (focus && (source.key === focus.key || target.key === focus.key)) {
+            const [axis, , backwards] = neighborAxes[direction];
+            // When a small tile points at the focus, the focus moves towards
+            // that tile: one cell opposite to the small tile's arrow.
+            const delta = (backwards ? -1 : 1) * (source.key === focus.key ? 1 : -1);
+            nextFocus = { ...focus, [axis]: focus[axis] + delta };
+            if (nextFocus.row < 0 || nextFocus.column < 0 ||
+                nextFocus.row + nextFocus.span > layout.rows ||
+                nextFocus.column + nextFocus.span > layout.columns) return layout;
+            const displaced = new Set();
+            desired = layout.items.map(item => {
+                if (item.key === focus.key) return nextFocus;
+                const entering = item.row >= nextFocus.row && item.row < nextFocus.row + nextFocus.span &&
+                    item.column >= nextFocus.column && item.column < nextFocus.column + nextFocus.span;
+                // Move the whole entering strip to the freed strip, retaining
+                // each small tile's position along the shared edge.
+                if (entering) displaced.add(item.key);
+                return entering ? { ...item, [axis]: item[axis] - delta * focus.span } : item;
+            });
+            const slots = new Map(build({ keys: layout.items.map(item => item.key),
+                columns: layout.columns, focus: nextFocus }).items.filter(item => item.span === 1)
+                .sort(compareCells).map(item => [`${item.row}:${item.column}`, { row: item.row, column: item.column }]));
+            const assigned = new Map([[focus.key, nextFocus]]);
+            const ordinary = desired.filter(item => item.key !== focus.key).sort(compareCells);
+            function pin(item) {
+                const position = `${item.row}:${item.column}`;
+                if (!slots.has(position)) return;
+                assigned.set(item.key, item);
+                slots.delete(position);
+            }
+            // A partial last row can change which cells are representable by
+            // dense packing. Preserve every unaffected tile that still fits
+            // before assigning the displaced strip and filling remaining holes.
+            ordinary.filter(item => !displaced.has(item.key)).forEach(pin);
+            ordinary.filter(item => displaced.has(item.key)).forEach(pin);
+            const remaining = [...slots.values()];
+            let index = 0;
+            for (const item of ordinary) if (!assigned.has(item.key)) {
+                assigned.set(item.key, { ...item, ...remaining[index++] });
+            }
+            desired = [...assigned.values()];
+        } else {
+            desired = layout.items.map(item => item.key === source.key ? { ...target, key: source.key } :
+                item.key === target.key ? { ...source, key: target.key } : item);
+        }
+        // Rebuilding from assigned visual order keeps the existing saved schema.
+        const next = build({ keys: desired.sort(compareCells).map(item => item.key),
+            columns: layout.columns, focus: nextFocus });
+        return next.rows <= layout.rows ? next : layout;
+    }
+
     function choose({ keys, width, height, columnGap = 0, rowGap = 0, previous,
         focus, force = false, preserveAnchor = false } = {}) {
         keys = uniqueKeys(keys);
@@ -187,7 +251,7 @@
         return { ...build({ keys, columns: best.columns, focus }), area: best.area };
     }
 
-    const api = { build, grow, shrink, resize, swap, neighbor, neighbors, choose };
+    const api = { build, grow, shrink, resize, swap, neighbor, neighbors, step, choose };
     if (typeof module === 'object' && module.exports) module.exports = api;
     else root.PlayerGeometry = api;
 })(typeof globalThis === 'object' ? globalThis : this);
