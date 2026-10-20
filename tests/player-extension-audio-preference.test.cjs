@@ -107,17 +107,23 @@ for (const admin of [false, true]) {
     });
 }
 
-test('extension publishes the exact mute-only protocol to the current origin', () => {
+test('extension publishes the exact mute-only protocol while audio commands await the focus barrier', async () => {
     const source = read('browser-extension/site-ui.js');
     const method = source.match(/        function setGlobalMuted\(muted\) \{[\s\S]*?\n        \}/);
     assert.ok(method);
     const messages = [], commands = [];
+    let settleFocus;
+    const focusBarrier = new Promise(resolve => { settleFocus = resolve; });
     const context = vm.createContext({
         win: { location: { origin: 'https://umininn-gh.github.io' }, postMessage: (data, origin) => messages.push({ data, origin }) },
         envelope: (type, extra) => ({ channel: 'umininn-tv-player', version: 1, type, ...extra }),
-        refreshSummary() {}, applyAll: command => { commands.push(command); return Promise.resolve(); }
+        refreshSummary() {}, afterAudioFocus: operation => focusBarrier.then(operation),
+        applyAll: command => { commands.push(command); return Promise.resolve(); }
     });
     vm.runInContext('let globalMuted = null;\n' + method[0] + '\nsetGlobalMuted(true); setGlobalMuted(false);', context);
     assert.deepEqual(JSON.parse(JSON.stringify(messages)), [true, false].map(muted => ({ data: preference(muted), origin: 'https://umininn-gh.github.io' })));
+    assert.deepEqual(commands, [], 'an earlier in-flight focus command must settle before manual mute commands');
+    settleFocus();
+    await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(JSON.parse(JSON.stringify(commands)), [true, false].map(value => ({ action: 'setMuted', value })));
 });

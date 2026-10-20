@@ -105,6 +105,132 @@
         return { promise, finish };
     }
 
+    // Only the last requested enlarged tile may open its sound. Requests share
+    // one worker so an older, already-issued frame command settles before the
+    // next request's mute barrier. Cancelling also lets explicit controls wait
+    // for that barrier instead of racing a late unmute response.
+    function createAudioFocusFlow(options) {
+        const clock = options.clock;
+        const now = options.now || (() => Date.now());
+        const waitMs = options.waitMs ?? 6000;
+        let active = null, pending = null, draining = false, disposed = false;
+        const cancelled = () => ({ phase: 'cancelled' });
+        function stop(request) {
+            if (!request) return;
+            request.cancelled = true;
+            request.wake?.();
+        }
+        function report(request, value) {
+            if (!disposed && !request.cancelled) options.onStatus?.(value);
+            return value;
+        }
+        function wait(request) {
+            return new Promise(resolve => {
+                const timer = clock.setTimeout(done, 100);
+                function done() {
+                    clock.clearTimeout(timer);
+                    request.wake = null;
+                    resolve();
+                }
+                request.wake = done;
+                if (request.cancelled || disposed) done();
+            });
+        }
+        function current(item) { return options.isCurrent(item); }
+        async function run(request) {
+            report(request, { phase: 'preparing', target: request.target });
+            const started = now();
+            let items;
+            for (;;) {
+                if (request.cancelled || disposed) return cancelled();
+                options.refresh?.();
+                items = options.snapshot();
+                if (!items.some(item => item.key === request.target)) return report(request, { phase: 'removed', target: request.target });
+                if (!items.some(item => options.readiness(item) === 'pending') || now() - started >= waitMs) break;
+                await wait(request);
+            }
+            if (request.cancelled || disposed) return cancelled();
+            const results = await Promise.all(items.map(async item => {
+                const readiness = options.readiness(item);
+                if (!current(item)) return { item, code: 'stale' };
+                if (readiness !== 'ready') return { item, code: readiness };
+                try {
+                    const result = await options.execute(item, { action: 'setMuted', value: true });
+                    return { item, code: result?.ok && result.state?.muted === true ? null : result?.code || 'unconfirmed' };
+                } catch (_) { return { item, code: 'error' }; }
+            }));
+            if (request.cancelled || disposed) return cancelled();
+            const failures = results.filter(result => result.code).map(result => ({ key: result.item.key, name: result.item.name, code: result.code }));
+            const fresh = options.snapshot();
+            for (const item of fresh) {
+                if (!items.some(previous => previous.key === item.key && previous.identity === item.identity && previous.generation === item.generation) ||
+                    !current(item) || item.state?.muted !== true) {
+                    if (!failures.some(failure => failure.key === item.key)) failures.push({ key: item.key, name: item.name, code: 'changed' });
+                }
+            }
+            const target = fresh.find(item => item.key === request.target);
+            if (!target || !items.some(item => item.key === request.target && item.identity === target.identity && item.generation === target.generation)) {
+                return report(request, { phase: 'removed', target: request.target });
+            }
+            if (failures.length) return report(request, { phase: 'partial', target: request.target, failures });
+            if (!options.canSetVolume(target)) return report(request, { phase: 'partial', target: request.target,
+                failures: [{ key: target.key, name: target.name, code: 'volume-unsupported' }] });
+            const volumeResult = await options.execute(target, { action: 'setVolume', value: 1 });
+            if (request.cancelled || disposed) return cancelled();
+            if (!volumeResult?.ok || volumeResult.state?.volume !== 1) return report(request, { phase: 'partial', target: request.target,
+                failures: [{ key: target.key, name: target.name, code: volumeResult?.ok ? 'volume-unconfirmed' : volumeResult?.code || 'volume-unconfirmed' }] });
+            // Check the complete cohort again after the volume command;
+            // a frame navigation/removal/new player must not bypass the barrier.
+            const final = options.snapshot();
+            const changed = final.filter(item => !fresh.some(previous => previous.key === item.key && previous.identity === item.identity && previous.generation === item.generation) ||
+                !current(item) || item.state?.muted !== true);
+            if (!current(target) || !final.some(item => item.key === target.key && item.identity === target.identity && item.generation === target.generation)) {
+                return report(request, { phase: 'removed', target: request.target });
+            }
+            if (changed.length) return report(request, { phase: 'partial', target: request.target,
+                failures: changed.map(item => ({ key: item.key, name: item.name, code: 'changed' })) });
+            if (request.cancelled || disposed) return cancelled();
+            const result = await options.execute(target, { action: 'setMuted', value: false });
+            if (request.cancelled || disposed) return cancelled();
+            if (!current(target) || !options.snapshot().some(item => item.key === target.key && item.identity === target.identity && item.generation === target.generation)) {
+                return report(request, { phase: 'removed', target: request.target });
+            }
+            return report(request, result?.ok && result.state?.muted === false ? { phase: 'focused', target: request.target, name: target.name } :
+                { phase: 'partial', target: request.target, failures: [{ key: target.key, name: target.name, code: result?.code || 'unconfirmed' }] });
+        }
+        async function drain() {
+            if (draining) return;
+            draining = true;
+            while (pending && !disposed) {
+                const request = active = pending;
+                pending = null;
+                let result;
+                try { result = await run(request); }
+                catch (_) { result = report(request, { phase: 'partial', target: request.target, failures: [{ name: '播放器', code: 'error' }] }); }
+                request.resolve(result);
+                request.settled();
+                active = null;
+            }
+            draining = false;
+        }
+        function cancel() {
+            stop(active);
+            if (pending) { pending.resolve(cancelled()); pending.settled(); pending = null; }
+            return active?.done || Promise.resolve();
+        }
+        function request(target) {
+            if (disposed) return Promise.resolve(cancelled());
+            cancel();
+            const value = { target, cancelled: false };
+            const promise = new Promise(resolve => { value.resolve = resolve; });
+            value.done = new Promise(resolve => { value.settled = resolve; });
+            pending = value;
+            void drain();
+            return promise;
+        }
+        return { request, cancel, dispose() { disposed = true; void cancel(); } };
+    }
+
     function createSiteController(options) {
         const win = options.window;
         const doc = options.document;
@@ -116,7 +242,7 @@
         const factory = options.media;
         const recoveryFactory = options.recovery || recovery;
         const entries = new Map();
-        let host, shadow, panelHost, panelShadow, toggle, quickDetect, panel, list, summary, observer, lateObserver, masterVolume, masterReadout, detectButton, recoveryStatus, recoveryFlow;
+        let host, shadow, panelHost, panelShadow, toggle, quickDetect, panel, list, summary, observer, lateObserver, masterVolume, masterReadout, detectButton, recoveryStatus, recoveryFlow, audioFocusStatus, audioFocusFlow;
         let sequence = 0, scanTimer = null, disposed = false, globalMuted = null;
         let preparation = null, preparedCohort = new Set(), watchStartTimer = null, unreadyWrappers = 0;
         let preparationWaiting = '', lastRecoveryStatus = null;
@@ -247,13 +373,19 @@
             summary.textContent = failed.length ? `${failed.length} 台未能套用：${failed.map(item => item.entry.name.textContent).join('、')}` : `${all.length} 台已套用。`;
         }
 
+        function afterAudioFocus(action) {
+            showAudioFocusStatus({ phase: 'cancelled' });
+            const settled = audioFocusFlow?.cancel() || Promise.resolve();
+            return settled.then(() => { if (!disposed) return action(); });
+        }
+
         function setGlobalMuted(muted) {
             globalMuted = muted;
             // Keep the site's selection metadata in step without invoking its
             // fallback audio handler, which can reload cross-origin frames.
             win.postMessage(envelope('site:audio-preference', { muted }), win.location.origin);
             refreshSummary();
-            void applyAll({ action: 'setMuted', value: muted });
+            void afterAudioFocus(() => applyAll({ action: 'setMuted', value: muted }));
         }
 
         function isCurrent(entry, generation) {
@@ -332,10 +464,12 @@
         }
         function runRecovery(reason) {
             if (disposed || !recoveryFlow) return Promise.resolve();
-            return recoveryFlow.run({ reason });
+            return afterAudioFocus(() => recoveryFlow.run({ reason }));
         }
         function onWatchStart(event) {
             if (disposed || !isWatchStartTarget(event.target)) return;
+            showAudioFocusStatus({ phase: 'cancelled' });
+            void audioFocusFlow?.cancel();
             recoveryFlow?.cancel();
             clearPreparation();
             if (watchStartTimer !== null) win.clearTimeout(watchStartTimer);
@@ -360,9 +494,9 @@
             row.append(entry.name, controls, entry.status);
             list.appendChild(row);
             entry.volume.addEventListener('input', () => { entry.level.textContent = `${entry.volume.value}%`; });
-            entry.volume.addEventListener('change', () => { void execute(entry, { action: 'setVolume', value: Number(entry.volume.value) / 100 }); });
-            entry.mute.addEventListener('click', () => { void execute(entry, { action: 'setMuted', value: !entry.result?.state?.muted }); });
-            entry.recover.addEventListener('click', () => { void execute(entry, { action: 'recover' }); });
+            entry.volume.addEventListener('change', () => { const value = Number(entry.volume.value) / 100; void afterAudioFocus(() => execute(entry, { action: 'setVolume', value })); });
+            entry.mute.addEventListener('click', () => { const value = !entry.result?.state?.muted; void afterAudioFocus(() => execute(entry, { action: 'setMuted', value })); });
+            entry.recover.addEventListener('click', () => { void afterAudioFocus(() => execute(entry, { action: 'recover' })); });
         }
         function clearProbeTimers(entry) {
             entry.probeTimers.forEach(timer => win.clearTimeout(timer));
@@ -451,8 +585,60 @@
                 return;
             }
         }
+        function audioFocusSnapshot() {
+            const container = doc.getElementById('multi-stream-container');
+            return Array.from(container?.children || []).map(element => {
+                const entry = entries.get(element);
+                return { key: element, identity: entry || element, entry, generation: entry?.generation ?? -1,
+                    name: entry?.name?.textContent || element.getAttribute('data-channel-name') || '尚未載入的播放器',
+                    state: entry?.result?.state };
+            });
+        }
+        function refreshAudioFocus() {
+            scan();
+            const time = Date.now();
+            for (const entry of entries.values()) {
+                if (entry.busy) continue;
+                if (entry.kind === 'native') applyResult(entry, entry.controller.getState());
+                else if (entry.kind === 'frame' && (!entry.audioFocusProbeAt || time - entry.audioFocusProbeAt >= 1000)) {
+                    entry.audioFocusProbeAt = time;
+                    probe(entry);
+                }
+            }
+        }
+        function showAudioFocusStatus(value) {
+            if (!audioFocusStatus || disposed) return;
+            const reasons = { unsupported: '未支援聲音控制', pending: '尚未就緒或仍在操作', stale: '播放器已更換', changed: '播放器狀態已改變',
+                'volume-unsupported': '未支援音量控制', 'volume-unconfirmed': '未能確認音量已設為 100%',
+                unconfirmed: '未確認靜音', unavailable: '控制未能連接', timeout: '控制逾時' };
+            let text = '';
+            if (value.phase === 'preparing') text = '正在將所有播放器靜音，再只開啟放大格的聲音…';
+            else if (value.phase === 'focused') text = `已靜音其他播放器，只開啟「${value.name}」的聲音（音量 100%）。`;
+            else if (value.phase === 'removed') text = '放大格已移除或更換，已取消開聲。';
+            else if (value.phase === 'partial') text = `未開啟放大格的聲音；${value.failures.map(item => `${item.name}：${reasons[item.code] || item.code}`).join('；')}。請確認後重新按放大。`;
+            audioFocusStatus.textContent = text;
+            audioFocusStatus.hidden = !text;
+            if (toggle) {
+                if (text) toggle.title = text;
+                else toggle.removeAttribute('title');
+            }
+        }
+        function onAudioFocus(event) {
+            const container = doc.getElementById('multi-stream-container');
+            // A plain bubbling event works across Firefox userscript sandboxes;
+            // only a current pane itself may request focus, never its inner DOM.
+            if (disposed || !audioFocusFlow || !container || event.target?.parentElement !== container) return;
+            recoveryFlow?.cancel();
+            clearPreparation();
+            if (watchStartTimer !== null) { win.clearTimeout(watchStartTimer); watchStartTimer = null; }
+            globalMuted = true;
+            win.postMessage(envelope('site:audio-preference', { muted: true }), win.location.origin);
+            refreshSummary();
+            void audioFocusFlow.request(event.target);
+        }
         function originalMuteClick(event) {
-            if (!event.target?.closest?.('#toggle-all-audio') || !entries.size) return;
+            if (!event.target?.closest?.('#toggle-all-audio')) return;
+            if (!entries.size) { showAudioFocusStatus({ phase: 'cancelled' }); void audioFocusFlow?.cancel(); return; }
             event.preventDefault();
             event.stopImmediatePropagation();
             const available = currentEntries().filter(entry => can(entry, 'setMuted'));
@@ -479,6 +665,7 @@
             const close = node('button', '關閉', { type: 'button' });
             heading.append(node('strong', '播放器控制' + (cfg.DISPLAY_VERSION ? ' · ' + cfg.DISPLAY_VERSION : '')), close);
             summary = node('div', '正在偵測播放器…', { id: 'summary', role: 'status', 'aria-live': 'polite' });
+            audioFocusStatus = node('div', '', { id: 'audio-focus-status', class: 'state', role: 'status', 'aria-live': 'polite', hidden: '' });
             const master = node('div', null, { class: 'row master' });
             const mute = node('button', '全部靜音', { type: 'button' });
             const unmute = node('button', '全部開聲', { type: 'button' });
@@ -491,7 +678,7 @@
             recoveryStatus = node('div', '按一下偵測全部播放器，並對未播放的台嘗試恢復一次。', { id: 'recovery-status', class: 'state', role: 'status', 'aria-live': 'polite' });
             const help = node('p', 'Twitch 會先嘗試平台播放鍵；瀏覽器拒絕時，請在播放器內按 Play。影片未載入時暫不可調整聲音；未授權或未知網域不能控制。', { class: 'help' });
             list = node('div', null, { id: 'players' });
-            panel.append(heading, summary, master, detectButton, recoveryStatus, help, list);
+            panel.append(heading, summary, audioFocusStatus, master, detectButton, recoveryStatus, help, list);
             // The real toolbar contains layout/paint and clips overflow. A fixed
             // descendant is still trapped there; mount the panel outside it.
             panelHost = node('div', null, { id: 'umininn-player-panel-host' });
@@ -560,7 +747,23 @@
             quickMute.addEventListener('click', () => { setGlobalMuted(true); });
             unmute.addEventListener('click', () => { setGlobalMuted(false); });
             volume.addEventListener('input', () => { masterLevel.textContent = `${volume.value}%`; });
-            volume.addEventListener('change', () => { void applyAll({ action: 'setVolume', value: Number(volume.value) / 100 }); });
+            volume.addEventListener('change', () => { const value = Number(volume.value) / 100; void afterAudioFocus(() => applyAll({ action: 'setVolume', value })); });
+            audioFocusFlow = createAudioFocusFlow({
+                clock: win, snapshot: audioFocusSnapshot, refresh: refreshAudioFocus,
+                readiness(item) {
+                    const entry = item.entry;
+                    if (entry?.kind === 'unsupported') return 'unsupported';
+                    if (!entry || entry.busy || !can(entry, 'setMuted')) return 'pending';
+                    return 'ready';
+                },
+                isCurrent(item) {
+                    return item.key.parentElement === doc.getElementById('multi-stream-container') && item.key.isConnected &&
+                        (item.entry ? entries.get(item.key) === item.entry && isCurrent(item.entry, item.generation) : !entries.has(item.key));
+                },
+                canSetVolume: item => Boolean(item.entry && can(item.entry, 'setVolume')),
+                execute: (item, command) => isCurrent(item.entry, item.generation) ? execute(item.entry, command) : Promise.resolve({ ok: false, code: 'stale' }),
+                onStatus: showAudioFocusStatus
+            });
             if (recoveryFactory?.createRecoveryFlow) {
                 recoveryFlow = recoveryFactory.createRecoveryFlow({
                     clock: win, concurrency: 4, operationTimeoutMs: 6000,
@@ -582,6 +785,7 @@
             observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'class', 'style', 'data-channel-name'] });
             doc.addEventListener('click', originalMuteClick, true);
             doc.addEventListener('click', onWatchStart, true);
+            doc.addEventListener('umininn-player-audio-focus', onAudioFocus, true);
             win.addEventListener('message', onFrameMessage);
             scan();
             return true;
@@ -599,6 +803,7 @@
             panelIdleCleanup?.();
             panelIdleCleanup = null;
             recoveryFlow?.dispose();
+            audioFocusFlow?.dispose();
             clearPreparation();
             if (watchStartTimer !== null) win.clearTimeout(watchStartTimer);
             if (scanTimer !== null) win.clearTimeout(scanTimer);
@@ -606,6 +811,7 @@
             for (const entry of [...entries.values()]) removeEntry(entry);
             doc.removeEventListener('click', originalMuteClick, true);
             doc.removeEventListener('click', onWatchStart, true);
+            doc.removeEventListener('umininn-player-audio-focus', onAudioFocus, true);
             win.removeEventListener('message', onFrameMessage);
             win.removeEventListener('resize', positionPanel);
             win.removeEventListener('scroll', positionPanel, true);
@@ -614,7 +820,7 @@
         }
         return { start, dispose, scan };
     }
-    if (typeof module === 'object' && module.exports) module.exports = { createSiteController, validResult, aggregateAudio, canControl, isWatchStartTarget, isRecoveryReady, createReadinessPass };
+    if (typeof module === 'object' && module.exports) module.exports = { createSiteController, validResult, aggregateAudio, canControl, isWatchStartTarget, isRecoveryReady, createReadinessPass, createAudioFocusFlow };
     // Firefox's content-script global inherits from Window but is not Window itself.
     const contentWindow = root.window;
     if (contentWindow && config && media && runtime && contentWindow.top === contentWindow && config.isSiteUrl(contentWindow.location.href) && !contentWindow.document.getElementById('umininn-player-control-host')) {

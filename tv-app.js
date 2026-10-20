@@ -2375,7 +2375,13 @@ function applyPlayerBookmark(value) {
             // Reflow can move another close button under a double-click.
             if (event.detail > 1) return;
             closePlayer(key);
-        } else if (button.dataset.playerAction === 'enlarge') enlargePlayer(key);
+        } else if (button.dataset.playerAction === 'enlarge') {
+            if (enlargePlayer(key)) {
+                // A plain event keeps the player identity usable in isolated userscript worlds.
+                getPlayerElement(activePlayers.get(key))?.dispatchEvent(
+                    new Event('umininn-player-audio-focus', { bubbles: true }));
+            }
+        }
         else if (button.dataset.playerAction === 'shrink') shrinkPlayer(key);
         else if (button.dataset.playerAction === 'move') playerPositionEditor?.openMove(key, button);
         else if (button.dataset.playerAction.startsWith('swap-')) {
