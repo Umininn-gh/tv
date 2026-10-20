@@ -1565,8 +1565,43 @@ function applyPlayerBookmark(value) {
     let moveReturnFocus = null;
     let completionTimer = null;
     let completionDeadline = 0;
+    const completionPointers = new Set();
     const buttons = new Map();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleLayout) : null;
+
+    function resetCompletion() {
+        if (completionTimer !== null) clearTimeout(completionTimer);
+        completionTimer = null;
+        if (!opened) { completionDeadline = 0; return; }
+        completionDeadline = Date.now() + PLAYER_OVERLAY_TIMEOUT_SECONDS * 1000;
+        // A held pointer is an ongoing operation, including a long drag or
+        // toolbar press. Start the full idle interval when it is released.
+        if (!completionPointers.size)
+            completionTimer = setTimeout(autoComplete, PLAYER_OVERLAY_TIMEOUT_SECONDS * 1000);
+    }
+    layer.addEventListener('pointerdown', event => {
+        if (!opened || !event.isTrusted || !event.isPrimary || event.button !== 0) return;
+        completionPointers.add(event.pointerId);
+        resetCompletion();
+    }, true);
+    for (const type of ['click', 'keydown']) layer.addEventListener(type, event => {
+        if (opened && event.isTrusted) resetCompletion();
+    }, true);
+    function finishPointerActivity(event) {
+        if (!opened || !event.isTrusted || !completionPointers.has(event.pointerId)) return;
+        if (event.type === 'pointermove' && (event.buttons & 1)) return;
+        completionPointers.delete(event.pointerId);
+        if (event.type === 'pointermove') cancelPointer();
+        resetCompletion();
+    }
+    for (const type of ['pointerup', 'pointercancel', 'pointermove'])
+        document.addEventListener(type, finishPointerActivity, true);
+    function finishHeldActivity() {
+        const held = completionPointers.size > 0;
+        completionPointers.clear();
+        cancelPointer();
+        if (held && opened) resetCompletion();
+    }
 
     function updateHighlights() {
         buttons.forEach((button, key) => {
@@ -1646,6 +1681,7 @@ function applyPlayerBookmark(value) {
         if (completionTimer !== null) clearTimeout(completionTimer);
         completionTimer = null;
         completionDeadline = 0;
+        completionPointers.clear();
         if (!opened) return;
         opened = false;
         pickedKey = null;
@@ -1750,11 +1786,12 @@ function applyPlayerBookmark(value) {
     function open(nextMode) {
         if (activePlayers.size < 2) return;
         moveReturnFocus = null;
+        completionPointers.clear();
         setChannelSelectionVisible(false);
         mode = nextMode;
         layer.dataset.mode = mode;
         const help = mode === 'enlarge' ? '拖拉四角預覽，放開套用；也可點格放大或按「縮小一格」；Esc 取消拖拉／完成' : '拖曳或點選目標；相鄰一步，跨格到位；方向鍵逐格，Esc 完成';
-        instructions.textContent = `${help}；${PLAYER_OVERLAY_TIMEOUT_SECONDS} 秒後自動完成`;
+        instructions.textContent = `${help}；閒置 ${PLAYER_OVERLAY_TIMEOUT_SECONDS} 秒後自動完成`;
         doneButton.textContent = mode === 'enlarge' ? '✅ 完成放大' : '✅ 完成搬位';
         opened = true;
         layer.hidden = false;
@@ -1765,19 +1802,23 @@ function applyPlayerBookmark(value) {
         observer?.observe(wrapper);
         window.addEventListener('resize', onViewportResize);
         buttons.values().next().value?.focus({ preventScroll: true });
-        if (completionTimer !== null) clearTimeout(completionTimer);
-        // Complete this editing session from its entry time, independent of
-        // clicks/reflows. close() also cancels any uncommitted drag preview.
-        completionDeadline = Date.now() + PLAYER_OVERLAY_TIMEOUT_SECONDS * 1000;
-        completionTimer = setTimeout(autoComplete, PLAYER_OVERLAY_TIMEOUT_SECONDS * 1000);
+        resetCompletion();
     }
     function autoComplete() {
+        if (completionTimer !== null) clearTimeout(completionTimer);
+        completionTimer = null;
+        if (!opened || completionPointers.size) return;
+        const remaining = completionDeadline - Date.now();
+        if (remaining > 0) {
+            completionTimer = setTimeout(autoComplete, remaining);
+            return;
+        }
         close(!document.hidden && layer.contains(document.activeElement));
     }
     document.addEventListener('visibilitychange', () => {
-        // A background tab can throttle its timeout. Honour the original
-        // deadline as soon as it becomes visible again.
-        if (opened && !document.hidden && Date.now() >= completionDeadline) autoComplete();
+        if (document.hidden && completionPointers.size) finishHeldActivity();
+        // Background throttling must honour the last interaction's deadline.
+        if (opened && !document.hidden && !completionPointers.size && Date.now() >= completionDeadline) autoComplete();
     });
     for (const button of [startButton, enlargeButton]) {
         button?.setAttribute('aria-controls', layer.id);
@@ -2030,7 +2071,7 @@ function applyPlayerBookmark(value) {
     cells.addEventListener('lostpointercapture', event => {
         if (event.pointerId === drag?.id || event.pointerId === resizeDrag?.id) cancelPointer();
     });
-    window.addEventListener('blur', cancelPointer);
+    window.addEventListener('blur', finishHeldActivity);
     window.addEventListener('pagehide', () => close(false));
     function openMove(key, returnButton) {
         if (activePlayers.size < 2 || !activePlayers.has(key)) return false;

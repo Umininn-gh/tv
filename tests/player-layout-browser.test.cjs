@@ -1399,18 +1399,26 @@ async function editorTimeout(f){
     const seconds=await f.page.evaluate(()=>PLAYER_OVERLAY_TIMEOUT_SECONDS);assert.equal(seconds,30);return seconds*1000;
 }
 async function savedPositionOrder(f){return f.page.evaluate(()=>localStorage.getItem('playerPositionOrder'))}
+async function assertEditorUiClosed(f){
+    assert.equal((await geometry(f)).opened,false);
+    assert.equal(await f.page.locator('.player-position-toolbar').isVisible(),false);
+    assert.equal(await f.page.locator('.player-position-name').first().isVisible(),false);
+    assert.equal(await f.page.locator('#player-name-overlay').isVisible(),false);
+}
 
-test('both editor modes auto-complete at the configured entry deadline and retain committed layouts and media',{skip:!enabled,timeout:60000},async t=>{
+test('both editor modes auto-complete only after a full idle interval following the last trusted click',{skip:!enabled,timeout:60000},async t=>{
     if(!optional(t))return;
     for(const mode of ['move','enlarge'])await t.test(mode,async sub=>{
         const f=await fixture(sub,{width:1300,height:1000,clock:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys),duration=await editorTimeout(f);
         await f.page.locator(mode==='move'?'#adjust-player-positions':'#enlarge-player').click();
         const hint=await f.page.locator('.player-position-instructions').innerText();assert.match(hint,/30\s*秒/);assert.match(hint,/自動/);
+        await f.page.clock.runFor(duration-1000);
         if(mode==='move'){await positionCell(f,keys[0]).click();await positionCell(f,keys[4]).click()}
         else{await positionCell(f,keys[0]).click();await waitSpan(f,keys[0],2)}
         const committed=await readLayout(f),savedOrder=await savedPositionOrder(f);
-        await f.page.clock.runFor(duration-1);assert.equal((await geometry(f)).opened,true,'the editor stays open until its full entry interval elapses');
+        await f.page.clock.runFor(duration-1);assert.equal((await geometry(f)).opened,true,'a click just before the original deadline starts a complete new idle interval');
         await f.page.clock.runFor(1);const completed=await readLayout(f);assert.equal(completed.state.opened,false);
+        await assertEditorUiClosed(f);
         assert.deepEqual(completed.logical,committed.logical);assert.equal(completed.state.saved,committed.state.saved);assert.equal(await savedPositionOrder(f),savedOrder);
         assert.equal(await f.page.locator('#adjust-player-positions').getAttribute('aria-expanded'),'false');assert.equal(await f.page.locator('#enlarge-player').getAttribute('aria-expanded'),'false');
         assert.equal(await f.page.evaluate(()=>document.activeElement.id),'more-channels-btn','expiry restores focus when it remains inside the editor');
@@ -1430,12 +1438,17 @@ test('editor auto-complete cancels previous deadlines on manual close, reentry a
     await f.page.clock.runFor(1);assert.equal((await geometry(f)).opened,false);await assertContinuity(f,before);
 });
 
-test('editor auto-complete is not postponed by editing, refresh or resize and does not steal external focus',{skip:!enabled,timeout:30000},async t=>{
+test('editor auto-complete ignores hover, app refresh, resize and synthetic input without stealing external focus',{skip:!enabled,timeout:30000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000,clock:true}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]),duration=await editorTimeout(f);
-    await f.page.locator('#enlarge-player').click();await f.page.clock.runFor(duration/2);
-    await positionCell(f,key).click();await waitSpan(f,key,2);
-    await f.page.locator('.player-position-toolbar-toggle').click();
-    await f.page.evaluate(()=>{playerPositionEditor.refresh();fixture.resize(1200,850)});await f.page.clock.runFor(250);
+    await f.page.locator('#enlarge-player').click();await positionCell(f,key).click();await waitSpan(f,key,2);
+    await f.page.clock.runFor(duration/2);const point=await positionCell(f,key).boundingBox();await f.page.mouse.move(point.x+point.width/2,point.y+point.height/2,{steps:8});
+    await f.page.evaluate(()=>{
+        playerPositionEditor.refresh();fixture.resize(1200,850);const toolbar=document.querySelector('.player-position-toolbar');
+        toolbar.dispatchEvent(new KeyboardEvent('keydown',{key:'Shift',bubbles:true}));
+        toolbar.dispatchEvent(new PointerEvent('pointerdown',{pointerId:919,isPrimary:true,button:0,buttons:1,bubbles:true}));
+        document.dispatchEvent(new PointerEvent('pointerup',{pointerId:919,isPrimary:true,button:0,buttons:0,bubbles:true}));
+        document.querySelector('.player-position-toolbar-toggle').click();window.dispatchEvent(new Event('blur'));
+    });await f.page.clock.runFor(250);
     const committed=await readLayout(f);await f.page.locator('#toggle-all-audio').focus();
     await f.page.clock.runFor(duration/2-251);assert.equal((await geometry(f)).opened,true);
     await f.page.clock.runFor(1);const completed=await readLayout(f);assert.equal(completed.state.opened,false);
@@ -1443,13 +1456,13 @@ test('editor auto-complete is not postponed by editing, refresh or resize and do
     assert.equal(await f.page.evaluate(()=>document.activeElement.id),'toggle-all-audio');await assertContinuity(f,before);
 });
 
-test('editor auto-complete cancels uncommitted move drags and corner resize previews',{skip:!enabled,timeout:60000},async t=>{
+test('editor auto-complete stays open during trusted move and resize holds then starts idle time after release',{skip:!enabled,timeout:60000},async t=>{
     if(!optional(t))return;
     for(const mode of ['move','enlarge'])await t.test(mode,async sub=>{
         const f=await fixture(sub,{width:1300,height:1000,clock:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys),duration=await editorTimeout(f);
         await f.page.locator(mode==='move'?'#adjust-player-positions':'#enlarge-player').click();
         if(mode==='enlarge'){await positionCell(f,keys[0]).click();await waitSpan(f,keys[0],2)}
-        await f.page.clock.runFor(duration-500);const committed=await readLayout(f),savedOrder=await savedPositionOrder(f);
+        await f.page.clock.runFor(duration-500);const initial=await readLayout(f);
         if(mode==='move'){
             const source=await positionCell(f,keys[0]).boundingBox(),target=await positionCell(f,keys[4]).boundingBox();assert.ok(source&&target);
             await f.page.mouse.move(source.x+source.width/2,source.y+source.height/2);await f.page.mouse.down();
@@ -1458,11 +1471,94 @@ test('editor auto-complete cancels uncommitted move drags and corner resize prev
         }else{
             const drag=await startCornerDrag(f,keys[0],'se');await moveCornerDrag(f,drag,1.1);await f.page.clock.runFor(32);await assertPreviewOnly(f,drag);
         }
-        await f.page.clock.runFor(mode==='enlarge'?468:500);assert.equal((await geometry(f)).opened,false);await f.page.mouse.up();await assertResizeIdle(f);
+        await f.page.clock.runFor(duration+1000);assert.equal((await geometry(f)).opened,true,'an active trusted pointer cannot expire while held');
+        assert.deepEqual((await readLayout(f)).logical,initial.logical,'a long hold cannot commit before release');
+        await f.page.mouse.up();await assertResizeIdle(f);const committed=await readLayout(f),savedOrder=await savedPositionOrder(f);
+        assert.notDeepEqual(committed.logical,initial.logical,'releasing the held gesture commits once');
+        if(mode==='enlarge')assert.equal(spans(committed.state)[keys[0]],3,'one pointer release cannot apply a second enlargement click');
+        await f.page.clock.runFor(duration-1);assert.equal((await geometry(f)).opened,true);
+        await f.page.clock.runFor(1);await assertEditorUiClosed(f);
         const completed=await readLayout(f);assert.deepEqual(completed.logical,committed.logical);assert.equal(completed.state.saved,committed.state.saved);assert.equal(await savedPositionOrder(f),savedOrder);
-        await f.page.locator('#enlarge-player').click();await positionCell(f,keys[1]).click();assertGeometry(await waitSpan(f,keys[1],2),{overlay:true});
         await assertContinuity(f,before);
     });
+});
+
+test('editor inactivity is restarted by repeated trusted keys and toolbar actions',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    await t.test('repeated keyboard activity',async st=>{
+        const f=await fixture(st,{width:1300,height:1000,clock:true}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]),duration=await editorTimeout(f);
+        await f.page.locator('#adjust-player-positions').click();
+        for(let index=0;index<2;index++){
+            await f.page.clock.runFor(duration-1000);await positionCell(f,key).press('ArrowRight');assert.equal((await geometry(f)).opened,true);
+        }
+        const committed=await readLayout(f);await f.page.clock.runFor(duration-1);assert.equal((await geometry(f)).opened,true);
+        await f.page.clock.runFor(1);await assertEditorUiClosed(f);assert.deepEqual((await readLayout(f)).logical,committed.logical);await assertContinuity(f,before);
+    });
+    await t.test('toolbar position, shrink and reset controls',async st=>{
+        const f=await fixture(st,{width:1300,height:1000,clock:true}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]),duration=await editorTimeout(f);
+        for(const selector of ['.player-position-toolbar-toggle','.player-position-shrink','.player-position-reset']){
+            await f.page.locator('#enlarge-player').click();await positionCell(f,key).click();
+            await f.page.clock.runFor(duration-1000);await f.page.locator(selector).click();const committed=await readLayout(f);
+            await f.page.clock.runFor(duration-1);assert.equal((await geometry(f)).opened,true,selector+' restarts a full idle interval');
+            await f.page.clock.runFor(1);await assertEditorUiClosed(f);assert.deepEqual((await readLayout(f)).logical,committed.logical);
+        }
+        await assertContinuity(f,before);
+    });
+});
+
+test('editor inactivity recovers held gestures on blur, backgrounding and native pointer cancellation',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    for(const reason of ['blur','hidden'])await t.test(reason,async st=>{
+        const f=await fixture(st,{width:1300,height:1000,clock:true}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]),duration=await editorTimeout(f);
+        await f.page.locator('#adjust-player-positions').click();const initial=await readLayout(f),box=await positionCell(f,key).boundingBox();
+        await f.page.mouse.move(box.x+box.width/2,box.y+box.height/2);await f.page.mouse.down();await f.page.mouse.move(box.x+box.width/2+30,box.y+box.height/2+10);
+        await f.page.clock.runFor(duration+1000);assert.equal((await geometry(f)).opened,true);
+        await f.page.evaluate(reason=>{
+            if(reason==='blur')window.dispatchEvent(new Event('blur'));
+            else{Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});document.dispatchEvent(new Event('visibilitychange'));
+                delete document.hidden;document.dispatchEvent(new Event('visibilitychange'))}
+        },reason);
+        await f.page.mouse.up();await assertResizeIdle(f);assert.deepEqual((await readLayout(f)).logical,initial.logical,'lifecycle interruption cancels the uncommitted gesture');
+        await f.page.clock.runFor(duration-1);assert.equal((await geometry(f)).opened,true);
+        await f.page.clock.runFor(1);await assertEditorUiClosed(f);await assertContinuity(f,before);
+    });
+    if(engine==='chromium')await t.test('trusted touch cancellation',async st=>{
+        const f=await fixture(st,{width:1300,height:1000,clock:true,hasTouch:true}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]),duration=await editorTimeout(f);
+        await f.page.locator('#adjust-player-positions').click();const initial=await readLayout(f),box=await positionCell(f,key).boundingBox();
+        const x=box.x+box.width/2,y=box.y+box.height/2,cdp=await f.page.context().newCDPSession(f.page);
+        await f.page.evaluate(()=>{window.fixtureIdleTouchCancel=[];document.addEventListener('pointercancel',event=>fixtureIdleTouchCancel.push({trusted:event.isTrusted,type:event.pointerType}),true)});
+        await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{id:1,x,y,radiusX:1,radiusY:1,force:1}]});
+        await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{id:1,x:x+30,y:y+10,radiusX:1,radiusY:1,force:1}]});
+        await f.page.clock.runFor(duration+1000);assert.equal((await geometry(f)).opened,true);
+        await cdp.send('Input.dispatchTouchEvent',{type:'touchCancel',touchPoints:[]});await cdp.detach();
+        assert.ok((await f.page.evaluate(()=>fixtureIdleTouchCancel)).some(event=>event.trusted&&event.type==='touch'));
+        await assertResizeIdle(f);assert.deepEqual((await readLayout(f)).logical,initial.logical);
+        await f.page.clock.runFor(duration-1);assert.equal((await geometry(f)).opened,true);
+        await f.page.clock.runFor(1);await assertEditorUiClosed(f);await assertContinuity(f,before);
+    });
+    if(engine==='chromium')await t.test('trusted no-buttons pointer move recovers a missed mouseup',async st=>{
+        const f=await fixture(st,{width:1300,height:1000,clock:true}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]),duration=await editorTimeout(f);
+        await f.page.locator('#adjust-player-positions').click();const initial=await readLayout(f),box=await positionCell(f,key).boundingBox();
+        const x=box.x+box.width/2,y=box.y+box.height/2;
+        await f.page.mouse.move(x,y);await f.page.mouse.down();await f.page.mouse.move(x+30,y+10);
+        assert.equal(await f.page.locator('.position-dragging').count(),1);await f.page.clock.runFor(duration+1000);assert.equal((await geometry(f)).opened,true);
+        await f.page.evaluate(()=>{window.fixtureIdleMissedRelease=[];document.addEventListener('pointermove',event=>fixtureIdleMissedRelease.push({trusted:event.isTrusted,buttons:event.buttons}),true)});
+        const cdp=await f.page.context().newCDPSession(f.page);
+        await cdp.send('Input.dispatchMouseEvent',{type:'mouseMoved',x:x+40,y:y+20,button:'none',buttons:0});await cdp.detach();
+        assert.ok((await f.page.evaluate(()=>fixtureIdleMissedRelease)).some(event=>event.trusted&&event.buttons===0));
+        await assertResizeIdle(f);await f.page.mouse.up();assert.deepEqual((await readLayout(f)).logical,initial.logical,'a missed release must cancel the ghost drag instead of committing later');
+        await f.page.clock.runFor(duration-1);assert.equal((await geometry(f)).opened,true);
+        await f.page.clock.runFor(1);await assertEditorUiClosed(f);await assertContinuity(f,before);
+    });
+});
+
+test('editor inactivity cannot rearm after its held session closes when the selection becomes a single player',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000,clock:true}),keys=await f.page.evaluate(()=>fixture.keys),duration=await editorTimeout(f);
+    await f.page.locator('#adjust-player-positions').click();const retained=await activeMediaSnapshot(f,[keys[0]],{remember:true}),box=await positionCell(f,keys[0]).boundingBox();
+    await f.page.mouse.move(box.x+box.width/2,box.y+box.height/2);await f.page.mouse.down();
+    await f.page.evaluate(keys=>{for(const key of keys.slice(1))closePlayer(key)},keys);await assertEditorUiClosed(f);await f.page.mouse.up();
+    await f.page.clock.runFor(duration*2);await assertEditorUiClosed(f);
+    assert.equal(await f.page.locator('#adjust-player-positions').isDisabled(),true);assert.equal(await f.page.locator('#enlarge-player').isDisabled(),true);await assertActiveContinuity(f,retained);
 });
 
 test('editor auto-complete timers are cleared on pagehide and a later session gets a fresh deadline',{skip:!enabled,timeout:30000},async t=>{
@@ -1480,10 +1576,12 @@ test('editor auto-complete timers are cleared on pagehide and a later session ge
     await f.page.clock.runFor(1);assert.equal((await geometry(f)).opened,false);await assertContinuity(f,before);
 });
 
-test('editor auto-complete honors the absolute deadline when foregrounding after a throttled timer',{skip:!enabled,timeout:30000},async t=>{
+test('editor auto-complete honors the last idle deadline when foregrounding after a throttled timer',{skip:!enabled,timeout:30000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000,clock:true}),before=await snapshot(f),duration=await editorTimeout(f);
-    await f.page.locator('#adjust-player-positions').click();const committed=await readLayout(f);
-    await f.page.clock.setSystemTime(await f.page.evaluate(()=>Date.now())+duration+1);
+    await f.page.locator('#adjust-player-positions').click();await f.page.clock.runFor(duration-1000);await f.page.keyboard.press('ArrowRight');const committed=await readLayout(f);
+    await f.page.clock.setSystemTime(await f.page.evaluate(()=>Date.now())+duration-1);
+    await f.page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));assert.equal((await geometry(f)).opened,true,'foregrounding before the last interaction deadline cannot use the stale entry deadline');
+    await f.page.clock.setSystemTime(await f.page.evaluate(()=>Date.now())+1);
     assert.equal((await geometry(f)).opened,true,'changing wall time alone does not run the suspended timer');
     await f.page.evaluate(()=>document.dispatchEvent(new Event('visibilitychange')));
     assert.equal((await geometry(f)).opened,false);assert.deepEqual((await readLayout(f)).logical,committed.logical);await assertContinuity(f,before);
