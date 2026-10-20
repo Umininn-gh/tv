@@ -45,7 +45,7 @@ WJ,woojungx4,twitch
 金剛,kingkong_tv,vaughn
 美2,meidingdang,vaughn
 美1,triplestarhunters,vaughn
-t,zard46,vaughn
+zard,zard46,vaughn
 RachelW,rachelw,twitch
 G,ourchickenlife,twitch
 TristaLiveTV,tristalivetv,twitch
