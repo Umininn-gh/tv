@@ -1304,7 +1304,7 @@ test('window controls track native hover, preserve iframe center click-through a
     });
     for(const index of [0,2,3]){
         const point=await f.page.evaluate(key=>{const bounds=getPlayerElement(activePlayers.get(key)).getBoundingClientRect();return {x:bounds.left+bounds.width/2,y:bounds.top+bounds.height/2}},keys[index]);
-        assert.deepEqual(await windowCell(f,keys[index]).locator('button').evaluateAll(buttons=>buttons.map(button=>button.dataset.playerAction)),['shrink','enlarge','close']);
+        assert.deepEqual(await windowCell(f,keys[index]).locator('.player-window-buttons button').evaluateAll(buttons=>buttons.map(button=>button.dataset.playerAction)),['shrink','enlarge','close']);
         assert.equal(await windowCell(f,keys[index]).locator('[data-player-action="shrink"]').isVisible(),false);
         assert.equal(await windowCell(f,keys[index]).locator('[data-player-action="enlarge"]').isEnabled(),true);
         const tag=await f.page.evaluate(({x,y})=>document.elementFromPoint(x,y).tagName,point);assert.equal(tag,index===0?'VIDEO':'IFRAME','a transparent control cell cannot intercept media-center input');
@@ -1495,4 +1495,220 @@ test('one configurable timeout value drives channel-menu idle completion, editor
     await f.page.locator('#enlarge-player').click();assert.match(await f.page.locator('.player-position-instructions').innerText(),/4\s*秒/);
     await f.page.clock.runFor(seconds*1000-1);assert.equal((await geometry(f)).opened,true);
     await f.page.clock.runFor(1);assert.equal((await geometry(f)).opened,false);await assertContinuity(f,before);
+});
+
+function directionButton(f,key,direction,targetKey){return windowCell(f,key).locator(`[data-player-action="swap-${direction}"]${targetKey===undefined?'':`[data-target-key=${JSON.stringify(targetKey)}]`}`)}
+async function fixedDirectionGrid(f,{columns=3,focus=null,order=null}={}){
+    await f.page.evaluate(({columns,focus,order})=>{
+        if(order)order.forEach((key,index)=>{getPlayerElement(activePlayers.get(key)).style.order=String(index)});
+        enlargedPlayerFocus=focus;
+        pendingPlayerGeometry={...PlayerGeometry.build({keys:getPlayerPositionKeys(),columns,focus}),intent:'bookmark'};
+        updatePlayerLayout({force:true});
+    },{columns,focus,order});
+    await f.page.waitForFunction(columns=>playerGrid.getColumns()===columns,columns);
+    await waitWindowGeometry(f);
+}
+async function clickDirection(f,key,direction,targetKey){
+    const button=directionButton(f,key,direction,targetKey);
+    const foreignFrame=await f.page.evaluate(key=>getPlayerElement(activePlayers.get(key)).tagName==='IFRAME',key);
+    if(engine==='chromium'&&foreignFrame){await f.page.keyboard.press('Tab');await button.focus();await button.press('Enter')}
+    else{await hoverWindow(f,key);await button.click()}
+    await waitWindowGeometry(f);
+}
+async function directionVisibility(f,key){return windowCell(f,key).locator('.player-direction-button').evaluateAll(buttons=>{
+    const visible={up:false,down:false,left:false,right:false};
+    for(const button of buttons)if(!button.hidden)visible[button.dataset.playerAction.replace('swap-','')]=true;
+    return visible;
+})}
+async function directionTargets(f,key){return windowCell(f,key).locator('.player-direction-button').evaluateAll(buttons=>{
+    const targets={up:[],down:[],left:[],right:[]};
+    for(const button of buttons)if(!button.hidden)targets[button.dataset.playerAction.replace('swap-','')].push(button.dataset.targetKey);
+    return targets;
+})}
+
+test('direction controls hide boundary and empty-tail sides, swap the touching cell once and retain native/iframe playback',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),keys=await f.page.evaluate(()=>fixture.keys),before=await snapshot(f);
+    await fixedDirectionGrid(f);
+    assert.deepEqual(await directionVisibility(f,keys[0]),{up:false,down:true,left:false,right:true});
+    assert.deepEqual(await directionVisibility(f,keys[2]),{up:false,down:false,left:true,right:false},'empty final slot cannot become a down or wrapped-right neighbor');
+    assert.deepEqual(await directionVisibility(f,keys[4]),{up:true,down:false,left:true,right:false},'the last filled cell cannot swap with an empty cell');
+    const expected=[...keys];
+    for(const [direction,a,b]of [['right',0,1],['down',1,4],['up',4,1],['left',1,0]]){
+        if(direction==='right'){
+            await hoverWindow(f,keys[0]);const button=directionButton(f,keys[0],direction);await button.hover();
+            const start=await button.boundingBox();await f.page.mouse.down();const held=await button.boundingBox();
+            for(const side of ['x','y','width','height'])assert.ok(Math.abs(start[side]-held[side])<.1,'the global active-button scale cannot move a tiny directional hit target');
+            await f.page.mouse.up();await waitWindowGeometry(f);
+        }else await clickDirection(f,keys[0],direction);
+        [expected[a],expected[b]]=[expected[b],expected[a]];
+        assert.deepEqual(await f.page.evaluate(()=>fixture.order()),expected);assert.equal((await geometry(f)).opened,false);
+        assert.equal(await f.page.evaluate(()=>activePlayers.size),5);assert.equal(await f.page.evaluate(()=>enlargedPlayerFocus),null);
+    }
+    assert.deepEqual(expected,keys);
+    await hoverWindow(f,keys[0]);await directionButton(f,keys[0],'right').dblclick();[expected[0],expected[1]]=[expected[1],expected[0]];
+    assert.deepEqual(await f.page.evaluate(()=>fixture.order()),expected,'the second click in a double-click cannot swap back or move an adjacent player');
+    assert.equal(await f.page.evaluate(()=>activePlayers.size),5);
+    for(const key of keys){
+        assert.equal(await f.page.evaluate(key=>{const element=getPlayerElement(activePlayers.get(key)),rect=element.getBoundingClientRect();
+            return document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2)===element},key),true);
+    }
+    await assertContinuity(f,before);
+});
+
+test('direction controls provide one accessible arrow for every touching neighbor and dispatch each chosen enlarged-edge target',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1500,height:1000,players:17}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f);
+    const focus={key:keys[4],row:1,column:1,span:3},grid={columns:5,focus,order:keys};await fixedDirectionGrid(f,grid);
+    const targets={up:[keys[1],keys[2],keys[3]],down:[keys[13],keys[14],keys[15]],left:[keys[6],keys[8],keys[10]],right:[keys[7],keys[9],keys[11]]};
+    const start=await geometry(f);assertGeometry(start);assert.deepEqual(start.layout.items.find(item=>item.key===keys[4]),focus);
+    assert.deepEqual(await directionTargets(f,keys[4]),targets,'all three small neighbors on each side get their own target arrow');
+    assert.equal(await directionButton(f,keys[4],'up').count(),3);
+    const duplicates=await f.page.locator('.player-window-cell').evaluateAll(cells=>cells.some(cell=>{
+        const ids=Array.from(cell.querySelectorAll('.player-direction-button'),button=>button.dataset.playerAction+'|'+button.dataset.targetKey);
+        return new Set(ids).size!==ids.length;
+    }));assert.equal(duplicates,false);
+    const trackGaps=await f.page.locator('#multi-stream-container').evaluate(pane=>{const style=getComputedStyle(pane);return {horizontal:parseFloat(style.columnGap)||0,vertical:parseFloat(style.rowGap)||0}});
+    const source=start.players.find(item=>item.key===keys[4]).rect;
+    for(const [direction,neighbors]of Object.entries(targets))for(const targetKey of neighbors){
+        const button=directionButton(f,keys[4],direction,targetKey),triangle=await button.boundingBox();assert.ok(triangle);
+        const target=start.players.find(item=>item.key===targetKey).rect,vertical=direction==='up'||direction==='down';
+        const actual=vertical?triangle.x+triangle.width/2:triangle.y+triangle.height/2;
+        const expected=vertical?(Math.max(source.left,target.left)+Math.min(source.right,target.right))/2:(Math.max(source.top,target.top)+Math.min(source.bottom,target.bottom))/2;
+        assert.ok(Math.abs(actual-expected)<=(vertical?trackGaps.horizontal:trackGaps.vertical)/2+1,'each arrow is placed on its own shared segment');
+        const targetName=await f.page.evaluate(key=>activePlayers.get(key).channel.name,targetKey);
+        assert.ok((await button.getAttribute('aria-label')).includes(targetName));
+        await f.page.keyboard.press('Tab');await button.focus();
+        await f.page.waitForFunction(({key,direction,targetKey})=>{
+            const cell=Array.from(document.querySelectorAll('.player-window-cell')).find(cell=>cell.dataset.playerKey===key);
+            const button=cell.querySelector(`[data-player-action="swap-${direction}"][data-target-key="${targetKey}"]`);
+            return button&&button.matches(':focus-visible')&&Number(getComputedStyle(button).opacity)>.5;
+        },{key:keys[4],direction,targetKey});
+        const access=await button.evaluate(button=>({focused:document.activeElement===button,focusVisible:button.matches(':focus-visible'),opacity:getComputedStyle(button).opacity,pointerEvents:getComputedStyle(button).pointerEvents}));
+        assert.equal(access.focused&&access.focusVisible&&Number(access.opacity)>.5&&access.pointerEvents==='auto',true,JSON.stringify({direction,targetKey,access}));
+    }
+    await f.page.evaluate(()=>{window.fixtureDirectionSwaps=[];const original=swapPlayerPositions;
+        swapPlayerPositions=function(source,target){fixtureDirectionSwaps.push({source,target});return original(source,target)}});
+    const dispatched=[];
+    for(const [direction,neighbors]of Object.entries(targets))for(const targetKey of neighbors){
+        await fixedDirectionGrid(f,grid);await clickDirection(f,keys[4],direction,targetKey);dispatched.push({source:keys[4],target:targetKey});
+        assert.deepEqual(await f.page.evaluate(()=>fixtureDirectionSwaps),dispatched,'clicking a non-central arrow must use that particular neighbor');
+        const after=await geometry(f);assertGeometry(after);assert.equal(spans(after)[keys[4]],3);
+        assert.equal(after.layout.items.filter(item=>item.span>1).length,1);assertFits(await f.page.evaluate(()=>fixture.grid()));
+    }
+    await assertContinuity(f,before);
+});
+
+test('direction controls reject a stale arrow target after the touching neighbor moves and allow the refreshed target',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1500,height:1000,players:17}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f);
+    const focus={key:keys[4],row:1,column:1,span:3};await fixedDirectionGrid(f,{columns:5,focus,order:keys});
+    const stale=await f.page.evaluate(({source,target,replacement})=>{
+        const cell=Array.from(document.querySelectorAll('.player-window-cell')).find(cell=>cell.dataset.playerKey===source);
+        const button=cell.querySelector(`[data-player-action="swap-up"][data-target-key="${target}"]`);
+        const original=swapPlayerPositions;window.fixtureStaleDirectionSwaps=[];
+        swapPlayerPositions=function(source,target){fixtureStaleDirectionSwaps.push({source,target});return original(source,target)};
+        swapPlayerPositions(target,replacement);
+        const before=getPlayerPositionKeys(),connected=button.isConnected;
+        // Intentionally stay in one browser task: the old connected button can
+        // receive input before the scheduled overlay refresh has run.
+        button.click();
+        return {connected,before,after:getPlayerPositionKeys(),calls:fixtureStaleDirectionSwaps.slice()};
+    },{source:keys[4],target:keys[1],replacement:keys[13]});
+    assert.equal(stale.connected,true,'the race checks the previous live overlay, rather than an already removed button');
+    assert.deepEqual(stale.after,stale.before);assert.deepEqual(stale.calls,[{source:keys[1],target:keys[13]}],'stale input cannot silently switch to a different adjacent player');
+    await waitWindowGeometry(f);await f.page.waitForFunction(({source,replacement})=>{
+        const cell=Array.from(document.querySelectorAll('.player-window-cell')).find(cell=>cell.dataset.playerKey===source);
+        return Boolean(cell.querySelector(`[data-player-action="swap-up"][data-target-key="${replacement}"]`));
+    },{source:keys[4],replacement:keys[13]});
+    assert.equal(await directionButton(f,keys[4],'up',keys[1]).count(),0);
+    await clickDirection(f,keys[4],'up',keys[13]);
+    assert.deepEqual(await f.page.evaluate(()=>fixtureStaleDirectionSwaps),[{source:keys[1],target:keys[13]},{source:keys[4],target:keys[13]}]);
+    assert.equal(spans(await geometry(f))[keys[4]],3);await assertContinuity(f,before);
+});
+
+test('direction controls keep compact enlarged-edge hit targets distinct and dispatch both opposite sides',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:104,height:104,players:17}),keys=await f.page.evaluate(()=>getPlayerPositionKeys()),before=await snapshot(f);
+    await f.page.evaluate(()=>{document.getElementById('multi-stream-container-wrapper').style.padding='0';document.getElementById('multi-stream-container').style.border='0'});
+    const focus={key:keys[4],row:1,column:1,span:3},grid={columns:5,focus,order:keys};await fixedDirectionGrid(f,grid);
+    const cell=windowCell(f,keys[4]),bounds=await cell.boundingBox();assert.ok(bounds.width>55&&bounds.width<65,JSON.stringify(bounds));
+    const left=directionButton(f,keys[4],'left',keys[6]);await f.page.keyboard.press('Tab');await left.focus();
+    await f.page.waitForFunction(key=>{const cell=Array.from(document.querySelectorAll('.player-window-cell')).find(cell=>cell.dataset.playerKey===key);
+        return Array.from(cell.querySelectorAll('.player-direction-button')).every(button=>Number(getComputedStyle(button).opacity)>.5)},keys[4]);
+    const hits=await cell.locator('.player-direction-button').evaluateAll(buttons=>buttons.map(button=>{
+        const rect=button.getBoundingClientRect(),hit=document.elementFromPoint(rect.left+rect.width/2,rect.top+rect.height/2);
+        return {action:button.dataset.playerAction,target:button.dataset.targetKey,x:rect.left+rect.width/2,y:rect.top+rect.height/2,
+            hit:hit?.closest('button')===button,width:rect.width,height:rect.height};
+    }));
+    assert.equal(hits.length,12);assert.equal(new Set(hits.map(hit=>hit.x.toFixed(2)+'|'+hit.y.toFixed(2))).size,12);
+    assert.ok(hits.every(hit=>hit.hit&&hit.width>0&&hit.height>0),JSON.stringify(hits));
+    const leftBounds=await left.boundingBox(),rightBounds=await directionButton(f,keys[4],'right',keys[7]).boundingBox();
+    assert.ok(leftBounds.x+leftBounds.width<=rightBounds.x,'inward arrows on opposite sides cannot overlap in a roughly 60 px enlarged tile');
+    await f.page.evaluate(()=>{window.fixtureCompactDirectionSwaps=[];const original=swapPlayerPositions;
+        swapPlayerPositions=function(source,target){fixtureCompactDirectionSwaps.push({source,target});return original(source,target)}});
+    for(const [direction,target]of [['left',keys[6]],['right',keys[7]]]){
+        await fixedDirectionGrid(f,grid);await clickDirection(f,keys[4],direction,target);
+        assert.equal(spans(await geometry(f))[keys[4]],3);
+    }
+    assert.deepEqual(await f.page.evaluate(()=>fixtureCompactDirectionSwaps),[{source:keys[4],target:keys[6]},{source:keys[4],target:keys[7]}]);
+    await assertContinuity(f,before);
+});
+
+test('direction controls on foreign-frame players preserve hover handoff, document identity and media click isolation',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),keys=await f.page.evaluate(()=>fixture.keys),before=await snapshot(f);
+    await fixedDirectionGrid(f);for(const frame of f.frames)await frame.evaluate(()=>{window.fixtureDirectionMediaClicks=0;fixtureMedia[0].video.addEventListener('click',()=>fixtureDirectionMediaClicks++)});
+    const expected=[...keys];
+    for(const [index,direction,a,b]of [[2,'left',2,1],[3,'up',3,0],[2,'down',1,4],[3,'right',0,1]]){
+        await clickDirection(f,keys[index],direction);[expected[a],expected[b]]=[expected[b],expected[a]];
+        assert.deepEqual(await f.page.evaluate(()=>fixture.order()),expected);assert.equal((await geometry(f)).opened,false);
+    }
+    assert.deepEqual(await Promise.all(f.frames.map(frame=>frame.evaluate(()=>fixtureDirectionMediaClicks))),[0,0],'parent control input cannot also click the foreign media');
+    if(engine==='chromium')t.diagnostic('Foreign-frame directional actions use keyboard activation because Chromium Playwright OOPIF input does not reliably update parent hover; Firefox exercises native hover and pointer handoff.');
+    await assertContinuity(f,before);
+});
+
+test('direction controls are keyboard accessible and the top-left move shortcut preselects its player and restores focus on completion',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),keys=await f.page.evaluate(()=>fixture.keys),before=await snapshot(f);
+    await fixedDirectionGrid(f);const direction=directionButton(f,keys[0],'right');
+    await f.page.mouse.move(1990,1290);await f.page.keyboard.press('Tab');await direction.focus();
+    await f.page.waitForFunction(key=>{const cell=Array.from(document.querySelectorAll('.player-window-cell')).find(cell=>cell.dataset.playerKey===key),button=cell.querySelector('[data-player-action="swap-right"]');
+        return button.matches(':focus-visible')&&Number(getComputedStyle(button).opacity)>.5&&getComputedStyle(button).pointerEvents==='auto'},keys[0]);
+    await direction.press('Enter');const expected=[...keys];[expected[0],expected[1]]=[expected[1],expected[0]];
+    assert.deepEqual(await f.page.evaluate(()=>fixture.order()),expected);
+    const move=windowCell(f,keys[2]).locator('[data-player-action="move"]');await move.focus();await move.press('Space');
+    await f.page.waitForFunction(()=>fixture.geometry().opened&&fixture.geometry().mode==='move');
+    assert.equal(await positionCell(f,keys[2]).getAttribute('aria-pressed'),'true');assert.equal(await positionCell(f,keys[2]).evaluate(cell=>document.activeElement===cell),true);
+    assert.equal(await f.page.locator('#player-window-controls').isVisible(),false);
+    await positionCell(f,keys[4]).click();[expected[2],expected[4]]=[expected[4],expected[2]];
+    assert.deepEqual(await f.page.evaluate(()=>fixture.order()),expected,'opening via the shortcut needs only the destination click to exchange');
+    await f.page.keyboard.press('Escape');await waitWindowGeometry(f);
+    assert.equal(await move.evaluate(button=>document.activeElement===button),true,'completion returns focus to the invoking move shortcut');
+    assert.equal((await geometry(f)).opened,false);
+    await assertContinuity(f,before);
+});
+
+test('direction controls hide through fullscreen and editor modes and disable movement for a single remaining player',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),keys=await f.page.evaluate(()=>fixture.keys);
+    await fixedDirectionGrid(f);const before=await snapshot(f);
+    for(const selector of ['#adjust-player-positions','#enlarge-player']){
+        await f.page.locator(selector).click();await f.page.waitForFunction(()=>document.getElementById('player-window-controls').hidden);
+        assert.equal(await f.page.locator('#player-window-controls').isVisible(),false);
+        await f.page.keyboard.press('Escape');await waitWindowGeometry(f);
+    }
+    await t.test('native fullscreen lifecycle',async st=>{
+        await f.page.evaluate(()=>{const button=document.createElement('button');button.id='fixture-direction-fullscreen';button.textContent='全螢幕';
+            button.onclick=()=>{window.fixtureDirectionFullscreen=document.getElementById('native-0').requestFullscreen().then(()=>null,error=>error.name+': '+error.message)};
+            document.body.prepend(button)});
+        await f.page.locator('#fixture-direction-fullscreen').click();const failure=await f.page.evaluate(()=>fixtureDirectionFullscreen);
+        if(failure){st.skip('Browser fullscreen is unavailable in this headless model: '+failure);return}
+        await f.page.waitForFunction(()=>document.fullscreenElement&&document.getElementById('player-window-controls').hidden);
+        assert.equal(await f.page.locator('#player-window-controls').isVisible(),false);
+        await f.page.evaluate(()=>document.exitFullscreen());await waitWindowGeometry(f);
+    });
+    await assertContinuity(f,before);
+    const retained=await activeMediaSnapshot(f,[keys[0]],{remember:true});
+    await f.page.evaluate(keys=>{for(const key of keys.slice(1))closePlayer(key)},keys);await waitWindowGeometry(f);
+    assert.deepEqual(await directionVisibility(f,keys[0]),{up:false,down:false,left:false,right:false});
+    assert.equal(await windowCell(f,keys[0]).locator('[data-player-action="move"]').isDisabled(),true);
+    assert.equal(await windowCell(f,keys[0]).locator('[data-player-action="enlarge"]').isDisabled(),true);
+    await f.page.mouse.move(1990,1290);await f.page.locator('#toggle-all-audio').focus();
+    await f.page.waitForFunction(()=>{const button=document.querySelector('.player-window-move');return button&&Number(getComputedStyle(button).opacity)===0});
+    await assertActiveContinuity(f,retained);
 });

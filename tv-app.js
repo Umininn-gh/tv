@@ -884,6 +884,7 @@ function swapPlayerPositions(sourceKey, targetKey) {
     try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(preferredPlayerOrder)); } catch (_) {}
     playerPositionEditor?.refresh();
     playerNameOverlay?.refresh();
+    playerWindowControls?.refresh();
     return true;
 }
 
@@ -1549,6 +1550,7 @@ function applyPlayerBookmark(value) {
     let layoutSignature = null;
     let resizeDrag = null;
     let previewFrame = null;
+    let moveReturnFocus = null;
     let completionTimer = null;
     let completionDeadline = 0;
     const buttons = new Map();
@@ -1643,7 +1645,16 @@ function applyPlayerBookmark(value) {
         layer.hidden = true;
         startButton.setAttribute('aria-expanded', 'false');
         enlargeButton?.setAttribute('aria-expanded', 'false');
-        if (restoreFocus) document.getElementById('more-channels-btn')?.focus();
+        const returnButton = moveReturnFocus;
+        moveReturnFocus = null;
+        if (restoreFocus) {
+            if (returnButton?.isConnected && !returnButton.disabled) {
+                playerWindowControls?.refresh();
+                requestAnimationFrame(() => {
+                    if (!opened && returnButton.isConnected && !returnButton.disabled) returnButton.focus({ preventScroll: true });
+                });
+            } else document.getElementById('more-channels-btn')?.focus();
+        }
     }
 
     function refresh() {
@@ -1703,6 +1714,7 @@ function applyPlayerBookmark(value) {
 
     function open(nextMode) {
         if (activePlayers.size < 2) return;
+        moveReturnFocus = null;
         setChannelSelectionVisible(false);
         mode = nextMode;
         layer.dataset.mode = mode;
@@ -1977,7 +1989,17 @@ function applyPlayerBookmark(value) {
     });
     window.addEventListener('blur', cancelPointer);
     window.addEventListener('pagehide', () => close(false));
-    playerPositionEditor = { refresh, close, layoutChanged: scheduleLayout };
+    function openMove(key, returnButton) {
+        if (activePlayers.size < 2 || !activePlayers.has(key)) return false;
+        open('move');
+        moveReturnFocus = returnButton;
+        pickedKey = key;
+        updateHighlights();
+        buttons.get(key)?.focus({ preventScroll: true });
+        announcement.textContent = `已選取 ${activePlayers.get(key).channel.name}，請拖曳或點選另一格交換位置`;
+        return true;
+    }
+    playerPositionEditor = { refresh, close, openMove, layoutChanged: scheduleLayout };
     refresh();
 })();
 
@@ -2102,13 +2124,18 @@ function applyPlayerBookmark(value) {
         close: '<path d="m2.5 2.5 7 7m0-7-7 7"/>'
     };
     const labels = { shrink: '縮小一格', enlarge: '放大一級', close: '關閉' };
+    const directions = { up: '上', down: '下', left: '左', right: '右' };
+    const triangles = {
+        up: 'M6 2 11 10H1Z', down: 'M1 2H11L6 10Z',
+        left: 'M2 6 10 1V11Z', right: 'M2 1 10 6 2 11Z'
+    };
 
     function blocked() {
         return suspended || Boolean(document.fullscreenElement || document.webkitFullscreenElement) || Boolean(editor && !editor.hidden);
     }
     function updateHover() {
         for (const cell of cells.values()) {
-            cell.node.dataset.hovered = String(!blocked() && (cell.element.matches(':hover') || cell.bar.matches(':hover')));
+            cell.node.dataset.hovered = String(!blocked() && (cell.element.matches(':hover') || cell.node.matches(':hover')));
         }
     }
     function scheduleHover() {
@@ -2140,6 +2167,9 @@ function applyPlayerBookmark(value) {
         for (const element of observed) if (!elements.has(element)) { observer?.unobserve(element); observed.delete(element); }
         for (const element of elements) if (!observed.has(element)) { observer?.observe(element); observed.add(element); }
         const bounds = wrapper.getBoundingClientRect();
+        const geometry = getCurrentPlayerGeometry();
+        const geometryItems = new Map(geometry.items.map(item => [item.key, item]));
+        const rectangles = new Map(visible.map(item => [item.key, item.element.getBoundingClientRect()]));
         for (const { key, name, element } of visible) {
             let cell = cells.get(key);
             if (!cell) {
@@ -2158,9 +2188,16 @@ function applyPlayerBookmark(value) {
                     bar.appendChild(button); buttons[action] = button;
                 }
                 node.appendChild(bar); layer.appendChild(node);
-                bar.addEventListener('pointerenter', scheduleHover);
-                bar.addEventListener('pointerleave', scheduleHover);
-                cell = { node, bar, buttons, element: null };
+                const move = document.createElement('button');
+                move.type = 'button';
+                move.className = 'player-window-move';
+                move.dataset.playerAction = 'move';
+                move.textContent = '✜';
+                node.appendChild(move);
+                buttons.move = move;
+                node.addEventListener('pointerenter', scheduleHover);
+                node.addEventListener('pointerleave', scheduleHover);
+                cell = { node, bar, buttons, directionButtons: new Map(), element: null };
                 cells.set(key, cell);
             }
             bind(cell, element);
@@ -2173,7 +2210,63 @@ function applyPlayerBookmark(value) {
                 cell.buttons[action].setAttribute('aria-label', `${labels[action]}：${name}`);
             }
             if (cell.buttons.enlarge.disabled) cell.buttons.enlarge.title = activePlayers.size < 2 ? '至少觀看兩台才可放大' : '已達最大格數';
-            const rect = element.getBoundingClientRect();
+            const rect = rectangles.get(key);
+            cell.buttons.move.disabled = activePlayers.size < 2 || !activePlayers.has(key);
+            cell.buttons.move.title = cell.buttons.move.disabled ? '至少觀看兩台才可搬位' : `進入搬位模式：${name}`;
+            cell.buttons.move.setAttribute('aria-label', `進入搬位模式：${name}`);
+            const source = geometryItems.get(key);
+            const targets = new Set();
+            for (const [direction, label] of Object.entries(directions)) {
+                for (const neighbor of source ? PlayerGeometry.neighbors(geometry, key, direction) : []) {
+                    const target = activePlayers.get(neighbor.key);
+                    const targetRect = rectangles.get(neighbor.key);
+                    if (!target || !targetRect) continue;
+                    const identity = `${direction}:${neighbor.key}`;
+                    targets.add(identity);
+                    let button = cell.directionButtons.get(identity);
+                    if (!button) {
+                        button = document.createElement('button');
+                        button.type = 'button';
+                        button.className = `player-direction-button player-direction-${direction}`;
+                        button.dataset.playerAction = `swap-${direction}`;
+                        button.dataset.targetKey = neighbor.key;
+                        button.innerHTML = `<svg viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="${triangles[direction]}"/></svg>`;
+                        cell.node.appendChild(button);
+                        cell.directionButtons.set(identity, button);
+                    }
+                    const description = `與${label}方「${target.channel.name}」交換位置：${name}`;
+                    button.title = description;
+                    button.setAttribute('aria-label', description);
+                    const vertical = direction === 'up' || direction === 'down';
+                    const start = vertical ? Math.max(rect.left, targetRect.left) : Math.max(rect.top, targetRect.top);
+                    const end = vertical ? Math.min(rect.right, targetRect.right) : Math.min(rect.bottom, targetRect.bottom);
+                    const size = Math.max(1, Math.min(14, end - start - 2, rect.width / 2 - 2, rect.height / 2 - 2));
+                    button.style.width = `${size}px`;
+                    button.style.height = `${size}px`;
+                    // Even a compact enlarged cell must keep opposite arrows
+                    // apart. Never shift an arrow beyond its half of the cell.
+                    const inset = (dimension, inward) => Math.max(0, Math.min(inward ? 23 : 3, (dimension - 2 * size - 2) / 2));
+                    if (vertical) {
+                        const center = (start + end) / 2 - rect.left;
+                        button.style.left = `${center}px`;
+                        // Keep the arrow aligned with its target, moving inward
+                        // only when its hit area would overlap a corner control.
+                        if (direction === 'up') {
+                            const overlapsCorner = center < 28 || center > rect.width - ((span > 1 ? 3 : 2) * 18 + 10);
+                            button.style.top = `${inset(rect.height, overlapsCorner)}px`;
+                        } else button.style.bottom = `${inset(rect.height, center < 28 || center > rect.width - 28)}px`;
+                    } else {
+                        const center = (start + end) / 2 - rect.top;
+                        button.style.top = `${center}px`;
+                        button.style[direction] = `${inset(rect.width, center < 28 || center > rect.height - 28)}px`;
+                    }
+                }
+            }
+            for (const [identity, button] of cell.directionButtons) if (!targets.has(identity)) {
+                const focused = document.activeElement === button;
+                button.remove(); cell.directionButtons.delete(identity);
+                if (focused) cell.buttons.move.focus({ preventScroll: true });
+            }
             cell.node.style.left = `${rect.left - bounds.left - wrapper.clientLeft + wrapper.scrollLeft}px`;
             cell.node.style.top = `${rect.top - bounds.top - wrapper.clientTop + wrapper.scrollTop}px`;
             cell.node.style.width = `${rect.width}px`;
@@ -2196,7 +2289,22 @@ function applyPlayerBookmark(value) {
             if (event.detail > 1) return;
             closePlayer(key);
         } else if (button.dataset.playerAction === 'enlarge') enlargePlayer(key);
-        else shrinkPlayer(key);
+        else if (button.dataset.playerAction === 'shrink') shrinkPlayer(key);
+        else if (button.dataset.playerAction === 'move') playerPositionEditor?.openMove(key, button);
+        else if (button.dataset.playerAction.startsWith('swap-')) {
+            if (event.detail > 1) return;
+            const direction = button.dataset.playerAction.slice(5);
+            const neighbor = PlayerGeometry.neighbors(getCurrentPlayerGeometry(), key, direction)
+                .find(item => item.key === button.dataset.targetKey);
+            if (!neighbor || !activePlayers.has(neighbor.key)) { render(); return; }
+            swapPlayerPositions(key, neighbor.key);
+            render();
+            // Follow the moved player without reparenting its media element.
+            const next = cells.get(key)?.directionButtons.get(`${direction}:${neighbor.key}`);
+            const target = next || cells.get(key)?.buttons.move;
+            if (event.detail === 0) target?.focus({ preventScroll: true });
+            return;
+        }
         render();
     });
     function observe() {

@@ -105,6 +105,47 @@
         return build({ keys, columns: layout.columns, focus: nextFocus });
     }
 
+    const neighborAxes = {
+        up: ['row', 'column', true], down: ['row', 'column', false],
+        left: ['column', 'row', true], right: ['column', 'row', false]
+    };
+    const validCell = item => item && Number.isInteger(item.row) && item.row >= 0 &&
+        Number.isInteger(item.column) && item.column >= 0 && Number.isInteger(item.span) && item.span > 0;
+    const compareCells = (a, b) => a.row - b.row || a.column - b.column ||
+        (String(a.key) < String(b.key) ? -1 : String(a.key) > String(b.key) ? 1 : 0);
+
+    function neighbors(layout, key, direction) {
+        if (!Object.hasOwn(neighborAxes, direction) || !Array.isArray(layout?.items)) return [];
+        const source = layout.items.find(item => item?.key === key && validCell(item));
+        if (!source) return [];
+        const [axis, cross, backwards] = neighborAxes[direction];
+        return layout.items.filter(target => validCell(target) && target.key !== key && (backwards ?
+            target[axis] + target.span === source[axis] : target[axis] === source[axis] + source.span) &&
+            target[cross] < source[cross] + source.span && target[cross] + target.span > source[cross])
+            // Top/bottom edges run left to right; left/right edges run top to bottom.
+            .sort((a, b) => a[cross] - b[cross] || compareCells(a, b));
+    }
+
+    function neighbor(layout, key, direction) {
+        const targets = neighbors(layout, key, direction);
+        if (!targets.length) return null;
+        const source = layout.items.find(item => item?.key === key && validCell(item));
+        const [, cross] = neighborAxes[direction];
+        let selected = null, bestDistance = Infinity;
+        for (const target of targets) {
+            const start = Math.max(source[cross], target[cross]);
+            const end = Math.min(source[cross] + source.span, target[cross] + target.span);
+            // Preserve the nearest-neighbor helper for keyboard navigation.
+            // Doubled midpoints make even-sized side ties deterministic.
+            const distance = Math.abs(start + end - (source[cross] * 2 + source.span));
+            if (!selected || distance < bestDistance || (distance === bestDistance && compareCells(target, selected) < 0)) {
+                selected = target;
+                bestDistance = distance;
+            }
+        }
+        return selected;
+    }
+
     function choose({ keys, width, height, columnGap = 0, rowGap = 0, previous,
         focus, force = false, preserveAnchor = false } = {}) {
         keys = uniqueKeys(keys);
@@ -146,7 +187,7 @@
         return { ...build({ keys, columns: best.columns, focus }), area: best.area };
     }
 
-    const api = { build, grow, shrink, resize, swap, choose };
+    const api = { build, grow, shrink, resize, swap, neighbor, neighbors, choose };
     if (typeof module === 'object' && module.exports) module.exports = api;
     else root.PlayerGeometry = api;
 })(typeof globalThis === 'object' ? globalThis : this);

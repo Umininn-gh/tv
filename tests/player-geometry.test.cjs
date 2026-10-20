@@ -1,7 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { build, grow, shrink, resize, swap, choose } = require('../player-geometry.js');
+const { build, grow, shrink, resize, swap, neighbor, neighbors, choose } = require('../player-geometry.js');
 
 const keys = count => Array.from({ length: count }, (_, index) => `player-${index}`);
 const item = (layout, key) => layout.items.find(value => value.key === key);
@@ -239,6 +239,138 @@ test('moving the enlarged player uses the destination origin and safely reflows 
         assert.equal(item(changed, list[5]).span, 2);
         assertLayout(changed, list);
     }
+});
+
+test('neighbors follow all four touching edges and never wrap an incomplete last row', () => {
+    const list = keys(8), layout = build({ keys: list, columns: 3 });
+    for (const [direction, target] of [['up', 1], ['down', 7], ['left', 3], ['right', 5]]) {
+        assert.equal(neighbor(layout, list[4], direction), item(layout, list[target]));
+        assert.deepEqual(neighbors(layout, list[4], direction), [item(layout, list[target])]);
+    }
+    assert.equal(neighbor(layout, list[0], 'up'), null);
+    assert.equal(neighbor(layout, list[0], 'left'), null);
+    assert.equal(neighbor(layout, list[2], 'right'), null);
+    assert.equal(neighbor(layout, list[7], 'right'), null, 'empty final cell is not a target');
+    assert.deepEqual(neighbors(layout, list[7], 'right'), []);
+    assert.equal(neighbor(layout, list[5], 'down'), null, 'do not choose a diagonal final-row player');
+    assert.deepEqual(neighbors(layout, list[5], 'down'), []);
+    assert.equal(neighbor(layout, list[7], 'down'), null);
+    assert.equal(neighbor(build({ keys: ['only'], columns: 1 }), 'only', 'down'), null);
+});
+
+test('a direction requires a shared edge, excluding gaps and corner-only contact', () => {
+    const source = { key: 'source', row: 2, column: 2, span: 1 };
+    const layout = { items: [source,
+        { key: 'top-corner', row: 1, column: 1, span: 1 },
+        { key: 'bottom-corner', row: 3, column: 3, span: 1 },
+        { key: 'top-gap', row: 0, column: 2, span: 1 },
+        { key: 'bottom-gap', row: 4, column: 2, span: 1 },
+        { key: 'left-gap', row: 2, column: 0, span: 1 },
+        { key: 'right-gap', row: 2, column: 4, span: 1 }
+    ] };
+    for (const direction of ['up', 'down', 'left', 'right']) {
+        assert.equal(neighbor(layout, source.key, direction), null, direction);
+        assert.deepEqual(neighbors(layout, source.key, direction), [], direction);
+    }
+});
+
+test('an enlarged player picks the neighbor nearest the middle of each shared side', () => {
+    const source = { key: 'focus', row: 1, column: 1, span: 3 };
+    const items = [source];
+    for (let offset = 1; offset <= 3; offset++) {
+        items.push({ key: `up-${offset}`, row: 0, column: offset, span: 1 },
+            { key: `down-${offset}`, row: 4, column: offset, span: 1 },
+            { key: `left-${offset}`, row: offset, column: 0, span: 1 },
+            { key: `right-${offset}`, row: offset, column: 4, span: 1 });
+    }
+    for (const direction of ['up', 'down', 'left', 'right']) {
+        assert.equal(neighbor({ items }, 'focus', direction), items.find(value => value.key === `${direction}-2`));
+        const expected = [1, 2, 3].map(offset => items.find(value => value.key === `${direction}-${offset}`));
+        assert.deepEqual(neighbors({ items }, 'focus', direction), expected, 'every touching player has its own target');
+        assert.deepEqual(neighbors({ items: [...items].reverse() }, 'focus', direction), expected);
+    }
+    assert.equal(neighbor({ items }, 'left-2', 'right'), source, 'an ordinary player also finds the large touching neighbor');
+    assert.deepEqual(neighbors({ items }, 'left-2', 'right'), [source]);
+});
+
+test('neighbor ties use row then column regardless of item insertion order', () => {
+    const source = { key: 'focus', row: 1, column: 1, span: 2 };
+    const items = [source,
+        { key: 'up-right', row: 0, column: 2, span: 1 },
+        { key: 'up-left', row: 0, column: 1, span: 1 },
+        { key: 'right-bottom', row: 2, column: 3, span: 1 },
+        { key: 'right-top', row: 1, column: 3, span: 1 }
+    ];
+    for (let offset = 0; offset < items.length; offset++) {
+        const rotated = items.slice(offset).concat(items.slice(0, offset));
+        for (const ordered of [rotated, [...rotated].reverse()]) {
+            assert.equal(neighbor({ items: ordered }, 'focus', 'up').key, 'up-left');
+            assert.equal(neighbor({ items: ordered }, 'focus', 'right').key, 'right-top');
+            assert.deepEqual(neighbors({ items: ordered }, 'focus', 'up').map(value => value.key), ['up-left', 'up-right']);
+            assert.deepEqual(neighbors({ items: ordered }, 'focus', 'right').map(value => value.key), ['right-top', 'right-bottom']);
+        }
+    }
+    const samePosition = { items: [source,
+        { key: 'z', row: 0, column: 1, span: 1 }, { key: 'a', row: 0, column: 1, span: 1 }
+    ] };
+    assert.equal(neighbor(samePosition, 'focus', 'up').key, 'a', 'key provides the final deterministic tie-break');
+    assert.equal(neighbor({ items: [...samePosition.items].reverse() }, 'focus', 'up').key, 'a');
+    assert.deepEqual(neighbors(samePosition, 'focus', 'up').map(value => value.key), ['a', 'z']);
+});
+
+test('neighbor distance uses the shared segment midpoint instead of the whole target midpoint', () => {
+    const layout = { items: [
+        { key: 'source', row: 3, column: 3, span: 4 },
+        { key: 'large-left', row: 0, column: 1, span: 3 },
+        { key: 'small-right', row: 2, column: 6, span: 1 }
+    ] };
+    // The two shared segments are equally far from the source midpoint;
+    // whole-target centers would incorrectly prefer the small right target.
+    assert.equal(neighbor(layout, 'source', 'up').key, 'large-left');
+});
+
+test('all neighbors include partial shared edges without including corner contact or nearby gaps', () => {
+    const layout = { items: [
+        { key: 'source', row: 3, column: 3, span: 2 },
+        { key: 'up-right', row: 2, column: 4, span: 1 },
+        { key: 'up-left-large', row: 0, column: 1, span: 3 },
+        { key: 'up-corner', row: 2, column: 5, span: 1 },
+        { key: 'up-gap', row: 0, column: 3, span: 1 },
+        { key: 'left-bottom', row: 4, column: 2, span: 1 },
+        { key: 'left-top-large', row: 1, column: 0, span: 3 },
+        { key: 'right-large', row: 2, column: 5, span: 3 },
+        { key: 'down-large', row: 5, column: 2, span: 3 }
+    ] };
+    assert.deepEqual(neighbors(layout, 'source', 'up').map(value => value.key), ['up-left-large', 'up-right']);
+    assert.deepEqual(neighbors(layout, 'source', 'left').map(value => value.key), ['left-top-large', 'left-bottom']);
+    assert.deepEqual(neighbors(layout, 'source', 'right').map(value => value.key), ['right-large']);
+    assert.deepEqual(neighbors(layout, 'source', 'down').map(value => value.key), ['down-large']);
+});
+
+test('neighbor rejects invalid inputs and leaves the geometry and item identities intact', () => {
+    const layout = build({ keys: keys(4), columns: 2 });
+    const before = JSON.stringify(layout);
+    layout.items.forEach(Object.freeze);
+    Object.freeze(layout.items);
+    Object.freeze(layout);
+    assert.equal(neighbor(layout, 'player-0', 'right'), layout.items[1]);
+    for (const direction of [undefined, null, '', 'diagonal', 'ArrowRight', 'constructor', '__proto__']) {
+        assert.equal(neighbor(layout, 'player-0', direction), null);
+        assert.deepEqual(neighbors(layout, 'player-0', direction), []);
+    }
+    assert.equal(neighbor(layout, 'missing', 'up'), null);
+    assert.equal(neighbor(null, 'player-0', 'up'), null);
+    assert.equal(neighbor({ items: {} }, 'player-0', 'up'), null);
+    assert.equal(neighbor({ items: [null, { key: 'bad', row: 0, column: 0, span: 0 }] }, 'bad', 'right'), null);
+    assert.deepEqual(neighbors(layout, 'missing', 'up'), []);
+    assert.deepEqual(neighbors(null, 'player-0', 'up'), []);
+    assert.deepEqual(neighbors({ items: {} }, 'player-0', 'up'), []);
+    assert.deepEqual(neighbors({ items: [null, { key: 'bad', row: 0, column: 0, span: 0 }] }, 'bad', 'right'), []);
+    const touching = neighbors(layout, 'player-0', 'right');
+    assert.equal(touching[0], layout.items[1]);
+    touching.pop();
+    assert.equal(neighbors(layout, 'player-0', 'right')[0], layout.items[1], 'results are fresh arrays, not the layout items array');
+    assert.equal(JSON.stringify(layout), before);
 });
 
 test('adaptive columns score contained base video area and preserve the focus anchor', () => {
