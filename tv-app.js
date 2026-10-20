@@ -973,6 +973,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
         }
         const visible = entry.resource ? entry.resource.element : entry.element;
         visible.dataset.channelName = channel.name || '';
+        visible.dataset.channelKey = key;
         visible.classList.toggle('full-screen-video', count === 1);
         visible.classList.toggle('video', count > 1);
         // Moving an iframe in the DOM can restart it; CSS order keeps it connected.
@@ -993,6 +994,7 @@ function pruneActivePlayers() {
         if (available.has(key)) {
             entry.channel = available.get(key);
             getPlayerElement(entry).dataset.channelName = entry.channel.name || '';
+            getPlayerElement(entry).dataset.channelKey = key;
         }
     });
     if (currentDisplayChannel) currentDisplayChannel = available.get(ChannelList.channelKey(currentDisplayChannel)) || null;
@@ -2180,6 +2182,130 @@ function applyPlayerBookmark(value) {
     visibilityObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-umininn-player-controls-open'] });
     playerNameOverlay = { setVisible, refresh: schedule };
     window.addEventListener('pagehide', () => { suspended = true; setVisible(false); });
+    window.addEventListener('pageshow', () => { suspended = false; syncVisibility(); });
+    syncVisibility();
+})();
+
+/* Match selection cards to live tile elements, independent of names or order.
+   Each menu owns its own marker so closing one cannot clear the other. */
+(function initPlayerMenuHover() {
+    const pane = document.getElementById('multi-stream-container');
+    const panel = document.getElementById('channel-selection');
+    const options = document.getElementById('channel-options');
+    if (!pane || !panel || !options) return;
+    const ownAttribute = 'data-umininn-selection-highlight';
+    const controlsAttribute = 'data-umininn-controls-highlight';
+    const bindings = new Set();
+    let items = new Map(), cards = new Map();
+    let opened = false, suspended = false, touchPointer = false, frame = null;
+    const mutations = new MutationObserver(schedule);
+    const resizes = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
+    function marked(node, active) {
+        if (active) {
+            if (node.getAttribute('data-player-highlighted') !== 'true') node.setAttribute('data-player-highlighted', 'true');
+        } else node.removeAttribute('data-player-highlighted');
+    }
+    function pointer(event) {
+        touchPointer = event.pointerType === 'touch';
+        schedule();
+    }
+    function windowPointer(event) {
+        if (event.target.closest?.('#player-window-controls .player-window-cell')) pointer(event);
+    }
+    function unbind(node) {
+        node.removeEventListener('pointerenter', pointer);
+        node.removeEventListener('pointerleave', pointer);
+        node.removeEventListener('pointermove', pointer);
+    }
+    function render() {
+        if (!opened) return;
+        const nextItems = new Map();
+        for (const [key, entry] of activePlayers) {
+            const element = getPlayerElement(entry);
+            if (element?.isConnected && element.parentElement === pane) nextItems.set(element, key);
+        }
+        const initial = !nextItems.size && pane.querySelector('#MyFrame');
+        if (initial) {
+            let key = null;
+            try {
+                const source = new URL(initial.src, location.href);
+                const channel = channels.find(channel => {
+                    if (channel.platform !== 'ok') return false;
+                    const candidate = new URL(PLATFORMS.ok.buildUrl(channel, false), location.href);
+                    return source.origin === candidate.origin && source.pathname === candidate.pathname;
+                });
+                if (channel) key = ChannelList.channelKey(channel);
+            } catch (_) {}
+            nextItems.set(initial, key);
+        }
+        const nextCards = new Map();
+        for (const [key, control] of channelOptionControls) {
+            if (control.cell.parentElement === options) nextCards.set(control.cell, key);
+        }
+        for (const element of items.keys()) if (!nextItems.has(element)) element.removeAttribute(ownAttribute);
+        for (const cell of cards.keys()) if (!nextCards.has(cell)) marked(cell, false);
+        items = nextItems; cards = nextCards;
+        const nodes = new Set([...items.keys(), ...cards.keys()]);
+        for (const node of bindings) if (!nodes.has(node)) { unbind(node); bindings.delete(node); }
+        for (const node of nodes) if (!bindings.has(node)) {
+            bindings.add(node);
+            node.addEventListener('pointerenter', pointer);
+            node.addEventListener('pointerleave', pointer);
+            node.addEventListener('pointermove', pointer);
+        }
+        // Touch browsers can retain a synthetic :hover after a tap.
+        const hover = !touchPointer && (!window.matchMedia || window.matchMedia('(any-hover: hover)').matches);
+        const hoveredKeys = new Set([...cards].filter(([cell]) => hover && cell.matches(':hover')).map(([, key]) => key));
+        const hoveredWindows = new Set(Array.from(pane.parentElement.querySelectorAll('#player-window-controls .player-window-cell'))
+            .filter(cell => hover && cell.matches(':hover')).map(cell => cell.dataset.playerKey));
+        const highlightedKeys = new Set();
+        for (const [element, key] of items) {
+            const ownHover = hover && (element.matches(':hover') || key !== null && hoveredKeys.has(key) ||
+                hoveredWindows.has(element === initial ? 'initial-player' : key));
+            element.toggleAttribute(ownAttribute, ownHover);
+            if (key !== null && (ownHover || element.hasAttribute(controlsAttribute))) highlightedKeys.add(key);
+        }
+        for (const [cell, key] of cards) marked(cell, highlightedKeys.has(key));
+    }
+    function schedule() {
+        if (!opened || frame !== null) return;
+        frame = requestAnimationFrame(() => { frame = null; render(); });
+    }
+    function clear() {
+        if (frame !== null) cancelAnimationFrame(frame);
+        frame = null;
+        mutations.disconnect(); resizes?.disconnect();
+        window.removeEventListener('resize', schedule);
+        window.removeEventListener('scroll', schedule, true);
+        document.removeEventListener('pointerover', windowPointer, true);
+        document.removeEventListener('pointerout', windowPointer, true);
+        for (const node of bindings) unbind(node);
+        bindings.clear();
+        for (const element of items.keys()) element.removeAttribute(ownAttribute);
+        for (const cell of cards.keys()) marked(cell, false);
+        items.clear(); cards.clear();
+    }
+    function syncVisibility() {
+        const visible = !suspended && !document.hidden && !panel.hidden && getComputedStyle(panel).display !== 'none';
+        if (visible === opened) { if (visible) schedule(); return; }
+        opened = visible;
+        if (!opened) { clear(); return; }
+        touchPointer = false;
+        mutations.observe(pane, { childList: true, subtree: true, attributes: true,
+            attributeFilter: ['style', 'class', 'data-channel-name', controlsAttribute] });
+        mutations.observe(options, { childList: true, subtree: true, attributes: true,
+            attributeFilter: ['style', 'class', 'value', 'data-platform'] });
+        resizes?.observe(pane);
+        window.addEventListener('resize', schedule);
+        window.addEventListener('scroll', schedule, true);
+        document.addEventListener('pointerover', windowPointer, true);
+        document.addEventListener('pointerout', windowPointer, true);
+        render();
+    }
+    const visibility = new MutationObserver(syncVisibility);
+    visibility.observe(panel, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
+    document.addEventListener('visibilitychange', syncVisibility);
+    window.addEventListener('pagehide', () => { suspended = true; opened = false; clear(); });
     window.addEventListener('pageshow', () => { suspended = false; syncVisibility(); });
     syncVisibility();
 })();

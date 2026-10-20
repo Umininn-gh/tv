@@ -633,6 +633,12 @@
             pointer-events: none;
         }
 
+        #multi-stream-container > [data-umininn-selection-highlight],
+        #multi-stream-container > [data-umininn-controls-highlight] {
+            outline: 3px solid #58c8ff;
+            outline-offset: -3px;
+        }
+
         /* 搬位操作層獨立於播放器，交換位置不會重載直播。 */
         #player-position-editor {
             position: absolute;
@@ -1118,6 +1124,11 @@
         }
         #channel-options input:checked + .channel-option-label::after { content: "✓"; color: #fff; background: var(--blue); border-color: var(--blue); }
         #channel-options input:focus-visible + .channel-option-label { outline: 2px solid var(--blue); outline-offset: 3px; }
+        #channel-options .channel-option-cell[data-player-highlighted="true"] > .channel-option-label {
+            outline: 2px solid #58c8ff;
+            outline-offset: 2px;
+            box-shadow: 0 0 8px rgba(88, 200, 255, .55);
+        }
         #channel-options .channel-option-label > span { pointer-events: none; }
         .channel-selection-help { color: var(--label-2); font-size: .72rem; line-height: 1.5; margin-bottom: 8px; }
         #channel-selection-summary { font-size: .78rem; margin-bottom: 8px; }
@@ -1459,7 +1470,7 @@
     <link rel="stylesheet" href="./login.css">
     <link rel="stylesheet" href="./layout-bookmarks.css?v=20261019-shared-bookmarks">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261020-enlarge-audio"></script>
+    <script defer src="./login.js?v=20261020-menu-hover"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">

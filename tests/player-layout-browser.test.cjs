@@ -32,13 +32,14 @@ test.before(async () => {
     const read = file => fs.readFileSync(path.join(root, file), 'utf8');
     const source=read('tv-app.js');
     const coreEnd=source.indexOf('/* =============== 頻道儲存 / 載入');
+    const statusClassStart=source.indexOf('function applyStatusClass(');
+    const statusClassEnd=source.indexOf('\nfunction updateButtonStatus(',statusClassStart);
     const summaryStart=source.indexOf('function updateChannelSelectionSummary()');
-    const summaryEnd=source.indexOf('\nfunction createChannelOptionControl()',summaryStart);
     const selectionStart=source.indexOf('function toggleChannelSelection()');
     const editorStart=source.indexOf('(function initPlayerPositionEditor()');
     const editorEnd=source.indexOf('\nfunction toggleChannelMenu()',editorStart);
-    assert.ok(coreEnd>0&&summaryStart>coreEnd&&summaryEnd>summaryStart&&selectionStart>summaryEnd&&editorStart>selectionStart&&editorEnd>editorStart,'reviewed production core/summary/selection/editor seams must exist');
-    appScript=source.slice(0,coreEnd)+'\n'+source.slice(summaryStart,summaryEnd)+'\n'+source.slice(selectionStart,editorEnd)+'\n'+fixtureApp;
+    assert.ok(coreEnd>0&&statusClassStart>coreEnd&&statusClassEnd>statusClassStart&&summaryStart>statusClassEnd&&selectionStart>summaryStart&&editorStart>selectionStart&&editorEnd>editorStart,'reviewed production core/status/selection/editor seams must exist');
+    appScript=source.slice(0,coreEnd)+'\n'+source.slice(statusClassStart,statusClassEnd)+'\n'+source.slice(summaryStart,editorEnd)+'\n'+fixtureApp;
     layoutScript=read('player-layout.js');geometryScript=read('player-geometry.js');channelScript=read('channel-list.js');performanceScript=read('stream-performance.js');bookmarkScript=read('layout-bookmarks.js');
     css=[...read('index.html').matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match=>match[1]).join('\n');
     console.log(`Player layout model: ${engine} ${browser.version()} (headless; production CSS/app sections; all network intercepted; no live platform).`);
@@ -65,14 +66,9 @@ window.readMedia=function(saved){const video=saved.video;return {same:video.isCo
  source:video.currentSrc,time:video.currentTime,actions:{...saved.actions}}};`;
 
 const fixtureApp=`
-// Keep the production selection toggle and watch command, but fill only local
-// checkboxes; status providers/metadata/network are outside this closed model.
-function generateChannelOptions(){
- const options=document.getElementById('channel-options');options.replaceChildren();
- for(const channel of channels){const input=document.createElement('input');input.type='checkbox';input.hidden=true;
- input.value=channel.id;input.dataset.platform=channel.platform;input.dataset.name=channel.name;
- input.checked=activePlayers.has(ChannelList.channelKey(channel));options.appendChild(input)}
-}
+// Keep production card creation, selection, and hover handlers. Live status
+// providers are outside this closed model, so no metadata request is needed.
+function fetchAllStatuses(){return Promise.resolve([])}
 window.fixture={elements:[],entries:[],keys:[],frames:[],removals:0,frameSources:0};
 fixture.mount=function(){
  const pane=document.getElementById('multi-stream-container');
@@ -175,7 +171,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     });
     if(audioUserscript){
         const built=fs.readFileSync(path.join(root,'userscript/umininn-tv-player.user.js'),'utf8');
-        assert.match(built,/\/\/ @version\s+1\.0\.10\b/,'audio-focus tests must use the newly built distribution');
+        assert.match(built,/\/\/ @version\s+1\.0\.11\b/,'integrated userscript tests must use the newly built distribution');
         await context.addInitScript({content:`
             window.fixtureAudioMessages=[];window.fixtureAudioGate={hold:false,targetId:'frame-2',held:[]};
             addEventListener('message',event=>{
@@ -2231,4 +2227,179 @@ test('audio focus default autoplay policy receives actual mouse enlargement with
     const label=engine==='firefox'?'firefox':/msedge/i.test(executablePath||'')?'edge':'chrome';
     fs.mkdirSync(path.join(root,'work'),{recursive:true});fs.writeFileSync(path.join(root,`work/player-audio-focus-default-policy-${label}.json`),JSON.stringify({engine,version:policyBrowser.version(),observations},null,2)+'\n');
     console.log('Default-policy audio focus: '+JSON.stringify(observations));
+});
+
+function selectionCard(f,key){
+    const separator=key.indexOf('|'),platform=key.slice(0,separator),id=key.slice(separator+1);
+    return f.page.locator('.channel-option-cell').filter({has:f.page.locator(`input[data-platform=${JSON.stringify(platform)}][value=${JSON.stringify(id)}]`)});
+}
+async function menuHoverState(f){
+    return f.page.evaluate(()=>({
+        selection:Array.from(activePlayers,([key,entry])=>getPlayerElement(entry).hasAttribute('data-umininn-selection-highlight')?key:null).filter(Boolean).sort(),
+        controls:Array.from(activePlayers,([key,entry])=>getPlayerElement(entry).hasAttribute('data-umininn-controls-highlight')?key:null).filter(Boolean).sort(),
+        cards:Array.from(channelOptionControls,([key,control])=>control.cell.dataset.playerHighlighted==='true'?key:null).filter(Boolean).sort()
+    }));
+}
+async function waitMenuHover(f,{selection=[],controls=[],cards=selection}={}){
+    const expected={selection:[...selection].sort(),controls:[...controls].sort(),cards:[...cards].sort()};
+    await f.page.waitForFunction(expected=>{
+        const actual={selection:[],controls:[],cards:[]};
+        for(const [key,entry]of activePlayers){
+            const element=getPlayerElement(entry);
+            if(element.hasAttribute('data-umininn-selection-highlight'))actual.selection.push(key);
+            if(element.hasAttribute('data-umininn-controls-highlight'))actual.controls.push(key);
+        }
+        for(const [key,control]of channelOptionControls)if(control.cell.dataset.playerHighlighted==='true')actual.cards.push(key);
+        return ['selection','controls','cards'].every(kind=>JSON.stringify(actual[kind].sort())===JSON.stringify(expected[kind]));
+    },expected);
+    assert.deepEqual(await menuHoverState(f),expected);
+}
+async function hoverSelectionTile(f,key){
+    const point=await f.page.evaluate(key=>{const element=getPlayerElement(activePlayers.get(key)),rect=element.getBoundingClientRect();return {x:rect.left+rect.width/2,y:rect.top+rect.height/2}},key);
+    await f.page.mouse.move(point.x,point.y,{steps:8});return point;
+}
+async function assertTileOutline(f,key){
+    assert.deepEqual(await f.page.evaluate(key=>{const style=getComputedStyle(getPlayerElement(activePlayers.get(key)));return {color:style.outlineColor,width:style.outlineWidth,offset:style.outlineOffset,style:style.outlineStyle}},key),
+        {color:'rgb(88, 200, 255)',width:'3px',offset:'-3px',style:'solid'});
+}
+
+test('selection hover pairs real menu cards and native or foreign players by channel key without blocking media clicks',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys),initial=await readLayout(f);
+    const inactive=await f.page.evaluate(()=>{
+        channels[0].name=channels[1].name='重複名稱';const channel={platform:'at',id:'layout-0',name:'重複名稱'};channels.push(channel);
+        window.fixtureHoverEvents=[];
+        document.addEventListener('pointerenter',event=>{
+            const card=event.target.closest?.('.channel-option-cell');
+            if(card){const input=card.querySelector('input');fixtureHoverEvents.push({kind:'card',key:ChannelList.channelKey({platform:input.dataset.platform,id:input.value,name:input.dataset.name}),trusted:event.isTrusted})}
+            for(const [key,entry]of activePlayers)if(getPlayerElement(entry)===event.target)fixtureHoverEvents.push({kind:'tile',key,trusted:event.isTrusted});
+        },true);
+        return ChannelList.channelKey(channel);
+    });
+    await f.page.locator('#more-channels-btn').click();await waitNames(f);
+    for(const key of [keys[0],keys[1],keys[2]]){
+        await selectionCard(f,key).hover();await waitMenuHover(f,{selection:[key]});await assertTileOutline(f,key);
+    }
+    await selectionCard(f,inactive).hover();await waitMenuHover(f);
+    await hoverSelectionTile(f,keys[0]);await waitMenuHover(f,{selection:[keys[0]]});
+    assert.equal(await f.page.evaluate(key=>fixtureHoverEvents.some(event=>event.kind==='tile'&&event.key===key&&event.trusted),keys[0]),true);
+    assert.equal(await f.page.evaluate(key=>fixtureHoverEvents.some(event=>event.kind==='card'&&event.key===key&&event.trusted),keys[1]),true);
+    const windowButton=windowCell(f,keys[0]).locator('[data-player-action="enlarge"]');
+    await windowButton.evaluate(button=>{window.fixtureHoverButtonTrusted=null;button.addEventListener('pointerenter',event=>{fixtureHoverButtonTrusted=event.isTrusted},{once:true})});
+    await windowButton.hover();await waitMenuHover(f,{selection:[keys[0]]});assert.equal(await f.page.evaluate(()=>fixtureHoverButtonTrusted),true,'moving onto a sibling window button retains the same match');
+    await t.test('trusted cross-origin iframe entry highlights its matching menu card',{
+        skip:engine==='chromium'?'Chromium Playwright OOPIF input does not update the parent hover chain; Firefox exercises actual trusted iframe entry':false
+    },async()=>{
+        for(const key of [keys[2],keys[3]]){
+            await hoverSelectionTile(f,key);await waitMenuHover(f,{selection:[key]});await assertTileOutline(f,key);
+            assert.equal(await f.page.evaluate(key=>fixtureHoverEvents.some(event=>event.kind==='tile'&&event.key===key&&event.trusted),key),true);
+            await windowCell(f,key).locator('[data-player-action="close"]').hover();await waitMenuHover(f,{selection:[key]});
+        }
+    });
+    await f.page.evaluate(()=>{window.fixtureHoverNativeClicks=[];document.getElementById('native-0').addEventListener('click',event=>{fixtureHoverNativeClicks.push(event.isTrusted);event.preventDefault()})});
+    await f.frames[1].evaluate(()=>{window.fixtureHoverFrameClicks=[];document.addEventListener('click',event=>{fixtureHoverFrameClicks.push(event.isTrusted);event.preventDefault()},true)});
+    for(const [key,index]of [[keys[0],0],[keys[3],1]]){
+        const point=await hoverSelectionTile(f,key);
+        assert.equal(await f.page.evaluate(({key,point})=>document.elementFromPoint(point.x,point.y)===getPlayerElement(activePlayers.get(key)),{key,point}),true,'highlighting cannot place a hit target over the media center');
+        await f.page.mouse.click(point.x,point.y);
+        assert.deepEqual(index?await f.frames[1].evaluate(()=>fixtureHoverFrameClicks):await f.page.evaluate(()=>fixtureHoverNativeClicks),[true]);
+    }
+    await f.page.mouse.move(5,5);await waitMenuHover(f);
+    await f.page.locator('#more-channels-btn').click();await waitMenuHover(f);assert.equal((await nameGeometry(f)).hidden,true);
+    assert.deepEqual((await readLayout(f)).logical,initial.logical);await assertContinuity(f,before);
+});
+
+test('selection hover coexists with the playback-controls bridge and never echoes the other menu marker',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    await f.page.evaluate(key=>{document.documentElement.setAttribute('data-umininn-player-controls-open','');getPlayerElement(activePlayers.get(key)).setAttribute('data-umininn-controls-highlight','')},keys[3]);
+    await waitMenuHover(f,{controls:[keys[3]],cards:[]});await assertTileOutline(f,keys[3]);
+    await f.page.locator('#more-channels-btn').click();await waitNames(f);await waitMenuHover(f,{controls:[keys[3]],cards:[keys[3]]});
+    await selectionCard(f,keys[0]).hover();await waitMenuHover(f,{selection:[keys[0]],controls:[keys[3]],cards:[keys[0],keys[3]]});
+    await f.page.mouse.move(5,5);await waitMenuHover(f,{controls:[keys[3]],cards:[keys[3]]});
+    await f.page.evaluate(key=>getPlayerElement(activePlayers.get(key)).removeAttribute('data-umininn-controls-highlight'),keys[3]);await waitMenuHover(f);
+    await f.page.evaluate(key=>getPlayerElement(activePlayers.get(key)).setAttribute('data-umininn-controls-highlight',''),keys[2]);
+    await selectionCard(f,keys[0]).hover();await waitMenuHover(f,{selection:[keys[0]],controls:[keys[2]],cards:[keys[0],keys[2]]});
+    await f.page.locator('#more-channels-btn').click();await waitMenuHover(f,{controls:[keys[2]],cards:[]});
+    assert.equal((await nameGeometry(f)).hidden,false,'closing the selection menu cannot hide the playback-controls name layer');
+    await f.page.locator('#more-channels-btn').click();await waitMenuHover(f,{controls:[keys[2]],cards:[keys[2]]});
+    await f.page.evaluate(key=>{document.documentElement.removeAttribute('data-umininn-player-controls-open');getPlayerElement(activePlayers.get(key)).removeAttribute('data-umininn-controls-highlight')},keys[2]);
+    await waitMenuHover(f);await waitNames(f);await f.page.locator('#more-channels-btn').click();await waitMenuHover(f);
+    assert.equal((await nameGeometry(f)).hidden,true);await assertContinuity(f,before);
+});
+
+test('selection hover follows reflow, clears removed tiles, and resumes without stale markers after pagehide',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    const extra=await f.page.evaluate(()=>{const channel={platform:'at',id:'hover-inert',name:'可移除本地格'};channels.push(channel);fixture.addPlaceholder(channel);syncActivePlayers(channels);return ChannelList.channelKey(channel)});
+    await f.page.locator('#more-channels-btn').click();await selectionCard(f,extra).hover();await waitMenuHover(f,{selection:[extra]});
+    await settlePane(f,900,800);await waitMenuHover(f,{selection:[extra]});await assertTileOutline(f,extra);assertFits(await f.page.evaluate(()=>fixture.grid()));
+    await f.page.evaluate(key=>{window.removedHoverTile=getPlayerElement(activePlayers.get(key));closePlayer(key)},extra);await waitMenuHover(f);
+    assert.equal(await f.page.evaluate(()=>removedHoverTile.hasAttribute('data-umininn-selection-highlight')),false);
+    assert.equal(await selectionCard(f,extra).locator('input').isChecked(),false);
+    await selectionCard(f,keys[0]).hover();await waitMenuHover(f,{selection:[keys[0]]});
+    await f.page.evaluate(()=>{Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'))});await waitMenuHover(f);
+    await f.page.evaluate(()=>{delete document.hidden;document.dispatchEvent(new Event('visibilitychange'))});await waitMenuHover(f,{selection:[keys[0]]});
+    await f.page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pagehide',{persisted:true})));await waitMenuHover(f);
+    await f.page.evaluate(()=>window.dispatchEvent(new PageTransitionEvent('pageshow',{persisted:true})));
+    await f.page.locator('#more-channels-btn').click();await selectionCard(f,keys[0]).hover();await waitMenuHover(f,{selection:[keys[0]]});
+    await f.page.locator('#more-channels-btn').click();await waitMenuHover(f);await assertContinuity(f,before);
+});
+
+test('selection hover transfers to an asynchronous error replacement and clears it when the player closes',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000}),keys=await f.page.evaluate(()=>fixture.keys),before=await activeMediaSnapshot(f,[keys[0],keys[2],keys[3],keys[4]],{remember:true});
+    await f.page.locator('#more-channels-btn').click();await selectionCard(f,keys[1]).hover();await waitMenuHover(f,{selection:[keys[1]]});
+    await f.page.evaluate(()=>{window.oldHoverVideo=fixture.entries[1].resource.element;setTimeout(()=>replacePlayerWithError(fixture.entries[1].resource,'本地懸停測試錯誤'),20)});
+    await f.page.waitForFunction(()=>fixture.entries[1].resource.element!==oldHoverVideo);await waitMenuHover(f,{selection:[keys[1]]});
+    assert.equal(await f.page.evaluate(()=>oldHoverVideo.hasAttribute('data-umininn-selection-highlight')),false);await assertTileOutline(f,keys[1]);
+    await f.page.evaluate(key=>{window.removedHoverError=getPlayerElement(activePlayers.get(key));closePlayer(key)},keys[1]);await waitMenuHover(f);
+    assert.equal(await f.page.evaluate(()=>removedHoverError.hasAttribute('data-umininn-selection-highlight')),false);
+    await assertActiveContinuity(f,before);
+});
+
+test('selection hover never leaves a sticky tile or menu marker after trusted touch input',{skip:!enabled||engine!=='chromium',timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:900,height:800,viewport:{width:1600,height:1000},hasTouch:true}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]);
+    await f.page.locator('#more-channels-btn').tap();await waitNames(f);
+    await selectionCard(f,key).locator('.channel-option-label').tap();await waitMenuHover(f);
+    const point=await f.page.evaluate(key=>{const rect=getPlayerElement(activePlayers.get(key)).getBoundingClientRect();return {x:rect.left+rect.width/2,y:rect.top+rect.height/2}},key);
+    await f.page.touchscreen.tap(point.x,point.y);await waitMenuHover(f);
+    assert.equal(await selectionCard(f,key).locator('input').isChecked(),false,'the touch still operates the real checkbox rather than a highlight overlay');
+    await assertContinuity(f,before);
+});
+
+test('selection hover integrates both real menus without echoing markers or clearing the other open owner',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:2200,height:1200},audioUserscript:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
+    const toggle=f.page.locator('#umininn-player-control-host #toggle'),close=f.page.locator(audioPanel).getByRole('button',{name:'關閉',exact:true}),rows=f.page.locator(audioPanel).locator('.player');
+    const titles=await rows.locator('strong').allTextContents();assert.equal(titles[0],'1. 播放器 0');assert.equal(titles[4],'5. 播放器 4');
+    async function matched(expected,rowIndices=[]){
+        await waitMenuHover(f,expected);
+        await f.page.waitForFunction(expected=>{
+            const rows=document.getElementById('umininn-player-panel-host').shadowRoot.querySelectorAll('.player');
+            const actual=Array.from(rows).filter(row=>row.dataset.playerHighlighted==='true').map(row=>row.querySelector('strong').textContent).sort();
+            return JSON.stringify(actual)===JSON.stringify([...expected].sort());
+        },rowIndices.map(index=>titles[index]));
+    }
+    await f.page.locator('#more-channels-btn').click();await toggle.click();await waitNames(f);
+    // First keep both production panel positions and exercise actual tile input.
+    // Either menu's controls must identify that same tile without intercepting it.
+    await hoverSelectionTile(f,keys[0]);await matched({selection:[keys[0]],controls:[keys[0]],cards:[keys[0]]},[0]);
+    if(engine==='firefox'){
+        await hoverSelectionTile(f,keys[2]);await matched({selection:[keys[2]],controls:[keys[2]],cards:[keys[2]]},[2]);
+    }
+    await f.page.mouse.move(5,5);await matched({});
+    // The two existing fixed panels overlap on the real page. Separate only
+    // their fixture positions so real pointer input can reach both menus while
+    // testing their protocol; no synthetic hover or marker writes are used.
+    await f.page.evaluate(()=>{const panel=document.getElementById('channel-selection');panel.style.left='1300px';panel.style.right='auto'});
+    await selectionCard(f,keys[0]).hover();await matched({selection:[keys[0]],cards:[keys[0]]},[0]);
+    await rows.nth(4).evaluate(row=>{window.fixtureIntegratedRowTrusted=null;row.addEventListener('pointerenter',event=>{fixtureIntegratedRowTrusted=event.isTrusted},{once:true})});
+    await rows.nth(4).locator('strong').hover();await matched({controls:[keys[4]],cards:[keys[4]]},[4]);
+    assert.equal(await f.page.evaluate(()=>fixtureIntegratedRowTrusted),true);
+    // Keyboard activation leaves the mouse on the still-open owner's row.
+    await f.page.locator('#more-channels-btn').focus();await f.page.keyboard.press('Enter');await matched({controls:[keys[4]],cards:[]},[4]);
+    assert.equal((await nameGeometry(f)).hidden,false);
+    await f.page.keyboard.press('Enter');await matched({controls:[keys[4]],cards:[keys[4]]},[4]);
+    await close.focus();await f.page.keyboard.press('Enter');await matched({});await waitNames(f);
+    await selectionCard(f,keys[0]).hover();await matched({selection:[keys[0]],cards:[keys[0]]});
+    await toggle.focus();await f.page.keyboard.press('Enter');await matched({selection:[keys[0]],cards:[keys[0]]},[0]);
+    await close.focus();await f.page.keyboard.press('Enter');await matched({selection:[keys[0]],cards:[keys[0]]});
+    await f.page.locator('#more-channels-btn').focus();await f.page.keyboard.press('Enter');await matched({});
+    assert.equal((await nameGeometry(f)).hidden,true);await assertContinuity(f,before);
 });
