@@ -245,6 +245,7 @@
         let host, shadow, panelHost, panelShadow, toggle, quickDetect, panel, list, summary, observer, lateObserver, masterVolume, masterReadout, detectButton, recoveryStatus, recoveryFlow, audioFocusStatus, audioFocusFlow;
         let sequence = 0, scanTimer = null, disposed = false, globalMuted = null;
         let preparation = null, preparedCohort = new Set(), watchStartTimer = null, unreadyWrappers = 0;
+        let recoveryStartGeneration = 0;
         let preparationWaiting = '', lastRecoveryStatus = null;
         let panelIdleCleanup = null, highlightObserver = null, highlightStyle = null, highlightFrame = null, touchPointer = false, revealedEntry = null;
         let revealOrder = '', revealViewport = '';
@@ -602,23 +603,40 @@
             toggle.title = text;
             quickDetect.title = text;
         }
-        function runRecovery(reason) {
-            if (disposed || !recoveryFlow) return Promise.resolve();
-            return afterAudioFocus(() => recoveryFlow.run({ reason }));
+        function runRecovery(reason, generation = ++recoveryStartGeneration) {
+            if (disposed || !recoveryFlow || generation !== recoveryStartGeneration) return Promise.resolve();
+            return afterAudioFocus(() => {
+                if (disposed || generation !== recoveryStartGeneration) return;
+                return recoveryFlow.run({ reason });
+            });
         }
-        function onWatchStart(event) {
-            if (disposed || !isWatchStartTarget(event.target)) return;
+        function cancelPendingRecovery() {
+            recoveryStartGeneration++;
+            if (watchStartTimer !== null) win.clearTimeout(watchStartTimer);
+            watchStartTimer = null;
+        }
+        function scheduleRecoveryAfterLayout(reason) {
+            if (disposed) return;
+            cancelPendingRecovery();
+            const generation = recoveryStartGeneration;
             showAudioFocusStatus({ phase: 'cancelled' });
             void audioFocusFlow?.cancel();
             recoveryFlow?.cancel();
             clearPreparation();
-            if (watchStartTimer !== null) win.clearTimeout(watchStartTimer);
-            // The page's inline handler runs after this capture listener. A new task
-            // sees its complete selection, including retained players and empty SDK wrappers.
+            // A new task observes the completed selection/layout, including
+            // retained players and SDK wrappers whose media is still loading.
             watchStartTimer = win.setTimeout(() => {
                 watchStartTimer = null;
-                void runRecovery('start');
+                void runRecovery(reason, generation);
             }, 0);
+        }
+        function onWatchStart(event) {
+            if (disposed || !isWatchStartTarget(event.target)) return;
+            scheduleRecoveryAfterLayout('start');
+        }
+        function onBookmarkRestored(event) {
+            if (disposed || event.target !== doc.getElementById('multi-stream-container')) return;
+            scheduleRecoveryAfterLayout('bookmark');
         }
         function addRow(entry) {
             const row = node('section', null, { class: 'player', 'data-player-id': String(entry.id) });
@@ -775,6 +793,7 @@
             // A plain bubbling event works across Firefox userscript sandboxes;
             // only a current pane itself may request focus, never its inner DOM.
             if (disposed || !audioFocusFlow || !container || event.target?.parentElement !== container) return;
+            cancelPendingRecovery();
             recoveryFlow?.cancel();
             clearPreparation();
             if (watchStartTimer !== null) { win.clearTimeout(watchStartTimer); watchStartTimer = null; }
@@ -870,7 +889,12 @@
                 // are not user activity. Wheel/keys/pointer movement cover scrolling.
                 if (event.isTrusted && !disposed && !panel.hidden) armIdleTimer();
             }
-            function onPanelPageHide() { setOpen(false); }
+            function onPanelPageHide() {
+                setOpen(false);
+                cancelPendingRecovery();
+                recoveryFlow?.cancel();
+                clearPreparation();
+            }
             for (const type of activityEvents) panel.addEventListener(type, onPanelActivity, { capture: true, passive: true });
             win.addEventListener('pagehide', onPanelPageHide);
             panelIdleCleanup = () => {
@@ -957,6 +981,7 @@
             highlightObserver.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: [selectionHighlight] });
             doc.addEventListener('click', originalMuteClick, true);
             doc.addEventListener('click', onWatchStart, true);
+            doc.addEventListener('umininn-player-bookmark-restored', onBookmarkRestored, true);
             doc.addEventListener('umininn-player-audio-focus', onAudioFocus, true);
             doc.addEventListener('pointerover', windowControlsPointer, true);
             doc.addEventListener('pointerout', windowControlsPointer, true);
@@ -977,6 +1002,7 @@
         function dispose() {
             if (disposed) return;
             disposed = true;
+            cancelPendingRecovery();
             revealedEntry = null;
             doc.documentElement.removeAttribute('data-umininn-player-controls-open');
             panelIdleCleanup?.();
@@ -992,6 +1018,7 @@
             for (const entry of [...entries.values()]) removeEntry(entry);
             doc.removeEventListener('click', originalMuteClick, true);
             doc.removeEventListener('click', onWatchStart, true);
+            doc.removeEventListener('umininn-player-bookmark-restored', onBookmarkRestored, true);
             doc.removeEventListener('umininn-player-audio-focus', onAudioFocus, true);
             doc.removeEventListener('pointerover', windowControlsPointer, true);
             doc.removeEventListener('pointerout', windowControlsPointer, true);

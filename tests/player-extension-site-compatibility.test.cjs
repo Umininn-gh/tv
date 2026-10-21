@@ -14,17 +14,36 @@ if (browserTests) {
 }
 
 const root = path.join(__dirname, '..');
-const read = name => fs.readFileSync(path.join(root, name), 'utf8');
+const migratedPlayerPage = fs.existsSync(path.join(root, 'site/player/index.html'));
+const adminPage = migratedPlayerPage ? 'player/index.html' : 'admin.html';
+function read(name) {
+    // The release checkout keeps the current public root paths while the
+    // workspace's separate directory migration lives under site/.
+    const legacy = name.startsWith('site/assets/js/') ? name.slice('site/assets/js/'.length)
+        : name === 'site/player/index.html' ? 'admin.html'
+        : name === 'site/manage/index.html' ? 'channel-manager.html'
+        : name.startsWith('site/') ? name.slice('site/'.length) : name;
+    const filename = [name, legacy].map(candidate => path.join(root, candidate)).find(candidate => fs.existsSync(candidate));
+    assert.ok(filename, 'production source exists: ' + name);
+    return fs.readFileSync(filename, 'utf8');
+}
 const config = require('../browser-extension/shared/config.js');
+const engine = process.env.UMININN_BROWSER_ENGINE || 'chromium';
 let browser;
-test.before(async () => { if (browserTests) browser = await playwright.chromium.launch({ channel: 'msedge', headless: true }); });
+test.before(async () => {
+    if (!browserTests) return;
+    assert.ok(['chromium', 'firefox'].includes(engine));
+    const executablePath = process.env.UMININN_BROWSER_EXECUTABLE;
+    const launch = executablePath ? { executablePath } : engine === 'chromium' ? { channel: 'msedge' } : {};
+    browser = await playwright[engine].launch({ headless: true, ...launch });
+});
 test.after(async () => { await browser?.close(); });
 
 async function productionPage(name) {
     const page = await browser.newPage();
     // Use production HTML without starting login, remote media, chat or network work.
     const url = 'https://umininn-gh.github.io/tv/' + name;
-    const html = read(name).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+    const html = read('site/' + name).replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
     await page.route('**/*', route => route.request().url() === url
         ? route.fulfill({ contentType: 'text/html', body: html }) : route.abort());
     await page.goto(url, { waitUntil: 'domcontentloaded' });
@@ -32,6 +51,8 @@ async function productionPage(name) {
     await page.addScriptTag({ content: 'globalThis.module = { exports: {} };\n' + read('browser-extension/site-ui.js') + '\nglobalThis.siteApi = module.exports; delete globalThis.module;' });
     await page.evaluate(() => {
         window.compatibilityEvents = [];
+        window.compatibilityCommands = [];
+        window.compatibilityCancellations = 0;
         const factory = {
             createMediaController({ scope }) {
                 const media = scope.matches('video,audio') ? scope : scope.querySelector('video,audio');
@@ -39,6 +60,12 @@ async function productionPage(name) {
                     paused: true, readyState: 4, playbackStatus: 'paused', volumeSupported: true, muteSupported: true, recoverSupported: true } });
                 return { getState: state, subscribe: () => () => {}, dispose() {},
                     async execute(command) {
+                        compatibilityCommands.push({ action: command.action, value: command.value });
+                        if (command.action === 'setMuted' && window.compatibilityAudioGate) {
+                            const gate = window.compatibilityAudioGate;
+                            gate.started++;
+                            await gate.promise;
+                        }
                         if (command.action === 'setMuted') media.muted = command.value;
                         if (command.action === 'setVolume') media.volume = command.value;
                         return state();
@@ -49,7 +76,7 @@ async function productionPage(name) {
             run({ reason }) {
                 compatibilityEvents.push({ type: 'recovery', reason, children: document.getElementById('multi-stream-container').children.length });
                 return Promise.resolve();
-            }, cancel() {}, dispose() {}
+            }, cancel() { compatibilityCancellations++; }, dispose() {}
         }; } };
         window.siteController = siteApi.createSiteController({ window, document, config: UmininnConfig,
             runtime: { sendMessage: () => Promise.resolve({ ok: false, code: 'NO_MEDIA' }) }, media: factory, recovery });
@@ -68,7 +95,7 @@ async function mountLogin(page) {
     await page.waitForSelector('#umininn-player-control-host', { state: 'attached' });
 }
 
-for (const name of ['index.html', 'admin.html']) {
+for (const name of ['index.html', adminPage]) {
     test(`${name}: login/template mounting and the actual Start Watching control stay compatible`, { skip: !browserTests }, async () => {
         const page = await productionPage(name);
         try {
@@ -114,20 +141,158 @@ for (const name of ['index.html', 'admin.html']) {
     });
 }
 
+async function mountedMainPage() {
+    const page = await productionPage('index.html');
+    await mountLogin(page);
+    return page;
+}
+
+async function assertNoScheduledRecovery(page) {
+    // Cross a new task boundary: the production layout hook schedules at 0 ms.
+    await page.waitForTimeout(40);
+    assert.equal(await page.evaluate(() => compatibilityEvents.filter(event => event.type === 'recovery').length), 0);
+}
+
+test('bookmark restoration schedules one recovery after the completed layout, with rapid restores using only the latest panes', { skip: !browserTests }, async () => {
+    const page = await mountedMainPage();
+    try {
+        const immediate = await page.evaluate(() => {
+            const pane = document.getElementById('multi-stream-container');
+            for (const count of [1, 2, 3]) {
+                pane.replaceChildren(...Array.from({ length: count }, () => document.createElement('video')));
+                pane.dispatchEvent(new Event('umininn-player-bookmark-restored', { bubbles: true }));
+            }
+            const beforeReturn = compatibilityEvents.length;
+            compatibilityEvents.push({ type: 'layout-complete', children: pane.children.length });
+            return beforeReturn;
+        });
+        assert.equal(immediate, 0, 'the restore call finishes before recovery starts');
+        await page.waitForFunction(() => compatibilityEvents.some(event => event.type === 'recovery'));
+        await page.waitForTimeout(40);
+        assert.deepEqual(await page.evaluate(() => compatibilityEvents), [
+            { type: 'layout-complete', children: 3 },
+            { type: 'recovery', reason: 'bookmark', children: 3 }
+        ]);
+    } finally {
+        await page.evaluate(() => siteController.dispose());
+        await page.close();
+    }
+});
+
+test('bookmark recovery rejects descendant, unrelated and obsolete pane event targets', { skip: !browserTests }, async () => {
+    const page = await mountedMainPage();
+    try {
+        await page.evaluate(() => {
+            const pane = document.getElementById('multi-stream-container');
+            const child = document.createElement('video');
+            pane.replaceChildren(child);
+            child.dispatchEvent(new Event('umininn-player-bookmark-restored', { bubbles: true }));
+            document.body.dispatchEvent(new Event('umininn-player-bookmark-restored', { bubbles: true }));
+            document.dispatchEvent(new Event('umininn-player-bookmark-restored', { bubbles: true }));
+            pane.id = 'obsolete-player-pane';
+            const current = document.createElement('div');
+            current.id = 'multi-stream-container';
+            pane.after(current);
+            pane.dispatchEvent(new Event('umininn-player-bookmark-restored', { bubbles: true }));
+        });
+        await assertNoScheduledRecovery(page);
+        await page.evaluate(() => document.getElementById('multi-stream-container')
+            .dispatchEvent(new Event('umininn-player-bookmark-restored', { bubbles: true })));
+        await page.waitForFunction(() => compatibilityEvents.some(event => event.type === 'recovery'));
+        assert.deepEqual(await page.evaluate(() => compatibilityEvents), [{ type: 'recovery', reason: 'bookmark', children: 0 }]);
+    } finally {
+        await page.evaluate(() => siteController.dispose());
+        await page.close();
+    }
+});
+
+test('a manual detection supersedes a scheduled bookmark recovery without running both', { skip: !browserTests }, async () => {
+    const page = await mountedMainPage();
+    try {
+        await page.evaluate(() => {
+            const pane = document.getElementById('multi-stream-container');
+            pane.replaceChildren();
+            pane.dispatchEvent(new Event('umininn-player-bookmark-restored', { bubbles: true }));
+            document.getElementById('umininn-player-control-host').shadowRoot.getElementById('quick-recover').click();
+        });
+        await page.waitForFunction(() => compatibilityEvents.some(event => event.type === 'recovery'));
+        await page.waitForTimeout(40);
+        assert.deepEqual(await page.evaluate(() => compatibilityEvents), [{ type: 'recovery', reason: 'manual', children: 0 }]);
+    } finally {
+        await page.evaluate(() => siteController.dispose());
+        await page.close();
+    }
+});
+
+test('a newer audio focus cancels bookmark recovery even after its task is waiting for an earlier audio command', { skip: !browserTests, timeout: 30000 }, async () => {
+    const page = await mountedMainPage();
+    try {
+        await page.evaluate(() => {
+            const pane = document.getElementById('multi-stream-container');
+            const video = document.createElement('video');
+            pane.replaceChildren(video);
+            siteController.scan();
+            const gate = { started: 0 };
+            gate.promise = new Promise(resolve => {
+                window.releaseCompatibilityAudio = () => { window.compatibilityAudioGate = null; resolve(); };
+            });
+            window.compatibilityAudioGate = gate;
+            video.dispatchEvent(new Event('umininn-player-audio-focus', { bubbles: true }));
+        });
+        await page.waitForFunction(() => compatibilityAudioGate.started > 0);
+        await page.evaluate(() => document.getElementById('multi-stream-container')
+            .dispatchEvent(new Event('umininn-player-bookmark-restored', { bubbles: true })));
+        await assertNoScheduledRecovery(page);
+        await page.evaluate(() => {
+            document.querySelector('#multi-stream-container video')
+                .dispatchEvent(new Event('umininn-player-audio-focus', { bubbles: true }));
+            releaseCompatibilityAudio();
+        });
+        await page.waitForFunction(() => compatibilityCommands.filter(command => command.action === 'setMuted').length >= 2);
+        await assertNoScheduledRecovery(page);
+    } finally {
+        await page.evaluate(() => { window.releaseCompatibilityAudio?.(); siteController.dispose(); });
+        await page.close();
+    }
+});
+
+for (const lifecycle of ['pagehide', 'dispose']) {
+    test(`${lifecycle} cancels pending bookmark recovery and leaves no stale scheduled work`, { skip: !browserTests }, async () => {
+        const page = await mountedMainPage();
+        try {
+            await page.evaluate(lifecycle => {
+                const pane = document.getElementById('multi-stream-container');
+                pane.dispatchEvent(new Event('umininn-player-bookmark-restored', { bubbles: true }));
+                if (lifecycle === 'pagehide') window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+                else siteController.dispose();
+            }, lifecycle);
+            await assertNoScheduledRecovery(page);
+            if (lifecycle === 'dispose') {
+                await page.evaluate(() => document.getElementById('multi-stream-container')
+                    .dispatchEvent(new Event('umininn-player-bookmark-restored', { bubbles: true })));
+                await assertNoScheduledRecovery(page);
+            }
+        } finally {
+            await page.evaluate(() => siteController.dispose());
+            await page.close();
+        }
+    });
+}
+
 for (const admin of [false, true]) {
     test(`${admin ? 'admin' : 'main'}: actual postMessage preference reaches the page from both global audio controls`, { skip: !browserTests }, async () => {
-        const page = await productionPage(admin ? 'admin.html' : 'index.html');
+        const page = await productionPage(admin ? adminPage : 'index.html');
         try {
             await mountLogin(page);
-            await page.addScriptTag({ content: read('channel-list.js') });
-            await page.addScriptTag({ content: read('stream-performance.js') });
-            await page.addScriptTag({ content: read('player-layout.js') });
+            await page.addScriptTag({ content: read('site/assets/js/channel-list.js') });
+            await page.addScriptTag({ content: read('site/assets/js/stream-performance.js') });
+            await page.addScriptTag({ content: read('site/assets/js/player-layout.js') });
             await page.addScriptTag({ content: `window.Hls = class {
                 static Events = {MANIFEST_PARSED: 'manifest', ERROR: 'error'};
                 static isSupported() { return true; }
                 on() {} loadSource() {} attachMedia() {} destroy() {}
             };` });
-            let source = read(admin ? 'admin.html' : 'tv-app.js');
+            let source = read(admin ? 'site/player/index.html' : 'site/assets/js/tv-app.js');
             source = admin
                 ? source.slice(source.indexOf('        // ======================== 全域變數'), source.indexOf('        // ======================== 載入 Twitch 憑證'))
                 : source.slice(0, source.indexOf('/* =============== 頻道儲存 / 載入'));
@@ -165,6 +330,12 @@ test('only current player pages are authorized; the channel manager needs no pla
         assert.equal(config.isSiteUrl('https://umininn-gh.github.io' + path), true);
         assert.equal(config.isSiteUrl('https://umininn-gh.github.io' + path + '?test=1#view'), true);
     }
+    for (const playerPath of ['/tv/player/', '/tv/player/index.html']) {
+        assert.equal(config.isSiteUrl('https://umininn-gh.github.io' + playerPath), migratedPlayerPage);
+        assert.equal(config.isSiteUrl('https://umininn-gh.github.io' + playerPath + '?test=1#view'), migratedPlayerPage);
+    }
     assert.equal(config.isSiteUrl('https://umininn-gh.github.io/tv/channel-manager.html'), false);
-    assert.doesNotMatch(read('channel-manager.html'), /<(?:iframe|video|audio)\b/i);
+    assert.equal(config.isSiteUrl('https://umininn-gh.github.io/tv/manage/'), false);
+    assert.equal(config.isSiteUrl('https://umininn-gh.github.io/tv/chat/'), false);
+    assert.doesNotMatch(read('site/manage/index.html'), /<(?:iframe|video|audio)\b/i);
 });

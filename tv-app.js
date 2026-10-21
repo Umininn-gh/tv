@@ -1543,6 +1543,7 @@ function applyPlayerBookmark(value) {
     updateChannelSelectionSummary();
     const missing = snapshot.channels.length - selected.length;
     showLayoutBookmarkFeedback(`已套用佈局：${selected.length} 台${missing ? `；已略過 ${missing} 個已移除的台` : ''}。`);
+    document.getElementById('multi-stream-container')?.dispatchEvent(new Event('umininn-player-bookmark-restored', { bubbles: true }));
     return { applied: selected.length, missing };
 }
 
