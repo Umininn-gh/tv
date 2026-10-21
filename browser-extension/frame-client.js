@@ -32,6 +32,7 @@
     function envelope(type, extra) { return { channel: config.CHANNEL, version: config.VERSION, type, ...extra }; }
     function announce() {
         if (disposed || !identity || root.parent === root) return;
+        try { lastResult = controller.getState(); } catch (_) { return; }
         const message = envelope('frame:ready', { token, frameId: identity.frameId, documentId: identity.documentId, result: lastResult });
         // No channel/source URL is disclosed. A strict parent source/origin check is
         // required before it can use this per-document capability token.

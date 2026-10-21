@@ -102,6 +102,26 @@ test('site transport routes all four controls through the configured channel and
     assert.equal(f.win.timers.size, 0); f.transport.dispose();
 });
 
+test('focus mute guard is narrowly typed and reaches the approved frame unchanged', async () => {
+    const f = siteFixture(); f.ready();
+    const guarded = { action: 'setMuted', value: true, guard: true };
+    const message = command => envelope('site:command', { target: { frameId: 7, token: TOKEN, documentId: DOCUMENT }, command });
+    const response = f.transport.sendMessage(message(guarded));
+    assert.deepEqual(f.frameWindow.sent.at(-1).message.command, guarded);
+    f.result(undefined, { result: { ...snapshot(), state: { ...snapshot().state, muteGuardActive: true } } });
+    assert.equal((await response).state.muteGuardActive, true);
+    for (const command of [
+        { action: 'setMuted', value: false, guard: true }, { action: 'setMuted', value: true, guard: false },
+        { action: 'setMuted', value: true, guard: 'true' }, { action: 'setVolume', value: 1, guard: true },
+        { action: 'recover', guard: true }, { action: 'getState', guard: true }
+    ]) assert.equal((await f.transport.sendMessage(message(command))).code, 'INVALID_COMMAND');
+    f.transport.dispose();
+    const frame = frameFixture(); frame.probe();
+    frame.command(1, guarded); await flush();
+    assert.deepEqual(frame.calls, [guarded]);
+    frame.client.dispose();
+});
+
 test('site accepts only an approved connected iframe in the UI player cohort', async () => {
     const f = siteFixture();
     for (const ready of [() => f.ready({}, 'https://evil.example'), () => f.ready({}, PLAYER_ORIGIN, {}), () => f.ready({ token: 'short' }), () => f.ready({ documentId: null }), () => f.ready({ frameId: 0 }), () => f.ready({ frameId: 1.1 }), () => f.ready({ channel: originalConfig.CHANNEL })]) {
@@ -234,6 +254,19 @@ test('request replay, reordered sequences and a changed session never execute ag
     f.command(3, { action: 'getState' }, { sessionId: 'e'.repeat(48) });
     await flush(); assert.equal(f.calls.length, 1);
     f.command(5); f.command(4); await flush(); assert.equal(f.calls.length, 2); f.client.dispose();
+});
+
+test('a late command reply cannot announce an obsolete mute guard setting', async () => {
+    const f = frameFixture(), delayed = deferred(); f.probe();
+    f.behavior.execute = () => delayed.promise;
+    f.command(1, { action: 'setMuted', value: false }); await flush();
+    const guarded = { ...snapshot(), state: { ...snapshot().state, muted: true, muteGuardActive: true } };
+    f.report(guarded); f.win.advance(100);
+    delayed.resolve(snapshot()); await flush(); f.win.advance(100);
+    const latest = f.parent.sent.findLast(item => item.message.type === 'frame:ready').message.result;
+    assert.equal(latest.state.muted, true);
+    assert.equal(latest.state.muteGuardActive, true);
+    f.client.dispose();
 });
 
 test('frame permits at most four pending operations and does not retry completed or rejected requests', async () => {

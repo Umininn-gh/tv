@@ -137,42 +137,93 @@
             });
         }
         function current(item) { return options.isCurrent(item); }
-        async function run(request) {
-            report(request, { phase: 'preparing', target: request.target });
-            const started = now();
-            let items;
+        const same = (left, right) => left && right && left.key === right.key && left.identity === right.identity && left.generation === right.generation;
+        const concurrency = Math.max(1, Math.min(4, options.concurrency || 4));
+        async function muteCohort(request, confirmed, excludeTarget = false) {
+            const started = now(), attempts = new Map(), rejected = new Map();
+            let rounds = 0;
             for (;;) {
-                if (request.cancelled || disposed) return cancelled();
+                if (request.cancelled || disposed) return { cancelled: true };
                 options.refresh?.();
-                items = options.snapshot();
-                if (!items.some(item => item.key === request.target)) return report(request, { phase: 'removed', target: request.target });
-                if (!items.some(item => options.readiness(item) === 'pending') || now() - started >= waitMs) break;
+                const items = options.snapshot();
+                const target = items.find(item => item.key === request.target);
+                if (!target || request.targetIdentity && !same(request.targetIdentity, target)) return { removed: true };
+                const relevant = items.filter(item => !excludeTarget || item.key !== request.target);
+                const work = [], waiting = [], failures = [];
+                for (const item of relevant) {
+                    const previous = confirmed.get(item.key);
+                    if (same(previous, item) && current(item) && item.state?.muted === true) continue;
+                    const failed = rejected.get(item.key);
+                    if (failed && same(failed.item, item)) { failures.push(failed); continue; }
+                    const readiness = options.readiness(item);
+                    if (!current(item) || readiness === 'pending') { waiting.push(item); continue; }
+                    if (readiness !== 'ready') { failures.push({ item, code: readiness }); continue; }
+                    if ((attempts.get(item.key)?.count || 0) >= 3 && same(attempts.get(item.key)?.item, item) || rounds >= 64 || now() - started >= waitMs) {
+                        failures.push({ item, code: 'unconfirmed' }); continue;
+                    }
+                    if (item.key === request.target && !request.targetIdentity) request.targetIdentity = item;
+                    work.push(item);
+                }
+                if (work.length) {
+                    let cursor = 0, retryDelay = false;
+                    rounds++;
+                    await Promise.all(Array.from({ length: Math.min(concurrency, work.length) }, async () => {
+                        while (cursor < work.length && !request.cancelled && !disposed) {
+                            const item = work[cursor++];
+                            if (!current(item)) continue;
+                            const previousAttempt = attempts.get(item.key);
+                            const count = same(previousAttempt?.item, item) ? previousAttempt.count + 1 : 1;
+                            attempts.set(item.key, { item, count });
+                            let result;
+                            try { result = await options.execute(item, { action: 'setMuted', value: true, guard: true }); }
+                            catch (_) { result = { ok: false, code: 'error' }; }
+                            if (result?.ok && result.state?.muted === true && current(item)) confirmed.set(item.key, item);
+                            else {
+                                const code = result?.code || 'unconfirmed';
+                                if (!['BUSY', 'busy', 'unavailable', 'FRAME_UNAVAILABLE', 'STALE_FRAME', 'stale', 'TIMEOUT', 'timeout'].includes(code) || count >= 3) rejected.set(item.key, { item, code });
+                                else retryDelay = true;
+                            }
+                        }
+                    }));
+                    // Re-read the complete cohort after every bounded batch.
+                    // New frames and a platform changing sound during a reply
+                    // must join the same mute barrier.
+                    if (request.cancelled || disposed) return { cancelled: true };
+                    if (retryDelay) await wait(request);
+                    continue;
+                }
+                if (!waiting.length || now() - started >= waitMs) {
+                    failures.push(...waiting.map(item => ({ item, code: 'pending' })));
+                    return { items, target, failures: failures.map(({ item, code }) => ({ key: item.key, name: item.name, code })) };
+                }
                 await wait(request);
             }
-            if (request.cancelled || disposed) return cancelled();
-            const results = await Promise.all(items.map(async item => {
-                const readiness = options.readiness(item);
-                if (!current(item)) return { item, code: 'stale' };
-                if (readiness !== 'ready') return { item, code: readiness };
-                try {
-                    const result = await options.execute(item, { action: 'setMuted', value: true });
-                    return { item, code: result?.ok && result.state?.muted === true ? null : result?.code || 'unconfirmed' };
-                } catch (_) { return { item, code: 'error' }; }
-            }));
-            if (request.cancelled || disposed) return cancelled();
-            const failures = results.filter(result => result.code).map(result => ({ key: result.item.key, name: result.item.name, code: result.code }));
-            const fresh = options.snapshot();
-            for (const item of fresh) {
-                if (!items.some(previous => previous.key === item.key && previous.identity === item.identity && previous.generation === item.generation) ||
-                    !current(item) || item.state?.muted !== true) {
-                    if (!failures.some(failure => failure.key === item.key)) failures.push({ key: item.key, name: item.name, code: 'changed' });
+        }
+        async function run(request) {
+            report(request, { phase: 'preparing', target: request.target });
+            if (request.repair) request.targetIdentity = options.snapshot().find(item => item.key === request.target);
+            const confirmed = new Map();
+            const first = await muteCohort(request, confirmed, request.repair);
+            if (first.cancelled) return cancelled();
+            if (first.removed) return report(request, { phase: 'removed', target: request.target });
+            let target = first.target;
+            async function fail(failures) {
+                if (current(target)) {
+                    try { await options.execute(target, { action: 'setMuted', value: true, guard: true }); } catch (_) {}
                 }
+                return request.cancelled || disposed ? cancelled() : report(request, { phase: 'partial', target: request.target, failures });
             }
-            const target = fresh.find(item => item.key === request.target);
-            if (!target || !items.some(item => item.key === request.target && item.identity === target.identity && item.generation === target.generation)) {
-                return report(request, { phase: 'removed', target: request.target });
-            }
-            if (failures.length) return report(request, { phase: 'partial', target: request.target, failures });
+            if (first.failures.length) return fail(first.failures);
+            // The urgent safety lane may have overtaken an older unmute ACK.
+            // Drain its issued mutes before this worker may open any sound.
+            await options.settle?.();
+            if (request.cancelled || disposed) return cancelled();
+            const settled = await muteCohort(request, confirmed, request.repair);
+            if (settled.cancelled) return cancelled();
+            if (settled.removed) return report(request, { phase: 'removed', target: request.target });
+            if (settled.failures.length) return fail(settled.failures);
+            target = settled.target;
+            if (request.repair) return report(request, { phase: 'focused', target: request.target, name: target.name, volume: target.state?.volume, muted: target.state?.muted });
             if (!options.canSetVolume(target)) return report(request, { phase: 'partial', target: request.target,
                 failures: [{ key: target.key, name: target.name, code: 'volume-unsupported' }] });
             const volumeResult = await options.execute(target, { action: 'setVolume', value: 1 });
@@ -181,22 +232,21 @@
                 failures: [{ key: target.key, name: target.name, code: volumeResult?.ok ? 'volume-unconfirmed' : volumeResult?.code || 'volume-unconfirmed' }] });
             // Check the complete cohort again after the volume command;
             // a frame navigation/removal/new player must not bypass the barrier.
-            const final = options.snapshot();
-            const changed = final.filter(item => !fresh.some(previous => previous.key === item.key && previous.identity === item.identity && previous.generation === item.generation) ||
-                !current(item) || item.state?.muted !== true);
-            if (!current(target) || !final.some(item => item.key === target.key && item.identity === target.identity && item.generation === target.generation)) {
-                return report(request, { phase: 'removed', target: request.target });
-            }
-            if (changed.length) return report(request, { phase: 'partial', target: request.target,
-                failures: changed.map(item => ({ key: item.key, name: item.name, code: 'changed' })) });
+            const beforeOpen = await muteCohort(request, confirmed);
+            if (beforeOpen.cancelled) return cancelled();
+            if (beforeOpen.removed) return report(request, { phase: 'removed', target: request.target });
+            if (beforeOpen.failures.length) return fail(beforeOpen.failures);
+            target = beforeOpen.target;
             if (request.cancelled || disposed) return cancelled();
             const result = await options.execute(target, { action: 'setMuted', value: false });
             if (request.cancelled || disposed) return cancelled();
-            if (!current(target) || !options.snapshot().some(item => item.key === target.key && item.identity === target.identity && item.generation === target.generation)) {
-                return report(request, { phase: 'removed', target: request.target });
-            }
-            return report(request, result?.ok && result.state?.muted === false ? { phase: 'focused', target: request.target, name: target.name } :
-                { phase: 'partial', target: request.target, failures: [{ key: target.key, name: target.name, code: result?.code || 'unconfirmed' }] });
+            const afterOpen = await muteCohort(request, confirmed, true);
+            if (afterOpen.cancelled) return cancelled();
+            if (afterOpen.removed) return report(request, { phase: 'removed', target: request.target });
+            if (afterOpen.failures.length) return fail(afterOpen.failures);
+            if (!result?.ok || result.state?.muted !== false) return fail([{ key: target.key, name: target.name, code: result?.code || 'unconfirmed' }]);
+            if (afterOpen.target.state?.muted !== false || afterOpen.target.state?.volume !== 1) return fail([{ key: target.key, name: target.name, code: 'changed' }]);
+            return report(request, { phase: 'focused', target: request.target, name: target.name });
         }
         async function drain() {
             if (draining) return;
@@ -218,10 +268,10 @@
             if (pending) { pending.resolve(cancelled()); pending.settled(); pending = null; }
             return active?.done || Promise.resolve();
         }
-        function request(target) {
+        function request(target, settings = {}) {
             if (disposed) return Promise.resolve(cancelled());
             cancel();
-            const value = { target, cancelled: false };
+            const value = { target, cancelled: false, repair: settings.repair === true };
             const promise = new Promise(resolve => { value.resolve = resolve; });
             value.done = new Promise(resolve => { value.settled = resolve; });
             pending = value;
@@ -242,8 +292,10 @@
         const factory = options.media;
         const recoveryFactory = options.recovery || recovery;
         const entries = new Map();
+        const guardedEntries = new Map(), urgentAudioTasks = new Set();
         let host, shadow, panelHost, panelShadow, toggle, quickDetect, panel, list, summary, observer, lateObserver, masterVolume, masterReadout, detectButton, recoveryStatus, recoveryFlow, audioFocusStatus, audioFocusFlow;
         let sequence = 0, scanTimer = null, disposed = false, globalMuted = null;
+        let audioFocusIntent = null, audioReconcileTimer = null, audioControlGeneration = 0;
         let preparation = null, preparedCohort = new Set(), watchStartTimer = null, unreadyWrappers = 0;
         let recoveryStartGeneration = 0;
         let preparationWaiting = '', lastRecoveryStatus = null;
@@ -443,7 +495,7 @@
         function renderEntry(entry) {
             if (!entry.row) return;
             const state = entry.result?.state;
-            const labels = { playing: '播放中', paused: '已暫停', waiting: '緩衝中', blocked: '請在播放器內按播放', error: '來源錯誤', ended: '已結束', 'no-media': '尚未找到影片' };
+            const labels = { playing: '播放中', paused: '已暫停', waiting: '緩衝中', blocked: '瀏覽器拒絕播放，請在播放器內親自按播放', error: '來源錯誤', ended: '已結束', 'no-media': '尚未找到影片' };
             entry.status.textContent = entry.notice || entry.result?.message || labels[state?.playbackStatus] || '正在偵測播放器…';
             if (state) {
                 const volume = state.volume;
@@ -484,13 +536,40 @@
             entry.notice = '';
             renderEntry(entry);
             refreshSummary();
+            // Native controls inside an iframe cannot bubble to the site. A
+            // revoked guard is their explicit override, so stop the retained
+            // focus policy instead of fighting the user's sound control.
+            if (audioFocusIntent && !entry.guardInFlight &&
+                guardedEntries.get(entry) === entry.generation && result.state?.muteGuardActive === false) {
+                void afterAudioFocus(() => {});
+            } else queueAudioFocusReconcile();
         }
-        async function execute(entry, command) {
+        async function execute(entry, command, settings = {}) {
             const readable = entry.kind === 'native' || entry.kind === 'frame' && Boolean(entry.target);
-            if (entry.busy || !entries.has(entry.element) ||
-                (command.action === 'getState' ? !readable : !can(entry, command.action))) return { ok: false, code: 'unavailable' };
+            const guard = command.action === 'setMuted' && command.value === true && command.guard === true;
+            if (entry.busy && !guard && !settings.revoke || guard && entry.guardInFlight || !entries.has(entry.element) ||
+                (command.action === 'getState' || guard || settings.revoke ? !readable : !can(entry, command.action))) return { ok: false, code: 'unavailable' };
             const generation = entry.generation;
             const target = entry.target;
+            // Event-driven repairs reuse the already armed, all-media guard.
+            // Re-arming it on every platform volume event would reset its
+            // own bounded repair budget and could fight a platform forever.
+            if (guard && audioFocusIntent?.automatic && entry.result?.state?.muteGuardActive === true) {
+                guardedEntries.set(entry, generation);
+                return { ok: entry.result.state.muted === true, code: entry.result.state.muted === true ? 'OK' : 'NOT_APPLIED',
+                    state: { ...entry.result.state } };
+            }
+            if (guard && audioFocusIntent) {
+                const writes = audioFocusIntent.guardWrites ||= new Map();
+                const previous = writes.get(entry);
+                const count = previous?.generation === generation ? previous.count : 0;
+                if (audioFocusIntent.automatic && count >= 4) return { ok: false, code: 'NOT_APPLIED', state: entry.result?.state };
+                writes.set(entry, { generation, count: count + 1 });
+            }
+            const serial = entry.commandSequence = (entry.commandSequence || 0) + 1;
+            entry.activeCommands = (entry.activeCommands || 0) + 1;
+            if (guard) { entry.guardInFlight = true; guardedEntries.set(entry, generation); }
+            else if (command.action === 'setMuted') guardedEntries.delete(entry);
             entry.busy = true;
             entry.notice = command.action === 'recover' ? '正在確認播放…' : command.action === 'getState' ? '正在讀取狀態…' : '正在套用…';
             renderEntry(entry);
@@ -499,10 +578,16 @@
                 result = entry.controller ? await entry.controller.execute(command) : await runtimeSend(envelope('site:command', { target, command }));
             } catch (_) { result = { ok: false, code: 'error', message: '操作未完成，請在播放器內操作。' }; }
             if (disposed || !entries.has(entry.element) || generation !== entry.generation) return { ok: false, code: 'stale' };
-            entry.busy = false;
-            if (validResult(result)) applyResult(entry, result);
-            else entry.notice = '未收到有效的播放器回應。';
+            entry.activeCommands = Math.max(0, entry.activeCommands - 1);
+            if (guard) entry.guardInFlight = false;
+            entry.busy = entry.activeCommands > 0;
+            // A newer safety mute can overtake an old unmute acknowledgement.
+            // The old wire operation may settle, but cannot replace its state.
+            if (validResult(result)) {
+                if (serial === entry.commandSequence) applyResult(entry, result);
+            } else entry.notice = '未收到有效的播放器回應。';
             renderEntry(entry);
+            queueAudioFocusReconcile();
             return result;
         }
         async function applyAll(command) {
@@ -515,9 +600,77 @@
         }
 
         function afterAudioFocus(action) {
+            const ticket = ++audioControlGeneration;
+            audioFocusIntent = null;
+            if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
+            audioReconcileTimer = null;
             showAudioFocusStatus({ phase: 'cancelled' });
             const settled = audioFocusFlow?.cancel() || Promise.resolve();
-            return settled.then(() => { if (!disposed) return action(); });
+            return Promise.all([settled, ...urgentAudioTasks]).then(async () => {
+                if (disposed || ticket !== audioControlGeneration) return;
+                const guarded = [...guardedEntries].filter(([entry, generation]) => isCurrent(entry, generation));
+                let cursor = 0;
+                await Promise.all(Array.from({ length: Math.min(4, guarded.length) }, async () => {
+                    while (cursor < guarded.length && ticket === audioControlGeneration && !disposed) {
+                        const [entry] = guarded[cursor++];
+                        const muted = entry.result?.state?.muted !== false;
+                        await execute(entry, { action: 'setMuted', value: muted }, { revoke: true });
+                    }
+                }));
+                if (!disposed && ticket === audioControlGeneration) return action();
+            });
+        }
+
+        function audioFingerprint() {
+            return audioFocusSnapshot().map(item => [item.entry?.id || 0, item.generation, item.state?.muted, item.state?.muteGuardActive,
+                item.entry?.target?.token || '', item.entry?.kind || '', Boolean(item.entry?.busy), item.state?.available,
+                item.key === audioFocusIntent?.target && !audioFocusIntent.focused ? item.state?.volume : ''].join(':')).join('|');
+        }
+        function startAudioFocusIntent(intent, repair = false, automatic = false) {
+            if (disposed || audioFocusIntent !== intent) return;
+            intent.running = true;
+            intent.automatic = automatic;
+            const task = audioFocusFlow.request(intent.target, { repair });
+            void task.then(result => {
+                if (disposed || audioFocusIntent !== intent) return;
+                intent.running = false;
+                const entry = entries.get(intent.target);
+                intent.focused = result.phase === 'focused';
+                intent.entry = entry;
+                intent.generation = entry?.generation;
+                intent.lastFingerprint = audioFingerprint();
+                if (result.phase === 'removed' && intent.target.parentElement !== doc.getElementById('multi-stream-container')) audioFocusIntent = null;
+                else if (intent.dirty) { intent.dirty = false; queueAudioFocusReconcile(); }
+            });
+        }
+        function queueAudioFocusReconcile() {
+            const intent = audioFocusIntent;
+            if (disposed || !intent) return;
+            if (intent.running) { intent.dirty = true; return; }
+            if (audioReconcileTimer !== null) return;
+            audioReconcileTimer = win.setTimeout(() => {
+                audioReconcileTimer = null;
+                if (disposed || audioFocusIntent !== intent || intent.running) return;
+                const snapshot = audioFocusSnapshot(), target = snapshot.find(item => item.key === intent.target);
+                if (!target) { audioFocusIntent = null; void audioFocusFlow.cancel(); showAudioFocusStatus({ phase: 'removed' }); return; }
+                const changedTarget = target.entry !== intent.entry || target.generation !== intent.generation;
+                const peersNeedMute = snapshot.some(item => item.key !== intent.target &&
+                    (!item.entry || guardedEntries.get(item.entry) !== item.generation || item.state?.muted !== true));
+                const targetReadyForRetry = !intent.focused && target.entry && !target.entry.busy && can(target.entry, 'setVolume');
+                if ((!changedTarget && !peersNeedMute && !targetReadyForRetry) || intent.lastFingerprint === audioFingerprint()) return;
+                startAudioFocusIntent(intent, intent.focused && !changedTarget, true);
+            }, 100);
+        }
+        function muteImmediately() {
+            // Idle entries are handled immediately by the normal bounded
+            // worker. Only busy ones need this separate safety lane.
+            const cohort = currentEntries().filter(entry => entry.busy && (entry.kind === 'native' || entry.kind === 'frame' && entry.target));
+            let cursor = 0;
+            const task = Promise.all(Array.from({ length: Math.min(4, cohort.length) }, async () => {
+                while (cursor < cohort.length && !disposed) await execute(cohort[cursor++], { action: 'setMuted', value: true, guard: true });
+            }));
+            urgentAudioTasks.add(task);
+            void task.finally(() => urgentAudioTasks.delete(task));
         }
 
         function setGlobalMuted(muted) {
@@ -620,7 +773,7 @@
             cancelPendingRecovery();
             const generation = recoveryStartGeneration;
             showAudioFocusStatus({ phase: 'cancelled' });
-            void audioFocusFlow?.cancel();
+            void afterAudioFocus(() => {});
             recoveryFlow?.cancel();
             clearPreparation();
             // A new task observes the completed selection/layout, including
@@ -668,6 +821,10 @@
                 entry.target = null;
                 entry.generation++;
                 entry.busy = false;
+                entry.activeCommands = 0;
+                entry.guardInFlight = false;
+                entry.commandSequence = (entry.commandSequence || 0) + 1;
+                guardedEntries.delete(entry);
                 entry.result = null;
                 entry.notice = '正在偵測；沒有回應時請確認' + permissionHint + '。';
             }
@@ -688,6 +845,7 @@
             if (entry.frame) entry.frame.removeEventListener('load', entry.onLoad);
             entry.row?.remove();
             entries.delete(entry.element);
+            guardedEntries.delete(entry);
         }
         function scan() {
             scanTimer = null;
@@ -710,7 +868,7 @@
                         entry.controller = factory.createMediaController({ document: doc, scope: element });
                         entry.unsubscribe = entry.controller.subscribe(result => applyResult(entry, result));
                         applyResult(entry, entry.controller.getState());
-                        if (globalMuted !== null) void execute(entry, { action: 'setMuted', value: globalMuted });
+                        if (globalMuted !== null && !audioFocusIntent) void execute(entry, { action: 'setMuted', value: globalMuted });
                     } else if (entry.kind === 'frame') {
                         entry.onLoad = () => scheduleProbe(entry);
                         frame.addEventListener('load', entry.onLoad);
@@ -730,6 +888,7 @@
             refreshSummary();
             updateHighlights();
             scheduleHighlights();
+            queueAudioFocusReconcile();
         }
         function queueScan() { if (scanTimer === null) scanTimer = win.setTimeout(scan, 80); }
         function onFrameMessage(event) {
@@ -742,11 +901,15 @@
                 try { origin = new URL(entry.frame.src, win.location.href).origin; } catch (_) { return; }
                 if (event.origin !== origin || !cfg.isPlayerUrl(entry.frame.src)) return;
                 const first = !entry.target || entry.target.token !== data.token;
-                if (first) { entry.generation++; entry.busy = false; }
+                if (first) {
+                    entry.generation++; entry.busy = false; entry.activeCommands = 0; entry.guardInFlight = false;
+                    entry.commandSequence = (entry.commandSequence || 0) + 1;
+                    guardedEntries.delete(entry);
+                }
                 entry.target = { frameId: data.frameId, token: data.token, documentId: typeof data.documentId === 'string' ? data.documentId : null };
                 clearProbeTimers(entry);
-                applyResult(entry, data.result);
-                if (first && globalMuted !== null) void execute(entry, { action: 'setMuted', value: globalMuted });
+                if (first || !entry.busy) applyResult(entry, data.result);
+                if (first && globalMuted !== null && !audioFocusIntent) void execute(entry, { action: 'setMuted', value: globalMuted });
                 return;
             }
         }
@@ -778,7 +941,8 @@
                 unconfirmed: '未確認靜音', unavailable: '控制未能連接', timeout: '控制逾時' };
             let text = '';
             if (value.phase === 'preparing') text = '正在將所有播放器靜音，再只開啟放大格的聲音…';
-            else if (value.phase === 'focused') text = `已靜音其他播放器，只開啟「${value.name}」的聲音（音量 100%）。`;
+            else if (value.phase === 'focused') text = value.muted === true ? `其他播放器已靜音；「${value.name}」維持目前的靜音設定。` :
+                `已靜音其他播放器，只開啟「${value.name}」的聲音（音量 ${typeof value.volume === 'number' ? Math.round(value.volume * 100) : 100}%）。`;
             else if (value.phase === 'removed') text = '放大格已移除或更換，已取消開聲。';
             else if (value.phase === 'partial') text = `未開啟放大格的聲音；${value.failures.map(item => `${item.name}：${reasons[item.code] || item.code}`).join('；')}。請確認後重新按放大。`;
             audioFocusStatus.textContent = text;
@@ -800,7 +964,12 @@
             globalMuted = true;
             win.postMessage(envelope('site:audio-preference', { muted: true }), win.location.origin);
             refreshSummary();
-            void audioFocusFlow.request(event.target);
+            ++audioControlGeneration;
+            const intent = audioFocusIntent = { target: event.target, focused: false, running: false };
+            // A pending old unmute ACK must not leave the old tile audible
+            // while the new request waits for the serialized confirmation.
+            muteImmediately();
+            startAudioFocusIntent(intent);
         }
         function originalMuteClick(event) {
             if (!event.target?.closest?.('#toggle-all-audio')) return;
@@ -937,10 +1106,11 @@
             volume.addEventListener('change', () => { const value = Number(volume.value) / 100; void afterAudioFocus(() => applyAll({ action: 'setVolume', value })); });
             audioFocusFlow = createAudioFocusFlow({
                 clock: win, snapshot: audioFocusSnapshot, refresh: refreshAudioFocus,
+                settle: () => Promise.all([...urgentAudioTasks]),
                 readiness(item) {
                     const entry = item.entry;
                     if (entry?.kind === 'unsupported') return 'unsupported';
-                    if (!entry || entry.busy || !can(entry, 'setMuted')) return 'pending';
+                    if (!entry || entry.busy || entry.kind === 'frame' && !entry.target) return 'pending';
                     return 'ready';
                 },
                 isCurrent(item) {
@@ -1002,6 +1172,9 @@
         function dispose() {
             if (disposed) return;
             disposed = true;
+            audioFocusIntent = null;
+            if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
+            audioReconcileTimer = null;
             cancelPendingRecovery();
             revealedEntry = null;
             doc.documentElement.removeAttribute('data-umininn-player-controls-open');

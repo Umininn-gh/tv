@@ -1,9 +1,11 @@
-/* DOM media controls only. No source changes, automatic play, retries or ad detection. */
+/* DOM media controls only. No source changes, automatic play or ad detection. */
 (function (root) {
     'use strict';
     const EVENTS = ['volumechange', 'play', 'playing', 'pause', 'ended', 'loadedmetadata', 'canplay', 'waiting', 'stalled', 'emptied', 'error'];
     const SCAN_DELAY = 80;
     const PLAY_TIMEOUT = 3000;
+    const GUARD_WINDOW = 2000;
+    const GUARD_REPAIR_LIMIT = 8;
     function createMediaController(options = {}) {
         const doc = options.document || root.document;
         if (!doc) throw new TypeError('A document is required');
@@ -24,6 +26,12 @@
         let playRequest = null;
         let requestedVolume = null;
         let requestedMuted = null;
+        let muteGuard = false;
+        let guardTimer = null;
+        let guardFailure = false;
+        let guardMedia = new Set();
+        const guardRepairs = new Map();
+        const guardBlocked = new Set();
         let blocked = false;
         let waiting = false;
         let lastNotification = '';
@@ -88,7 +96,9 @@
         function state() {
             const available = !disposed && connected(media);
             const volume = available ? number(read(media, 'volume')) : null;
-            const muted = available && typeof read(media, 'muted') === 'boolean' ? media.muted : null;
+            const guarded = muteGuard ? [...guardMedia].filter(connected) : [];
+            const muted = muteGuard && guarded.length ? guarded.every(node => read(node, 'muted') === true) :
+                available && typeof read(media, 'muted') === 'boolean' ? media.muted : null;
             const paused = available && typeof read(media, 'paused') === 'boolean' ? media.paused : null;
             const ended = available && typeof read(media, 'ended') === 'boolean' ? media.ended : null;
             const readyState = available ? number(read(media, 'readyState')) : null;
@@ -98,10 +108,78 @@
             return { available, mediaId: available ? ids.get(media) : null, mediaType: available ? String(media.tagName).toLowerCase() : null,
                 volume, muted, paused, ended, readyState, playbackStatus, errorCode, recovering: Boolean(pending),
                 recoverSupported: available && typeof media.play === 'function', volumeSupported: available && volume !== null,
-                muteSupported: available && muted !== null, disposed };
+                muteSupported: (available || guarded.length > 0) && muted !== null, muteGuardActive: !disposed && muteGuard, disposed };
         }
         function result(ok = true, code = 'OK', message = '') { return { ok, code, message, state: state() }; }
-        function currentResult() { return disposed ? result(false, 'DISPOSED', '控制器已關閉') : connected(media) ? result() : result(false, 'NO_MEDIA', '未找到可見的影片或音訊'); }
+        function currentResult() { return disposed ? result(false, 'DISPOSED', '控制器已關閉') : muteGuard && guardFailure ?
+            result(false, 'NOT_APPLIED', '平台沒有保留全部影片的靜音設定，請重新按放大') : connected(media) ? result() : result(false, 'NO_MEDIA', '未找到可見的影片或音訊'); }
+        function clearMuteGuard() {
+            if (guardTimer !== null) clear(guardTimer);
+            guardTimer = null;
+            muteGuard = false;
+            guardFailure = false;
+            guardRepairs.clear();
+            guardBlocked.clear();
+            for (const node of guardMedia) for (const event of EVENTS) node.removeEventListener(event, onGuardEvent);
+            guardMedia.clear();
+        }
+        function onNativeIntent(event) {
+            if (!muteGuard || event.isTrusted !== true) return;
+            clearMuteGuard();
+            // A native player interaction supersedes the focus preference,
+            // including its carry-over setting for a future media replacement.
+            requestedMuted = null;
+            notify();
+        }
+        function observeGuard(candidates) {
+            if (!muteGuard) return;
+            const next = new Set(candidates.filter(connected));
+            for (const node of guardMedia) if (!next.has(node)) {
+                for (const event of EVENTS) node.removeEventListener(event, onGuardEvent);
+                guardRepairs.delete(node);
+                guardBlocked.delete(node);
+            }
+            for (const node of next) if (!guardMedia.has(node)) {
+                for (const event of EVENTS) node.addEventListener(event, onGuardEvent);
+            }
+            guardMedia = next;
+        }
+        function repairGuard() {
+            if (!muteGuard || disposed || applying) return;
+            let failed = false;
+            applying = true;
+            try {
+                const time = typeof clock.now === 'number' ? clock.now : Date.now();
+                for (const node of guardMedia) {
+                    if (!connected(node) || read(node, 'muted') === true) continue;
+                    if (guardBlocked.has(node)) { failed = true; continue; }
+                    let attempts = guardRepairs.get(node) || [];
+                    attempts = attempts.filter(at => time - at < GUARD_WINDOW);
+                    // A platform that repeatedly restores sound must not cause
+                    // a permanent setter/event loop. A new focus request rearms it.
+                    if (attempts.length >= GUARD_REPAIR_LIMIT) { guardBlocked.add(node); failed = true; continue; }
+                    attempts.push(time);
+                    guardRepairs.set(node, attempts);
+                    try { node.muted = true; } catch (_) { failed = true; }
+                    if (read(node, 'muted') !== true) failed = true;
+                }
+            } finally { applying = false; }
+            guardFailure = failed;
+        }
+        function onGuardEvent(event) {
+            if (!muteGuard || disposed || applying) return;
+            if (guardBlocked.has(event.currentTarget)) return;
+            // These events cover deferred platform sound restoration, ad/media
+            // swaps and a new source without any permanent polling timer.
+            if (!['volumechange', 'play', 'playing', 'loadedmetadata', 'canplay', 'emptied'].includes(event.type)) return;
+            if (guardTimer !== null) return;
+            guardTimer = later(() => {
+                guardTimer = null;
+                if (!muteGuard || disposed) return;
+                scan();
+                notify();
+            }, SCAN_DELAY);
+        }
         function notify() {
             if (scanning || applying) return;
             const value = currentResult();
@@ -198,6 +276,8 @@
                 const ranked = candidates.map(node => ({ node, area: visibleArea(node), video: String(node.tagName).toUpperCase() === 'VIDEO' }))
                     .filter(item => item.area > 0).sort((a, b) => Number(b.video) - Number(a.video) || b.area - a.area || Number(b.node === media) - Number(a.node === media));
                 bind(ranked[0]?.node || null);
+                observeGuard(candidates);
+                repairGuard();
             } finally { scanning = false; }
             notify();
         }
@@ -211,7 +291,21 @@
             if (!command || !['getState', 'setVolume', 'setMuted', 'recover'].includes(command.action)) return result(false, 'INVALID_ACTION', '不支援此操作');
             if (command.action === 'setVolume' && (typeof command.value !== 'number' || !Number.isFinite(command.value) || command.value < 0 || command.value > 1)) return result(false, 'INVALID_VALUE', '音量必須是 0 至 1 的數字');
             if (command.action === 'setMuted' && typeof command.value !== 'boolean') return result(false, 'INVALID_VALUE', '靜音設定必須是布林值');
+            if (command.guard !== undefined && (command.guard !== true || command.action !== 'setMuted' || command.value !== true)) return result(false, 'INVALID_VALUE', '靜音保護只支援全部靜音');
+            if (command.action === 'setMuted') {
+                clearMuteGuard();
+                if (command.guard === true) {
+                    muteGuard = true;
+                    requestedMuted = null;
+                }
+            }
             scan();
+            if (command.guard === true) {
+                // Keep the intent even before a platform creates its media.
+                // scan() will apply it to later nodes and hidden audio alike.
+                notify();
+                return currentResult();
+            }
             if (!media || command.action === 'getState') return currentResult();
             if (command.action === 'setVolume' || command.action === 'setMuted') {
                 const property = command.action === 'setVolume' ? 'volume' : 'muted';
@@ -268,6 +362,9 @@
             scanTimer = null;
             mutations?.disconnect();
             sizes?.disconnect();
+            clearMuteGuard();
+            scope.removeEventListener?.('pointerdown', onNativeIntent, true);
+            scope.removeEventListener?.('keydown', onNativeIntent, true);
             view.removeEventListener?.('resize', scheduleScan);
             doc.removeEventListener?.('scroll', scheduleScan, true);
             if (media) for (const event of EVENTS) media.removeEventListener(event, onMediaEvent);
@@ -283,6 +380,8 @@
         }
         view.addEventListener?.('resize', scheduleScan);
         doc.addEventListener?.('scroll', scheduleScan, true);
+        scope.addEventListener?.('pointerdown', onNativeIntent, true);
+        scope.addEventListener?.('keydown', onNativeIntent, true);
         scan();
         return { getState, execute, subscribe, dispose };
     }

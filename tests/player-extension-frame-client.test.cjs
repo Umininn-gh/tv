@@ -10,7 +10,8 @@ function fixture({ chrome = false, url = 'https://player.kick.com/qa', adapterFa
     const listeners = new Map(), receivers = new Set(), requests = [], announcements = [], commands = [], timers = new Map();
     let next = 0, subscribe, disposeCalls = 0;
     const result = { ok: true, code: 'OK', message: '', state: { available: true, volume: 0.8, muted: false, paused: true } };
-    const controller = { getState: () => structuredClone(result), execute: async command => { commands.push(command); return structuredClone(result); },
+    let current = result;
+    const controller = { getState: () => structuredClone(current), execute: async command => { commands.push(command); return structuredClone(current); },
         subscribe(fn) { subscribe = fn; fn(structuredClone(result)); return () => { subscribe = null; }; },
         dispose() { disposeCalls++; } };
     const runtime = { id: 'test-extension', onMessage: { addListener: fn => receivers.add(fn), removeListener: fn => receivers.delete(fn) },
@@ -35,7 +36,7 @@ function fixture({ chrome = false, url = 'https://player.kick.com/qa', adapterFa
         return { responses, accepted };
     }
     return { context, parent, result, runtime, requests, announcements, commands, receivers, timers, event, tick, receive,
-        update: value => subscribe?.(value), get disposeCalls() { return disposeCalls; } };
+        update(value) { current = value; subscribe?.(value); }, staleReport: value => subscribe?.(value), get disposeCalls() { return disposeCalls; } };
 }
 const envelope = (type, extra) => ({ channel: config.CHANNEL, version: config.VERSION, type, ...extra });
 
@@ -88,6 +89,14 @@ test('state reporting is coalesced, and pagehide cancels reporting plus pending 
     assert.equal(f.announcements.at(-1).message.result.state.volume, 0.2);
     f.update(f.result); f.event('pagehide', { persisted: false }); f.tick();
     assert.equal(f.disposeCalls, 1); assert.equal(f.receivers.size, 0); assert.equal(f.timers.size, 0);
+});
+
+test('coalesced announcements read current guard state rather than a stale report', async () => {
+    const f = fixture(); await flush();
+    f.update({ ...f.result, state: { ...f.result.state, muted: true, muteGuardActive: true } }); f.tick();
+    f.staleReport({ ...f.result, state: { ...f.result.state, muted: false, muteGuardActive: false } }); f.tick();
+    assert.equal(f.announcements.at(-1).message.result.state.muted, true);
+    assert.equal(f.announcements.at(-1).message.result.state.muteGuardActive, true);
 });
 
 test('site QA, unknown domains and media QA roles remain separated', () => {

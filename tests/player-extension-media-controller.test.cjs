@@ -7,7 +7,7 @@ class Events {
     constructor() { this.listeners = new Map(); }
     addEventListener(type, fn) { if (!this.listeners.has(type)) this.listeners.set(type, new Set()); this.listeners.get(type).add(fn); }
     removeEventListener(type, fn) { this.listeners.get(type)?.delete(fn); }
-    emit(type) { for (const fn of [...(this.listeners.get(type) || [])]) fn({ type, currentTarget: this }); }
+    emit(type, fields = {}) { for (const fn of [...(this.listeners.get(type) || [])]) fn({ type, currentTarget: this, ...fields }); }
     count() { return [...this.listeners.values()].reduce((sum, set) => sum + set.size, 0); }
 }
 function fixture() {
@@ -136,6 +136,126 @@ test('sound commands preserve pause/volume and never play, reload, or fight plat
     assert.equal(replacement.volume, 0.33); assert.equal(replacement.muted, false);
     assert.equal(replacement.playCalls, 0); assert.equal(video.count(), 0);
     controller.dispose();
+});
+
+test('focus mute guard silences every connected scoped media including hidden audio and open shadows', async () => {
+    const f = fixture(), outside = f.add();
+    const scope = f.doc.documentElement.append(new f.Node());
+    const main = f.add('video', scope), hidden = f.add('audio', scope), offscreen = f.add('video', scope);
+    hidden.hidden = true; offscreen.rect.left = 2000;
+    const host = scope.append(new f.Node('player-host'));
+    host.shadowRoot = new f.Node(); host.shadowRoot.tagName = undefined; host.shadowRoot.host = host;
+    const shadow = f.add('audio', host.shadowRoot); shadow.hidden = true;
+    const controller = f.mount(scope);
+    const value = await controller.execute({ action: 'setMuted', value: true, guard: true });
+    assert.equal(value.ok, true); assert.equal(value.state.muted, true); assert.equal(value.state.muteGuardActive, true);
+    for (const node of [main, hidden, offscreen, shadow]) {
+        assert.equal(node.muted, true); assert.equal(node.volume, 0.8);
+        assert.equal(node.playCalls, 0); assert.equal(node.pauseCalls, 0); assert.equal(node.loadCalls, 0);
+    }
+    assert.equal(outside.muted, false);
+    controller.dispose();
+});
+
+test('focus guard remembers a request before media exists and mutes late hidden and replacement nodes', async () => {
+    const f = fixture(), controller = f.mount();
+    const empty = await controller.execute({ action: 'setMuted', value: true, guard: true });
+    assert.equal(empty.code, 'NO_MEDIA'); assert.equal(empty.state.muteGuardActive, true); assert.equal(empty.state.muted, null);
+    const main = f.add(), hidden = f.add('audio'); hidden.hidden = true;
+    f.mutate(); f.tick(80);
+    assert.equal(main.muted, true); assert.equal(hidden.muted, true);
+    main.remove(); const replacement = f.add(); f.mutate(); f.tick(80);
+    assert.equal(replacement.muted, true); assert.equal(controller.getState().state.muted, true);
+    hidden._muted = false; hidden.emit('playing'); f.tick(80);
+    assert.equal(hidden.muted, true); assert.equal(f.clock.timers.size, 0);
+    controller.dispose();
+});
+
+test('focus guard repairs deferred platform unmute and source events while volume changes preserve the guard', async () => {
+    const f = fixture(), video = f.add(), hidden = f.add('audio'); hidden.hidden = true;
+    const controller = f.mount();
+    await controller.execute({ action: 'setMuted', value: true, guard: true });
+    await controller.execute({ action: 'setVolume', value: 1 });
+    for (const event of ['volumechange', 'play', 'playing', 'loadedmetadata', 'canplay', 'emptied']) {
+        hidden._muted = false; hidden.emit(event); f.tick(80);
+        assert.equal(hidden.muted, true, event);
+    }
+    assert.equal(video.volume, 1); assert.equal(controller.getState().state.muteGuardActive, true);
+    assert.equal(video.playCalls, 0); assert.equal(hidden.playCalls, 0);
+    assert.equal(f.clock.timers.size, 0); controller.dispose();
+});
+
+test('ordinary mute commands revoke focus guard without changing existing primary-only manual semantics', async () => {
+    const f = fixture(), video = f.add(), hidden = f.add('audio'); hidden.hidden = true;
+    const controller = f.mount();
+    await controller.execute({ action: 'setMuted', value: true, guard: true });
+    await controller.execute({ action: 'setMuted', value: true });
+    assert.equal(controller.getState().state.muteGuardActive, false);
+    video.muted = false; hidden.muted = false; f.tick(500);
+    assert.equal(video.muted, false); assert.equal(hidden.muted, false);
+    await controller.execute({ action: 'setMuted', value: true, guard: true });
+    const target = await controller.execute({ action: 'setMuted', value: false });
+    assert.equal(target.state.muteGuardActive, false); assert.equal(video.muted, false); assert.equal(hidden.muted, true);
+    controller.dispose();
+});
+
+test('trusted native controls revoke focus guard and carry-over while synthetic activity does not', async () => {
+    for (const type of ['pointerdown', 'keydown']) {
+        const f = fixture(), video = f.add(), controller = f.mount(), received = [];
+        controller.subscribe(value => received.push(value));
+        await controller.execute({ action: 'setMuted', value: true, guard: true });
+        f.doc.emit(type, { isTrusted: false }); video.muted = false; f.tick(80);
+        assert.equal(video.muted, true);
+        f.doc.emit(type, { isTrusted: true });
+        assert.equal(received.at(-1).state.muteGuardActive, false);
+        video.muted = false; f.tick(80); assert.equal(video.muted, false);
+        video.remove(); const replacement = f.add(); f.mutate(); f.tick(80);
+        assert.equal(replacement.muted, false); controller.dispose();
+    }
+});
+
+test('focus guard reports every refused or hidden audible setter without false mute confirmation', async () => {
+    const f = fixture(), video = f.add(), hidden = f.add('audio'); hidden.hidden = true;
+    Object.defineProperty(hidden, 'muted', { get: () => false, set() { throw new Error('platform refused'); } });
+    const controller = f.mount();
+    const value = await controller.execute({ action: 'setMuted', value: true, guard: true });
+    assert.equal(value.ok, false); assert.equal(value.code, 'NOT_APPLIED'); assert.equal(value.state.muted, false);
+    assert.equal(video.muted, true); assert.equal(value.state.muteGuardActive, true);
+    assert.equal(f.clock.timers.size, 0); controller.dispose();
+});
+
+test('focus repair coalesces events and bounds repeated platform resets without polling or a setter loop', async () => {
+    const f = fixture(), video = f.add(), controller = f.mount(); let writes = 0;
+    Object.defineProperty(video, 'muted', { get() { return this._muted; }, set(value) { writes++; this._muted = value; this.emit('volumechange'); } });
+    await controller.execute({ action: 'setMuted', value: true, guard: true });
+    for (let index = 0; index < 20; index++) {
+        video._muted = false;
+        video.emit('volumechange'); video.emit('playing'); video.emit('canplay');
+        assert.ok(f.clock.timers.size <= 1); f.tick(80);
+    }
+    assert.ok(writes <= 8, `bounded writes: ${writes}`);
+    const exhausted = controller.getState();
+    assert.equal(exhausted.code, 'NOT_APPLIED'); assert.equal(exhausted.state.muted, false);
+    assert.equal(exhausted.state.muteGuardActive, true);
+    f.tick(20000); assert.equal(f.clock.timers.size, 0); assert.ok(writes <= 8);
+    video.emit('volumechange'); f.tick(500); controller.getState();
+    assert.equal(f.clock.timers.size, 0); assert.ok(writes <= 8, 'an exhausted node remains blocked until a new explicit guard request');
+    const retried = await controller.execute({ action: 'setMuted', value: true, guard: true });
+    assert.equal(retried.ok, true); assert.equal(video.muted, true);
+    controller.dispose();
+});
+
+test('focus guard validates opt-in, disposes event repairs and exposes revoked state', async () => {
+    const f = fixture(), video = f.add(), controller = f.mount();
+    for (const command of [{ action: 'setMuted', value: false, guard: true }, { action: 'setMuted', value: true, guard: false },
+        { action: 'setVolume', value: 1, guard: true }, { action: 'recover', guard: true }]) {
+        assert.equal((await controller.execute(command)).code, 'INVALID_VALUE');
+    }
+    await controller.execute({ action: 'setMuted', value: true, guard: true });
+    video.muted = false; assert.equal(f.clock.timers.size, 1);
+    controller.dispose(); f.tick(500);
+    assert.equal(video.muted, false); assert.equal(video.count(), 0); assert.equal(f.clock.timers.size, 0);
+    assert.equal(controller.getState().state.muteGuardActive, false);
 });
 
 test('replacement and removal notify after debounced DOM events without a polling timer', async () => {

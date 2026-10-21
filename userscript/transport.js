@@ -7,7 +7,8 @@
     const validRequest = (id, sequence) => validFrame(sequence) && typeof id === 'string' && /^[0-9a-f]{48}_[0-9a-z]{1,11}$/.test(id) && id.endsWith(`_${sequence.toString(36)}`);
     const fail = (code, message) => ({ ok: false, code, message, state: null });
     function validCommand(value) {
-        if (!object(value) || Object.keys(value).some(key => !['action', 'value'].includes(key))) return false;
+        if (!object(value) || Object.keys(value).some(key => !['action', 'value', 'guard'].includes(key))) return false;
+        if ('guard' in value && (value.action !== 'setMuted' || value.value !== true || value.guard !== true)) return false;
         if (value.action === 'setVolume') return typeof value.value === 'number' && Number.isFinite(value.value) && value.value >= 0 && value.value <= 1;
         if (value.action === 'setMuted') return typeof value.value === 'boolean';
         return ['getState', 'recover'].includes(value.action) && value.value === undefined;
@@ -15,7 +16,7 @@
     function safeState(value) {
         if (!object(value)) return null;
         const result = {};
-        for (const field of ['available', 'muted', 'paused', 'ended', 'recovering', 'recoverSupported', 'platformRecoverSupported', 'volumeSupported', 'muteSupported', 'disposed']) {
+        for (const field of ['available', 'muted', 'paused', 'ended', 'recovering', 'recoverSupported', 'platformRecoverSupported', 'volumeSupported', 'muteSupported', 'muteGuardActive', 'disposed']) {
             if (typeof value[field] === 'boolean' || value[field] === null) result[field] = value[field];
         }
         for (const [field, min, max] of [['volume', 0, 1], ['readyState', 0, 4], ['errorCode', 0, 4], ['mediaId', 1, Number.MAX_SAFE_INTEGER]]) {
@@ -189,7 +190,13 @@
                 try { parent.postMessage(envelope(config, type, { ...identity, ...fields }), parentOrigin); } catch (_) {}
             }
         }
-        function announce() { if (controller && identity) send('frame:ready', { result: lastResult }); }
+        function announce() {
+            if (!controller || !identity) return;
+            // A delayed command reply can describe an older mute setting.
+            // Announcements represent the current controller, not that old reply.
+            try { lastResult = safeResult(controller.getState()); } catch (_) { return; }
+            send('frame:ready', { result: lastResult });
+        }
         function report(result) {
             lastResult = safeResult(result);
             if (disposed || suspended || reportTimer !== null) return;

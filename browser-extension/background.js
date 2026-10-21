@@ -20,6 +20,7 @@
 
         function validCommand(command) {
             if (!object(command)) return false;
+            if ('guard' in command && (command.action !== 'setMuted' || command.value !== true || command.guard !== true)) return false;
             if (command.action === 'setVolume') return typeof command.value === 'number' && Number.isFinite(command.value) && command.value >= 0 && command.value <= 1;
             if (command.action === 'setMuted') return typeof command.value === 'boolean';
             return ['getState', 'recover'].includes(command.action) && command.value === undefined;
@@ -27,7 +28,7 @@
         function safeState(state) {
             if (!object(state)) return null;
             const result = {};
-            for (const field of ['available', 'muted', 'paused', 'ended', 'recovering', 'recoverSupported', 'platformRecoverSupported', 'volumeSupported', 'muteSupported', 'disposed']) {
+            for (const field of ['available', 'muted', 'paused', 'ended', 'recovering', 'recoverSupported', 'platformRecoverSupported', 'volumeSupported', 'muteSupported', 'muteGuardActive', 'disposed']) {
                 if (typeof state[field] === 'boolean' || state[field] === null) result[field] = state[field];
             }
             for (const [field, min, max] of [['volume', 0, 1], ['readyState', 0, 4], ['errorCode', 0, 4], ['mediaId', 1, Number.MAX_SAFE_INTEGER]]) {
@@ -95,6 +96,7 @@
             if (!sameSiteDocument(sender.url, tab.url)) return fail('STALE_DOCUMENT', '網站頁面已更換，請重新確認播放器');
             const command = { action: message.command.action };
             if (message.command.value !== undefined) command.value = message.command.value;
+            if (message.command.guard === true) command.guard = true;
             const target = { frameId: message.target.frameId };
             // Chromium can additionally select the exact document. The per-document
             // token remains required on both engines, including Firefox versions

@@ -68,6 +68,20 @@ for (const promiseApi of [false, true]) {
         }
         assert.ok(f.calls.get.every(id => id === 4)); assert.equal(f.timers.size, 0);
     });
+    test(`${engine}: focus guard is forwarded only for a typed mute request`, async () => {
+        const f = fixture({ promiseApi });
+        const guarded = { action: 'setMuted', value: true, guard: true };
+        const message = command => envelope('site:command', { target: { frameId: 6, token: TOKEN, documentId: 'frame-document' }, command });
+        assert.equal((await f.broker.handle(message(guarded), siteSender())).ok, true);
+        assert.deepEqual(f.calls.send.at(-1).message.command, guarded);
+        for (const value of [
+            { action: 'setMuted', value: false, guard: true }, { action: 'setMuted', value: true, guard: false },
+            { action: 'setMuted', value: true, guard: 1 }, { action: 'setVolume', value: 1, guard: true },
+            { action: 'recover', guard: true }, { action: 'getState', guard: true }
+        ]) assert.equal((await f.broker.handle(message(value), siteSender())).code, 'INVALID_COMMAND');
+        assert.equal(f.calls.send.length, 1);
+        f.broker.dispose();
+    });
     test(`${engine}: API failures are bounded, readable errors and do not disclose raw private URLs`, async () => {
         const f = fixture({ promiseApi });
         f.behavior.get = () => Promise.reject(new Error('Denied https://private.example/token'));

@@ -146,7 +146,7 @@ test('audio focus awaits every confirmed mute before opening only the requested 
     const f = focusFixture(), release = f.gate('tile-2:setMuted:true');
     const request = f.flow.request('tile-0');
     await flushFocus();
-    assert.deepEqual(f.calls, [0, 1, 2].map(index => ({ key: `tile-${index}`, action: 'setMuted', value: true })));
+    assert.deepEqual(f.calls, [0, 1, 2].map(index => ({ key: `tile-${index}`, action: 'setMuted', value: true, guard: true })));
     assert.equal(f.entries[0].state.muted, true);
     release();
     assert.equal((await request).phase, 'focused');
@@ -174,7 +174,7 @@ test('an already-issued older unmute settles before the newer complete mute barr
     release();
     assert.equal((await first).phase, 'cancelled'); assert.equal((await second).phase, 'focused');
     assert.deepEqual(f.entries.map(entry => entry.state.muted), [true, false, true]);
-    assert.deepEqual(f.calls.slice(5, 8), [0, 1, 2].map(index => ({ key: `tile-${index}`, action: 'setMuted', value: true })));
+    assert.deepEqual(f.calls.slice(5, 8), [0, 1, 2].map(index => ({ key: `tile-${index}`, action: 'setMuted', value: true, guard: true })));
 });
 
 test('explicit controls can cancel then await in-flight focus without a late surprise unmute', async () => {
@@ -192,7 +192,7 @@ test('explicit controls can cancel then await in-flight focus without a late sur
 test('pending/busy players have a bounded readiness wait and cancel promptly with no timers left', async () => {
     const f = focusFixture(); f.entries[1].readiness = 'pending';
     const request = f.flow.request('tile-0');
-    await f.tick(5999); assert.deepEqual(f.calls, []);
+    await f.tick(5999); assert.deepEqual(f.calls, [0, 2].map(index => ({ key: `tile-${index}`, action: 'setMuted', value: true, guard: true })));
     await f.tick(1); const result = await request;
     assert.equal(result.phase, 'partial'); assert.deepEqual(result.failures, [{ key: 'tile-1', name: '台 1', code: 'pending' }]);
     assert.ok(!f.calls.some(call => call.value === false)); assert.equal(f.clock.timers.size, 0);
@@ -233,15 +233,15 @@ test('target removal, replacement and generation change abort after the mute pha
     }
 });
 
-test('new players and changed generations cannot bypass the complete mute barrier', async () => {
+test('new players, changed generations and late unmuted peers are repaired before the complete mute barrier opens sound', async () => {
     for (const change of ['new', 'generation', 'unmuted']) {
         const f = focusFixture(), release = f.gate('tile-2:setMuted:true');
         const request = f.flow.request('tile-0'); await flushFocus();
         if (change === 'new') f.entries.push({ ...f.entries[1], key: 'new-tile', identity: {}, name: '新台' });
         else if (change === 'generation') f.entries[1].generation++;
         else f.entries[1].state.muted = false;
-        release(); assert.equal((await request).phase, 'partial');
-        assert.ok(!f.calls.some(call => call.action === 'setMuted' && call.value === false));
+        release(); assert.equal((await request).phase, 'focused');
+        assert.ok(f.entries.every(entry => entry.key === 'tile-0' ? !entry.state.muted : entry.state.muted));
     }
 });
 
@@ -292,6 +292,111 @@ test('dispose cancels pending readiness and queued targets without retaining tim
     const first = f.flow.request('tile-0'); await flushFocus();
     const second = f.flow.request('tile-2'); f.flow.dispose(); await flushFocus();
     assert.equal((await first).phase, 'cancelled'); assert.equal((await second).phase, 'cancelled');
-    assert.deepEqual(f.calls, []); assert.equal(f.clock.timers.size, 0);
+    assert.ok(f.calls.every(call => call.action === 'setMuted' && call.value === true && call.guard === true)); assert.equal(f.clock.timers.size, 0);
     assert.equal((await f.flow.request('tile-0')).phase, 'cancelled');
+});
+
+test('peers added, replaced or unmuted during the final target-unmute reply are repaired before success', async () => {
+    for (const change of ['new', 'replacement', 'unmuted']) {
+        const f = focusFixture(), release = f.gate('tile-0:setMuted:false');
+        const request = f.flow.request('tile-0'); await flushFocus();
+        if (change === 'new') f.entries.push({ ...f.entries[1], key: 'late-tile', identity: {}, state: { muted: false, volume: .8 } });
+        else if (change === 'replacement') f.entries[1] = { ...f.entries[1], identity: {}, generation: 2, state: { muted: false, volume: .8 } };
+        else f.entries[1].state.muted = false;
+        release();
+        assert.equal((await request).phase, 'focused');
+        assert.deepEqual(f.entries.filter(entry => !entry.state.muted).map(entry => entry.key), ['tile-0']);
+    }
+});
+
+test('a post-unmute peer that refuses mute remutes the target and never reports success', async () => {
+    const f = focusFixture(), release = f.gate('tile-0:setMuted:false');
+    const request = f.flow.request('tile-0'); await flushFocus();
+    f.entries[1].state.muted = false; f.entries[1].fail = 'setMuted:true';
+    release();
+    const result = await request;
+    assert.equal(result.phase, 'partial');
+    assert.equal(f.entries[0].state.muted, true);
+    assert.deepEqual(result.failures, [{ key: 'tile-1', name: '台 1', code: 'NOT_APPLIED' }]);
+});
+
+test('a repair pass mutes new peers without changing the existing target volume or unmute state', async () => {
+    const f = focusFixture();
+    assert.equal((await f.flow.request('tile-0')).phase, 'focused');
+    f.entries[0].state.volume = .37;
+    f.entries.push({ ...f.entries[1], key: 'late-tile', identity: {}, state: { muted: false, volume: .8 } });
+    f.calls.length = 0;
+    assert.equal((await f.flow.request('tile-0', { repair: true })).phase, 'focused');
+    assert.equal(f.entries[0].state.volume, .37); assert.equal(f.entries[0].state.muted, false);
+    assert.ok(f.calls.every(call => call.key !== 'tile-0' && call.action === 'setMuted' && call.value && call.guard));
+});
+
+test('large cohorts never exceed four concurrent commands or the userscript pending capacity', async () => {
+    let active = 0, maximum = 0, f;
+    f = focusFixture(40, { async execute(item, command) {
+        active++; maximum = Math.max(maximum, active);
+        await Promise.resolve();
+        const entry = f.entries.find(entry => entry.key === item.key);
+        entry.state[command.action === 'setMuted' ? 'muted' : 'volume'] = command.value;
+        active--;
+        return { ok: true, code: 'OK', state: { ...entry.state } };
+    } });
+    assert.equal((await f.flow.request('tile-0')).phase, 'focused');
+    assert.equal(maximum, 4);
+    assert.equal(f.entries.filter(entry => !entry.state.muted).length, 1);
+});
+
+test('transient BUSY replies retry finitely while ready peers mute immediately', async () => {
+    let attempts = 0, f;
+    f = focusFixture(3, { async execute(item, command) {
+        f.calls.push({ key: item.key, ...command });
+        if (item.key === 'tile-1' && command.value === true && attempts++ < 2) return { ok: false, code: 'BUSY' };
+        const entry = f.entries.find(entry => entry.key === item.key);
+        entry.state[command.action === 'setMuted' ? 'muted' : 'volume'] = command.value;
+        return { ok: true, code: 'OK', state: { ...entry.state } };
+    } });
+    const request = f.flow.request('tile-0'); await flushFocus();
+    assert.equal(f.entries[2].state.muted, true);
+    await f.tick(200);
+    assert.equal((await request).phase, 'focused'); assert.equal(attempts, 3);
+    assert.equal(f.clock.timers.size, 0);
+});
+
+test('repeated BUSY ends after three attempts and leaves the target safely muted', async () => {
+    let attempts = 0, f;
+    f = focusFixture(2, { async execute(item, command) {
+        const entry = f.entries.find(entry => entry.key === item.key);
+        if (item.key === 'tile-1') { attempts++; return { ok: false, code: 'BUSY' }; }
+        entry.state[command.action === 'setMuted' ? 'muted' : 'volume'] = command.value;
+        return { ok: true, code: 'OK', state: { ...entry.state } };
+    } });
+    const request = f.flow.request('tile-0'); await f.tick(300);
+    assert.equal((await request).phase, 'partial'); assert.equal(attempts, 3);
+    assert.equal(f.entries[0].state.muted, true); assert.equal(f.clock.timers.size, 0);
+});
+
+test('an urgent mute lane settles before any target volume or unmute command can run', async () => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const f = focusFixture(3, { settle: () => gate });
+    const request = f.flow.request('tile-0'); await flushFocus();
+    assert.equal(f.calls.length, 3);
+    assert.ok(f.calls.every(call => call.action === 'setMuted' && call.value === true));
+    release();
+    assert.equal((await request).phase, 'focused');
+    assert.deepEqual(f.entries.filter(entry => !entry.state.muted).map(entry => entry.key), ['tile-0']);
+});
+
+test('a target that resets its sound during a late peer confirmation cannot be reported focused', async () => {
+    for (const change of ['muted', 'volume']) {
+        const f = focusFixture(), releaseTarget = f.gate('tile-0:setMuted:false');
+        const request = f.flow.request('tile-0'); await flushFocus();
+        const releasePeer = f.gate('late-tile:setMuted:true');
+        f.entries.push({ ...f.entries[1], key: 'late-tile', identity: {}, state: { muted: false, volume: .8 } });
+        releaseTarget(); await flushFocus();
+        f.entries[0].state[change] = change === 'muted' ? true : .2;
+        releasePeer();
+        assert.equal((await request).phase, 'partial');
+        assert.equal(f.entries[0].state.muted, true);
+    }
 });
