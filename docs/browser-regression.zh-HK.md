@@ -71,7 +71,19 @@ Playwright 固定為 **1.56.1**，並提交 npm lockfile；其 Chromium 為 **14
 - 缺少瀏覽器的負向驗證：指定不存在的 executable，suite 回傳失敗，0 skip。
 - 本機 Firefox 142.0.1 可啟動主程序，但建立頁面時 content process 報 `Sandbox: writing /proc/self/uid_map: EPERM` 並崩潰。首輪的前兩個用例逾時後已停止，不能視為功能測試結果。正式入口已增加獨立、限時的頁面 preflight，避免逐項等到逾時。
 - Chromium 正式入口連續兩輪全部通過，每輪 39 pass、1 預期 Firefox-only skip，0 fail。這些數字包含 Node runner 計數的巢狀測試。
-- Firefox 正式入口已實際在 20 秒 preflight 上限回傳失敗，沒有把未執行用例列為通過；GitHub hosted runner 結果待執行。
+- Firefox 正式入口已實際在本機 20 秒 preflight 上限回傳失敗，沒有把未執行用例列為通過。
+
+隨後在 GitHub hosted runner（Ubuntu 24.04、Node 22）實際執行 [Actions run 39696232403](https://github.com/Umininn-gh/tv/actions/runs/39696232403)，測試 commit `60055d56f0d62e3d5d91c9632501226c909ce20d`，三個 jobs 全部成功：
+
+| 驗證 | 第一輪 | 第二輪 | 結果 |
+| --- | --- | --- | --- |
+| Chromium 141.0.7390.37 | 39 pass、1 預期 Firefox-only skip | 39 pass、1 預期 Firefox-only skip | 通過，0 fail |
+| Firefox 142.0.1 | 40 pass、0 skip | 40 pass、0 skip | 通過，0 fail |
+| 相關單元測試 | 346 pass、0 skip | 不重複執行 | 通過，0 fail |
+
+每輪 browser 數目為 Userscript 5／6 + audio focus 23 + site compatibility 11；包含 Node runner 的巢狀用例計數。Firefox strict-autoplay 用例已在 CI 兩輪實際通過。兩引擎預設 autoplay 觀察均為 native／foreign 放大目標 `muted=false, paused=false, volume=1`；既有斷言亦確認音訊選擇沒有呼叫 play／recover、seek、load 或替換來源。
+
+這次 hosted Firefox 成功與本機 `uid_map` 錯誤的差異支持「本機執行環境限制」的判斷。CI 已上載兩個引擎的完整 JSON/JSONL 結果；保存期後可用上方指令重跑。後續 PR HEAD 狀態請查看 [PR #1 checks](https://github.com/Umininn-gh/tv/pull/1/checks)。
 
 ## 尚不涵蓋
 
