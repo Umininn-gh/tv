@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Chickchat7</title>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="./chat-message-format.js?v=20261021-chat-reliability"></script>
+    <script src="./chat-message-format.js?v=20261021-chat-resources"></script>
     <script src="./chat-message-store.js?v=20261021-chat-reliability"></script>
+    <script src="./chat-resource-refresh.js?v=20261021-resources"></script>
     <style>
         :root { --t-bg: #0e0e10; --t-alt: #18181b; --t-purp: #9147ff; --t-text: #efeff1; --input-bg: #18181b; }
         body { background: var(--t-bg); color: var(--t-text); font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden;   --bg-base: #09090b;
@@ -1707,9 +1708,9 @@ function renderBadges(badgeStr) {
     badgeStr.split(',').forEach(b => {
         let key = b.split('/')[0];
         let url = customBadges[b] || customBadges[key];
-        if(ChatMessageFormat.safeUrl(url, true)) html += `<img class="badge" src="${escapeChatText(url)}" referrerpolicy="no-referrer">`;
+        if(ChatMessageFormat.safeUrl(url, true)) html += `<img class="badge" data-chat-badge="${escapeChatText(b)}" src="${escapeChatText(url)}" referrerpolicy="no-referrer">`;
     });
-    return html;
+    return `<span data-chat-badges="${escapeChatText(badgeStr)}">${html}</span>`;
 }
 function getMyBadges() { return myBadges || ""; }
 
@@ -1726,6 +1727,8 @@ function updateBadgeCarousel() {
     const carousel = document.getElementById('chat-badge-carousel');
     if (!carousel) return;
     const badgeStr = getMyBadges();
+    if (carousel.dataset.badges === badgeStr) return;
+    carousel.dataset.badges = badgeStr;
     if (badgeStr) { carousel.innerHTML = renderBadges(badgeStr); }
     else { carousel.innerHTML = ''; }
 }
@@ -2241,6 +2244,7 @@ function archiveMessageBuffer() {
     }).catch(err => showChatStorageWarning(err)).finally(() => { bufferArchiveTask = null; archiveMessageBuffer(); });
 }
 function observeChatMedia(rows) {
+    refreshInsertedChatResources(rows);
     refreshInsertedChatQuotes(rows);
     rows.forEach(row => row.querySelectorAll('video.media-preview').forEach(video => mediaObserver.observe(video)));
     if (rows.some(row => row.querySelector('.chat-media-embed[data-embed-kind="twitter"]'))) ensureChatTwitterWidgets();
@@ -2448,7 +2452,7 @@ function normalizeChatImageUrl(value) {
     } catch (_) { return null; }
 }
 
-function buildChatImageHtml(value, { emote = false, label = '', escapedSource = false, preserveUrl = false } = {}) {
+function buildChatImageHtml(value, { emote = false, label = '', escapedSource = false, preserveUrl = false, resourceEmote = false } = {}) {
     const original = escapedSource ? decodeChatImageAttribute(value) : value;
     const source = preserveUrl ? ChatMessageFormat.safeUrl(original) : normalizeChatImageUrl(original);
     if (!source) return escapeChatText(label || '圖片網址無效');
@@ -2456,7 +2460,7 @@ function buildChatImageHtml(value, { emote = false, label = '', escapedSource = 
     const alt = escapeChatText(label || (emote ? '貼圖' : '圖片'));
     const image = `<img src="${escapedUrl}" alt="${alt}" class="${emote ? 'alt-emoji' : 'media-preview'}" referrerpolicy="no-referrer" onload="onChatImageLoaded(this)" onerror="onChatImageError(this)" loading="lazy" decoding="async">`;
     const preview = emote ? image : `<a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">${image}</a>`;
-    return `<span class="chat-image${emote ? '' : ' chat-image-media'}" data-state="loading">${preview}<span class="chat-image-fallback" hidden role="status"><span class="chat-image-status">${emote ? '貼圖未能載入' : '圖片未能載入'}</span><button type="button" onclick="retryChatImage(this,event)">重試</button><a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" onclick="event.stopPropagation()">原圖</a></span></span>`;
+    return `<span class="chat-image${emote ? '' : ' chat-image-media'}"${resourceEmote ? ` data-chat-emote="${escapeChatText(label.toLowerCase())}"` : ''} data-state="loading">${preview}<span class="chat-image-fallback" hidden role="status"><span class="chat-image-status">${emote ? '貼圖未能載入' : '圖片未能載入'}</span><button type="button" onclick="retryChatImage(this,event)">重試</button><a href="${escapedUrl}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" onclick="event.stopPropagation()">原圖</a></span></span>`;
 }
 
 function buildChatAudioHtml(url) {
@@ -2470,7 +2474,9 @@ function buildChatAudioHtml(url) {
 function parseContent(str, escapedInput = false) {
     try {
         return ChatMessageFormat.renderContent(str, { escapedInput, altMap,
-            renderImage: buildChatImageHtml, renderAudio: buildChatAudioHtml, restoreHtml: restoreChatHtml });
+            renderImage: (url, settings) => buildChatImageHtml(url, { ...settings, resourceEmote: settings.emote }),
+            renderTextRun: text => ChatResourceRefresh.textRunHtml(text, escapeChatText, word => word.includes(chatHtmlPrefix)),
+            renderAudio: buildChatAudioHtml, restoreHtml: restoreChatHtml });
     } catch (err) {
         console.error('parseContent Error:', err);
         return escapedInput ? restoreChatHtml(String(str || '')) : escapeChatText(str || '');
@@ -2525,10 +2531,72 @@ function readResourceArray(key) {
         return Array.isArray(data) ? data : [];
     } catch (err) { return []; }
 }
-function refreshChatResources() {
+const chatResourceRefresh = new ChatResourceRefresh.Batcher(applyChangedChatResources);
+let chatResourceVersion = 0;
+let activeEmojiTab = null;
+function refreshChatResources(change) {
+    if (change?.badges || change?.emotes?.length) chatResourceVersion++;
+    chatResourceRefresh.queue(change);
+}
+function chatBadgeResourceUrl(badge) {
+    return ChatMessageFormat.safeUrl(customBadges[badge] || customBadges[badge.split('/')[0]], true);
+}
+function chatEmoteResourceOptions() {
+    return {
+        getUrl: word => normalizeChatImageUrl(ChatMessageFormat.ownEmote(altMap, word)),
+        renderImage: (url, label) => buildChatImageHtml(url, { emote: true, resourceEmote: true, label })
+    };
+}
+function refreshInsertedChatResources(rows) {
+    // Buffered local echoes and HTML restored from disk can predate the resources.
+    // Reconcile only those just-inserted rows; normal new rows already use the maps.
+    rows.forEach(row => {
+        if (Number(row.dataset.resourceVersion) === chatResourceVersion) return;
+        ChatResourceRefresh.updateEmotes(row, null, chatEmoteResourceOptions());
+        ChatResourceRefresh.updateBadges(row, chatBadgeResourceUrl);
+        row.dataset.resourceVersion = String(chatResourceVersion);
+    });
+}
+function refreshVisibleResourcePicker(change) {
+    const panel = document.getElementById('emojiPanel');
+    if (getComputedStyle(panel).display === 'none' || !(change.picker || (change.audio && activeEmojiTab === '音訊'))) return;
+    const content = document.getElementById('emojiContent');
+    const form = content.querySelector('.bttv-input-area, .audio-input-form');
+    const focused = form?.contains(document.activeElement) ? document.activeElement : null;
+    const selection = focused && typeof focused.selectionStart === 'number' ? [focused.selectionStart, focused.selectionEnd] : null;
+    const scrollTop = content.scrollTop;
+    // Resource completion can arrive while someone is entering an unsaved URL.
+    // Keep that actual form and its inputs instead of replacing their draft.
+    form?.remove();
     try {
-        refreshVisibleMessages();
-        updateBadgeCarousel();
+        if (change.picker) renderEmojiPanel(activeEmojiTab);
+        else renderTabContent('音訊');
+    } finally {
+        if (form) {
+            const replacement = content.querySelector('.bttv-input-area, .audio-input-form');
+            if (replacement) replacement.replaceWith(form);
+            else content.prepend(form);
+        }
+        if (focused?.isConnected) {
+            focused.focus({ preventScroll: true });
+            if (selection) focused.setSelectionRange(...selection);
+        }
+        content.scrollTop = scrollTop;
+    }
+}
+function applyChangedChatResources(change) {
+    try {
+        const viewport = change.emotes.size || change.badges ? captureChatViewport() : null;
+        let changed = ChatResourceRefresh.updateEmotes(document.getElementById('messages'), change.emotes, chatEmoteResourceOptions());
+        if (change.badges) {
+            changed = ChatResourceRefresh.updateBadges(document.getElementById('messages'), chatBadgeResourceUrl) || changed;
+            ChatResourceRefresh.updateBadges(document.getElementById('chat-badge-carousel'), chatBadgeResourceUrl);
+        }
+        if (changed) {
+            restoreChatViewport(viewport);
+            if (autoScroll) forceScrollToBottom();
+        }
+        refreshVisibleResourcePicker(change);
     } catch (err) { console.warn('重新顯示聊天資源失敗:', err); }
 }
 function collectResourceBadges(sets, setKey, imageKey, target) {
@@ -2548,7 +2616,7 @@ async function fetchBadges() {
     const localBadges = fetchResourceJson('./b.txt').then(data => {
         if (!success && data && typeof data === 'object' && !Array.isArray(data)) {
             customBadges = data;
-            refreshChatResources();
+            refreshChatResources({ badges: true });
         }
     }).catch(err => console.warn('本地 Badges 失敗:', err));
     try {
@@ -2567,7 +2635,7 @@ async function fetchBadges() {
                             const data = await fetchResourceJson(url, { headers });
                             collectResourceBadges(data?.data, 'set_id', 'image_url_1x', newBadges);
                             if (Object.keys(newBadges).length > 0) {
-                                customBadges = { ...newBadges }; success = true; refreshChatResources();
+                                customBadges = { ...newBadges }; success = true; refreshChatResources({ badges: true });
                             }
                         } catch (err) { console.warn('Helix Badge 資源失敗:', err); }
                     }));
@@ -2593,7 +2661,7 @@ async function fetchBadges() {
                 collectResourceBadges(resData?.badges, 'setID', 'imageURL', newBadges);
                 collectResourceBadges(resData?.user?.badges, 'setID', 'imageURL', newBadges);
                 if (Object.keys(newBadges).length > 0) {
-                    customBadges = newBadges; success = true; refreshChatResources();
+                    customBadges = newBadges; success = true; refreshChatResources({ badges: true });
                 }
             } catch (err) { console.warn('GraphQL Badges 失敗:', err); }
         }
@@ -2605,7 +2673,7 @@ async function loadAudioData() {
     try {
         const remote = await fetchResourceJson('./audio.txt');
         audioLists["音訊"] = { audios: mergeAudioLists(remote, local), image: "🔊" };
-        refreshChatResources();
+        refreshChatResources({ audio: true });
     } catch(e) { console.warn('音訊資源載入失敗:', e); }
 }
 function mergeAudioLists(remote, local) {
@@ -2619,12 +2687,16 @@ async function loadResources() {
     const bttv = readResourceArray('myBTTV').filter(url => typeof url === 'string' && url);
     emojiLists["本台"] = { emojis: [], image: "./chick.png" };
     emojiLists["BTTV"] = { emojis: bttv.map(url => ({ alt: url.split('/').pop().split('?')[0], src: url })), image: "https://static-cdn.jtvnw.net/badges/v1/ed51a614-2c44-4a60-80b6-62908436b43a/3" };
-    refreshChatResources();
+    refreshChatResources({ picker: true });
     const applyEmojiList = (name, data, image) => {
         const list = (Array.isArray(data) ? data : []).filter(item => item && typeof item.alt === 'string' && typeof item.src === 'string');
         emojiLists[name] = { emojis: list, image };
-        list.forEach(item => { if(item.alt) altMap[item.alt.toLowerCase()] = item.src; });
-        refreshChatResources();
+        const changed = [];
+        list.forEach(item => {
+            const key = item.alt.toLowerCase();
+            if (key && altMap[key] !== item.src) { altMap[key] = item.src; changed.push(key); }
+        });
+        refreshChatResources({ emotes: changed, picker: true });
     };
     await Promise.allSettled([
         fetchResourceJson(`https://live.sk-knower.com/lib/iconjsonp.php?channel=${encodeURIComponent(CHANNEL)}`)
@@ -2645,23 +2717,26 @@ async function loadResources() {
         }).catch(err => console.warn('貼圖設定載入失敗:', err))
     ]);
 }
-function renderEmojiPanel() {
+function renderEmojiPanel(preferredTab) {
+    const selected = preferredTab && (emojiLists[preferredTab] || preferredTab === '音訊') ? preferredTab : Object.keys(emojiLists)[0];
     const tabs = $("#emojiTabs").empty();
     Object.keys(emojiLists).forEach((name, i) => {
         const tab = $('<div class="emoji-tab"></div>')
             .css("background-image", `url(${emojiLists[name].image})`)
             .attr("title", name)
             .on('click', function() { $(".emoji-tab").css("opacity", "0.6"); $(this).css("opacity", "1"); renderTabContent(name); });
-        if(i===0) tab.css("opacity","1");
+        tab.css('opacity', name === selected ? '1' : '0.6');
         tabs.append(tab);
     });
     const audioTab = $('<div class="emoji-tab" title="音訊"></div>')
         .html(AUDIO_MIC_SVG)
         .on('click', function() { $(".emoji-tab").css("opacity", "0.6"); $(this).css("opacity", "1"); renderTabContent("音訊"); });
     tabs.append(audioTab);
-    renderTabContent(Object.keys(emojiLists)[0]);
+    audioTab.css('opacity', selected === '音訊' ? '1' : '0.6');
+    renderTabContent(selected);
 }
 function renderTabContent(name) {
+    activeEmojiTab = name;
     const content = $("#emojiContent").empty();
     if (name === "BTTV") {
         content.append(`<div class="bttv-input-area"><input type="text" id="bttvUrl" class="custom-input" placeholder="貼上圖片網址..." style="flex:1"><div style="display:flex;gap:5px;"><button onclick="addBTTV()" style="background:var(--t-purp);color:white;border:none;border-radius:4px;padding:5px 15px;">儲存</button><button onclick="isDeleteMode=!isDeleteMode;renderTabContent('BTTV')" style="background:${isDeleteMode?'#666':'#c42b1c'};color:white;border:none;border-radius:4px;padding:5px 15px;">${isDeleteMode?'取消':'刪除'}</button></div></div>`);
@@ -3009,7 +3084,7 @@ function sendMessage() {
     const selfMsgRecord = { content: val, user: { login: myLoginId, displayName: myDisplayName }, displayName: myDisplayName, badges: myBadgeStr, avatar: myAvatar, timestamp: Number(selfTs) };
     rememberChatRecord(selfMsgRecord, selfId, selfId);
     addRecentUser({ login: myLoginId, displayName: myDisplayName, badges: myBadgeStr, avatar: myAvatar });
-    let line = `<div class="chat-line ts-${selfTs} id-${selfTs}" data-message-id="${selfId}" data-message-key="${selfId}" data-user-login="${escapeChatText(myLoginId)}" data-msg-ts="${selfTs}">
+    let line = `<div class="chat-line ts-${selfTs} id-${selfTs}" data-message-id="${selfId}" data-message-key="${selfId}" data-user-login="${escapeChatText(myLoginId)}" data-msg-ts="${selfTs}" data-resource-version="${chatResourceVersion}">
         <div class="reply-btn-group">
             <div class="reply-btn" onclick="replyNative('${myLoginId}','${selfTs}','${myDisplayName}')"><img src="./re2.png"></div>
             <div class="reply-btn2" onclick="insertRecursiveQuote('${myLoginId}','${selfTs}')" title="sk回覆格式">🔗</div>
@@ -3613,7 +3688,7 @@ function safeBuildChatMessageHtml(message, historical = false) {
         try { rememberChatRecord({ content: body, user: { login, displayName: user }, displayName: user,
             timestamp: Number(ts), ircMessage: message }, id, chatMessageKey(message)); }
         catch (cacheError) { console.warn('留言快取失敗，保留文字:', cacheError); }
-        return `<div class="chat-line fallback-msg ${historical ? 'historical-msg ' : ''}id-${escapeChatText(id)}" data-message-id="${escapeChatText(id)}" data-user-login="${escapeChatText(login)}" data-msg-ts="${escapeChatText(ts)}" data-received-ts="${escapeChatText(getTagValue(message.tags, 'rm-received-ts') || '')}" data-quote-version="${chatQuoteVersion}" data-quote-refs="${escapeChatText(JSON.stringify(references))}"><b>${escapeChatText(user)}:</b> <span>${escapeChatText(body)}</span></div>`;
+        return `<div class="chat-line fallback-msg ${historical ? 'historical-msg ' : ''}id-${escapeChatText(id)}" data-message-id="${escapeChatText(id)}" data-user-login="${escapeChatText(login)}" data-msg-ts="${escapeChatText(ts)}" data-received-ts="${escapeChatText(getTagValue(message.tags, 'rm-received-ts') || '')}" data-resource-version="${chatResourceVersion}" data-quote-version="${chatQuoteVersion}" data-quote-refs="${escapeChatText(JSON.stringify(references))}"><b>${escapeChatText(user)}:</b> <span>${escapeChatText(body)}</span></div>`;
     }
 }
 function buildChatMessageHtml(message, historical = false) {
@@ -3672,7 +3747,7 @@ function buildChatMessageHtml(message, historical = false) {
     const replyAction = escapeChatText(`replyNative(${JSON.stringify(userLogin)},${JSON.stringify(msgId || ts)},${JSON.stringify(user)})`);
     const quoteReferences = Array.from(activeChatQuoteReferences);
     const recursiveAction = escapeChatText(`insertRecursiveQuote(${JSON.stringify(userLogin)},${JSON.stringify(ts)})`);
-    let line = `<div class="chat-line ${nativeBody.action ? 'action-msg ' : ''}${message.command === 'USERNOTICE' ? 'usernotice-msg ' : ''}${historical ? 'historical-msg ' : ''}ts-${escapeChatText(ts)} id-${escapeChatText(msgId||ts)}" data-message-id="${escapeChatText(msgId || ts)}" data-user-login="${escapeChatText(userLogin)}" data-msg-ts="${escapeChatText(ts)}" data-received-ts="${escapeChatText(getTagValue(tags, 'rm-received-ts') || '')}" data-quote-version="${chatQuoteVersion}" data-quote-refs="${escapeChatText(JSON.stringify(quoteReferences))}">
+    let line = `<div class="chat-line ${nativeBody.action ? 'action-msg ' : ''}${message.command === 'USERNOTICE' ? 'usernotice-msg ' : ''}${historical ? 'historical-msg ' : ''}ts-${escapeChatText(ts)} id-${escapeChatText(msgId||ts)}" data-message-id="${escapeChatText(msgId || ts)}" data-user-login="${escapeChatText(userLogin)}" data-msg-ts="${escapeChatText(ts)}" data-received-ts="${escapeChatText(getTagValue(tags, 'rm-received-ts') || '')}" data-resource-version="${chatResourceVersion}" data-quote-version="${chatQuoteVersion}" data-quote-refs="${escapeChatText(JSON.stringify(quoteReferences))}">
         <div class="reply-btn-group">
             <div class="reply-btn" onclick="${replyAction}"><img src="./re2.png"></div>
             <div class="reply-btn2" onclick="${recursiveAction}" title="插入引用代碼 [r]">🔗</div>
@@ -4040,10 +4115,8 @@ async function initApp() {
     document.getElementById('logoutBtn').onclick = logout;
     setupScrollListener();
     chatResourcesReady = true;
-    Promise.allSettled([fetchBadges(), loadResources()]).then(() => {
-        updateBadgeCarousel();
-        refreshVisibleMessages();
-    });
+    chatResourceRefresh.begin();
+    Promise.allSettled([fetchBadges(), loadResources()]).finally(() => chatResourceRefresh.end());
     updateBadgeCarousel();
     setupAutoTag();
     setupMentionEvents();

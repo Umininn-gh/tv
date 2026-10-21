@@ -119,13 +119,20 @@
     }
 
     function renderPlain(text, options) {
-        return text.split(/(\s+)/).map(word => {
-            if (!word || /^\s+$/.test(word)) return escapeHtml(word);
+        let output = '', plain = '';
+        const flush = () => {
+            if (plain) output += options.renderTextRun ? options.renderTextRun(plain) : escapeHtml(plain);
+            plain = '';
+        };
+        for (const word of text.split(/(\s+)/)) {
+            if (!word || /^\s+$/.test(word)) { plain += word; continue; }
             const src = ownEmote(options.altMap, word);
-            if (src && options.renderImage) return options.renderImage(src, { emote: true, label: word });
-            if (/^https?:\/\//i.test(word) && safeUrl(word)) return linkHtml(word);
-            return escapeHtml(word);
-        }).join('');
+            if (src && options.renderImage) { flush(); output += options.renderImage(src, { emote: true, label: word }); }
+            else if (/^https?:\/\//i.test(word) && safeUrl(word)) { flush(); output += linkHtml(word); }
+            else plain += word;
+        }
+        flush();
+        return output;
     }
 
     function renderContent(input, options = {}) {

@@ -26,6 +26,7 @@ async function startChatBrowser() {
     const files = {
         'test3.html': 'test3.html', 'chat/': 'test3.html', 'chat/index.html': 'test3.html',
         'chat-message-format.js': 'chat-message-format.js', 'chat-message-store.js': 'chat-message-store.js',
+        'chat-resource-refresh.js': 'chat-resource-refresh.js',
         'assets/js/chat-message-format.js': 'chat-message-format.js',
         'assets/js/chat-message-store.js': 'chat-message-store.js',
         'assets/js/chat-resource-refresh.js': 'chat-resource-refresh.js',

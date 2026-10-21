@@ -11,6 +11,7 @@
     const status = document.getElementById('login-status');
     let starting = false;
     let needsReload = false;
+    const scriptRequests = new Map();
 
     if (!config || !/^[a-f0-9]{64}$/.test(config.passwordHash) || !config.passwordSalt || !config.storageKey) {
         status.textContent = '登入設定未能載入，請重新整理頁面。';
@@ -32,19 +33,34 @@
         catch { /* Reload also clears any in-memory login state. */ }
     }
 
-    function loadScript(src, type) {
-        return new Promise((resolve, reject) => {
+    function loadScript(src, type, isReady = () => true) {
+        const key = `${type || 'classic'}:${src}`;
+        if (scriptRequests.has(key)) return scriptRequests.get(key);
+        const request = new Promise((resolve, reject) => {
             const script = document.createElement('script');
             script.src = src;
             if (type) script.type = type;
-            script.onload = resolve;
+            script.onload = () => {
+                script.onload = script.onerror = null;
+                if (isReady()) resolve();
+                else {
+                    script.remove();
+                    reject(new Error('Could not initialize ' + src));
+                }
+            };
             script.onerror = () => {
+                script.onload = script.onerror = null;
                 script.remove();
                 reject(new Error('Could not load ' + src));
             };
             document.head.appendChild(script);
         });
+        scriptRequests.set(key, request);
+        // Concurrent players share the download; a failed request can be retried.
+        request.catch(() => { if (scriptRequests.get(key) === request) scriptRequests.delete(key); });
+        return request;
     }
+    window.TVScriptLoader = { load: loadScript };
 
     function setBusy(busy) {
         passwordInput.disabled = busy;
@@ -62,15 +78,11 @@
         let mountedNodes = [];
         try {
             // Relative local assets work at /tv/ and at a Cloudflare Pages root.
-            await loadScript('https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js');
-            await loadScript('https://cdn.jsdelivr.net/npm/hls.js@latest');
-            await loadScript('./flv.min.js');
             const template = document.getElementById('tv-app-template');
             const fragment = template.content.cloneNode(true);
             mountedNodes = Array.from(fragment.childNodes);
             document.body.appendChild(fragment);
             needsReload = true;
-            await loadScript('./jquery-3.6.0.min.js', 'module');
             await loadScript('./channel-list.js');
             await loadScript('./stream-performance.js');
             await loadScript('./player-geometry.js?v=20261020-editor-placement');
@@ -79,7 +91,7 @@
             await loadScript('./embed-audio.js').catch(error => console.warn('YouTube 聲音同步暫時未能載入，請使用播放器聲音控制。', error));
             await loadScript('./layout-bookmarks.js?v=20261019-shared-bookmarks');
             await loadScript('./shared-bookmarks.js?v=20261019-shared-bookmarks');
-            await loadScript('./tv-app.js?v=20261021-chat-reliability');
+            await loadScript('./tv-app.js?v=20261021-resource-loading');
             if (!window.tvAppReady || typeof window.tvAppReady.then !== 'function') {
                 throw new Error('TV application did not initialize');
             }
@@ -89,6 +101,10 @@
             screen.remove();
             template.remove();
             document.body.classList.remove('login-locked');
+            // Announcements are optional and must never delay or reject viewing.
+            // The shared loader also prevents duplicate listener registration.
+            void loadScript('./jquery-3.6.0.min.js', 'module')
+                .catch(error => console.warn('公告暫時未能載入。', error));
         } catch (error) {
             mountedNodes.forEach(node => node.remove());
             clearSession();

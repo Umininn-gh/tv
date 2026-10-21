@@ -263,6 +263,14 @@ const PLATFORMS = {
 /* -------------------------------------------------------------------------------------
    播放器渲染器 (依 type 分派)
    ------------------------------------------------------------------------------------- */
+async function loadPlaybackLibrary(name, src) {
+    if (globalThis[name]) return globalThis[name];
+    if (!window.TVScriptLoader?.load) throw new Error('Playback script loader unavailable');
+    await window.TVScriptLoader.load(src, undefined, () => Boolean(globalThis[name]));
+    if (!globalThis[name]) throw new Error(name + ' did not initialize');
+    return globalThis[name];
+}
+
 const RENDERERS = {
     youtube(channel, p, muted, wrapperClass) {
         if (typeof EmbedAudio === 'undefined') return RENDERERS.iframe(channel, p, muted, wrapperClass);
@@ -360,9 +368,57 @@ const RENDERERS = {
         video.playsInline = true;
         const resource = { video, element: video, disposed: false, failed: false, hls: null, flv: null };
         playerResources.set(video, resource);
+        let nativeStreamUrl = null;
         video.addEventListener('error', () => {
-            if (!resource.disposed) { resource.failed = true; video.pause(); }
+            if (resource.disposed || !video.isConnected) return;
+            // A browser may advertise native HLS but reject this particular
+            // stream. Keep the existing hls.js path as a one-time fallback.
+            if (nativeStreamUrl) {
+                const streamUrl = nativeStreamUrl;
+                nativeStreamUrl = null;
+                video.pause();
+                video.removeAttribute('src');
+                video.load();
+                void initHls(streamUrl);
+            } else { resource.failed = true; video.pause(); }
         });
+
+        const initHls = async streamUrl => {
+            try {
+                const HlsPlayer = await loadPlaybackLibrary('Hls', 'https://cdn.jsdelivr.net/npm/hls.js@latest');
+                if (resource.disposed || !video.isConnected) return;
+                if (!HlsPlayer.isSupported()) {
+                    replacePlayerWithError(resource, '⚠️ 瀏覽器不支援 HLS');
+                    return;
+                }
+                const hls = new HlsPlayer(HLS_CONFIG);
+                resource.hls = hls;
+                currentHLSInstances.push(hls);
+                hls.on(HlsPlayer.Events.MANIFEST_PARSED, () => {
+                    if (!resource.disposed && resource.hls === hls && video.isConnected) video.play().catch(() => {});
+                });
+                hls.on(HlsPlayer.Events.ERROR, (event, data) => {
+                    if (data && data.fatal && !resource.disposed && resource.hls === hls) {
+                        replacePlayerWithError(resource, '⚠️ 無法播放直播，請再試一次');
+                        currentHLSInstances = currentHLSInstances.filter(instance => instance !== hls);
+                        resource.hls = null;
+                        try { hls.destroy(); } catch (error) {}
+                    }
+                });
+                hls.loadSource(streamUrl);
+                hls.attachMedia(video);
+            } catch (error) {
+                if (resource.hls) {
+                    const hls = resource.hls;
+                    resource.hls = null;
+                    currentHLSInstances = currentHLSInstances.filter(instance => instance !== hls);
+                    try { hls.destroy(); } catch (_) {}
+                }
+                if (resource.disposed || !video.isConnected) return;
+                console.warn('[HLS initialization error]', error);
+                replacePlayerWithError(resource, '⚠️ 播放器載入失敗，請重新選台再試');
+            }
+        };
 
         // 建立一個非同步函式來處理具有時效性的動態網址
         const initPlayer = async () => {
@@ -383,29 +439,11 @@ const RENDERERS = {
                 }
             }
 
-            // 網址取得後，才開始初始化 hls.js 或原生播放
-            if (Hls.isSupported()) {
-                const hls = new Hls(HLS_CONFIG);
-                resource.hls = hls;
-                hls.loadSource(streamUrl);
-                hls.attachMedia(video);
-                hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                    if (!resource.disposed) video.play().catch(() => {});
-                });
-                hls.on(Hls.Events.ERROR, (event, data) => {
-                    if (data && data.fatal && !resource.disposed && resource.hls === hls) {
-                        replacePlayerWithError(resource, '⚠️ 無法播放直播，請再試一次');
-                        currentHLSInstances = currentHLSInstances.filter(instance => instance !== hls);
-                        resource.hls = null;
-                        try { hls.destroy(); } catch (error) {}
-                    }
-                });
-                currentHLSInstances.push(hls);
-            } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+            // Native HLS needs no library download (notably on iOS/Safari).
+            if (video.canPlayType?.('application/vnd.apple.mpegurl')) {
+                nativeStreamUrl = streamUrl;
                 video.src = streamUrl;
-            } else {
-                replacePlayerWithError(resource, '⚠️ 瀏覽器不支援 HLS');
-            }
+            } else await initHls(streamUrl);
         };
 
         // 呼叫執行
@@ -414,9 +452,6 @@ const RENDERERS = {
     },
 
     flv(channel, p, muted, wrapperClass) {
-        if (!(typeof flvjs !== 'undefined' && flvjs.isSupported())) {
-            return buildErrorDiv('⚠️ 瀏覽器不支援 FLV.js，無法播放 .flv 格式');
-        }
         const video = document.createElement('video');
         video.className = `hls-video-element ${wrapperClass}`;
         video.controls = true;
@@ -428,27 +463,49 @@ const RENDERERS = {
         video.addEventListener('error', () => {
             if (!resource.disposed) { resource.failed = true; video.pause(); }
         });
-        const flvPlayer = flvjs.createPlayer({
-            type: 'flv',
-            url: p.buildUrl(channel, muted),
-            isLive: true,
-            cors: true
-        });
-        resource.flv = flvPlayer;
-        flvPlayer.on(flvjs.Events.ERROR, () => {
-            if (resource.disposed || resource.flv !== flvPlayer) return;
-            replacePlayerWithError(resource, '⚠️ 無法播放直播，請再試一次');
-            resource.flv = null;
-            currentFLVInstances = currentFLVInstances.filter(instance => instance !== flvPlayer);
-            for (const method of ['pause', 'unload', 'detachMediaElement', 'destroy']) {
-                try { flvPlayer[method](); } catch (error) {}
+        queueMicrotask(async () => {
+            if (resource.disposed || !video.isConnected) return;
+            try {
+                const FlvPlayer = await loadPlaybackLibrary('flvjs', './flv.min.js');
+                if (resource.disposed || !video.isConnected) return;
+                if (!FlvPlayer.isSupported()) {
+                    replacePlayerWithError(resource, '⚠️ 瀏覽器不支援 FLV.js，無法播放 .flv 格式');
+                    return;
+                }
+                const flvPlayer = FlvPlayer.createPlayer({
+                    type: 'flv', url: p.buildUrl(channel, video.muted), isLive: true, cors: true
+                });
+                resource.flv = flvPlayer;
+                currentFLVInstances.push(flvPlayer);
+                flvPlayer.on(FlvPlayer.Events.ERROR, () => {
+                    if (resource.disposed || resource.flv !== flvPlayer) return;
+                    replacePlayerWithError(resource, '⚠️ 無法播放直播，請再試一次');
+                    resource.flv = null;
+                    currentFLVInstances = currentFLVInstances.filter(instance => instance !== flvPlayer);
+                    for (const method of ['pause', 'unload', 'detachMediaElement', 'destroy']) {
+                        try { flvPlayer[method](); } catch (error) {}
+                    }
+                    try { video.pause(); video.removeAttribute('src'); video.load(); } catch (error) {}
+                });
+                flvPlayer.attachMediaElement(video);
+                if (resource.flv !== flvPlayer || resource.disposed) return;
+                flvPlayer.load();
+                if (resource.flv !== flvPlayer || resource.disposed) return;
+                Promise.resolve(flvPlayer.play()).catch(() => {});
+            } catch (error) {
+                if (resource.flv) {
+                    const flv = resource.flv;
+                    resource.flv = null;
+                    currentFLVInstances = currentFLVInstances.filter(instance => instance !== flv);
+                    for (const method of ['pause', 'unload', 'detachMediaElement', 'destroy']) {
+                        try { flv[method](); } catch (_) {}
+                    }
+                }
+                if (resource.disposed || !video.isConnected) return;
+                console.warn('[FLV initialization error]', error);
+                replacePlayerWithError(resource, '⚠️ 播放器載入失敗，請重新選台再試');
             }
-            try { video.pause(); video.removeAttribute('src'); video.load(); } catch (error) {}
         });
-        flvPlayer.attachMediaElement(video);
-        flvPlayer.load();
-        flvPlayer.play().catch(() => {});
-        currentFLVInstances.push(flvPlayer);
         return video;
     }
 };
@@ -2779,7 +2836,7 @@ function showUserscript() {
         if (isAltChat) {
             iframe.src = `https://www.twitch.tv/embed/whitewing940920/chat?darkpopout&parent=${encodeURIComponent(parent)}`;
         } else {
-            const custom = new URL('./test3.html?v=20261021-chat-reliability', location.href).href;
+            const custom = new URL(('./test3.html') + '?v=20261021-chat-resources', location.href).href;
             if (iframe.src !== custom) iframe.src = custom;
             else placeControl();
         }
