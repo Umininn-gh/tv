@@ -1,0 +1,13 @@
+{
+  "name": "umininn-tv-regression",
+  "private": true,
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test:player-unit": "node tools/run-player-unit-tests.cjs",
+    "test:browser": "node tools/run-browser-regression.cjs",
+    "build:userscript": "node tools/build-player-userscript.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
+  }
+}

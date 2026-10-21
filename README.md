@@ -10,10 +10,17 @@
 
 保留全部／逐台音量、靜音、手動恢復，以及開始觀看後逐台偵測恢復。安裝、更新、權限與測試限制見 [Userscript 說明](userscript/README.zh-HK.md)。
 
+以 Node.js 22 或以上建置及驗證：
+
 ```powershell
+npm ci
+npx --no-install playwright install --with-deps chromium firefox
 node tools/build-player-userscript.cjs
-node --test "tests/player-userscript-*.test.cjs" "tests/player-extension-*.test.cjs"
+npm run test:player-unit
+npm run test:browser -- --repeat 2
 ```
+
+瀏覽器回歸入口會自動啟用 Chromium／Firefox 測試，缺少瀏覽器或非預期跳過均會失敗。覆蓋範圍、單引擎指令、CI 與實際驗證紀錄見 [瀏覽器回歸說明](docs/browser-regression.zh-HK.md)。直接執行舊的 `node --test` 指令仍可能因未設定 `UMININN_BROWSER_TESTS=1` 而跳過瀏覽器用例。
 
 ## 播放器控制擴充功能原始碼
 

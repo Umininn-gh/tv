@@ -1,0 +1,61 @@
+name: Player regression
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: player-regression-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Player unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run test:player-unit
+
+  browser:
+    name: Player browser (${{ matrix.engine }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox]
+    env:
+      UMININN_BROWSER_TESTS: '1'
+      UMININN_BROWSER_ENGINE: ${{ matrix.engine }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Install the locked browser and its Linux dependencies
+        run: npx --no-install playwright install --with-deps ${{ matrix.engine }}
+      - name: Run regression twice; unexpected skips fail the job
+        run: npm run test:browser -- --engine ${{ matrix.engine }} --repeat 2
+      - name: Upload results even on failure
+        if: ${{ always() }}
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        with:
+          name: player-regression-${{ matrix.engine }}
+          path: |
+            test-results/browser/
+            work/player-audio-focus-default-policy-*.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -26,22 +26,14 @@ test.before(async () => {
     try { playwright = require('playwright'); }
     catch (_) {
         try { playwright = require(path.join(os.homedir(), '.cache', 'codex-runtimes', 'codex-primary-runtime', 'dependencies', 'node', 'node_modules', 'playwright')); }
-        catch (_) { unavailable = 'Playwright is unavailable; install it to run the optional browser tests.'; return; }
+        catch (error) { throw new Error('Browser tests were requested but Playwright is unavailable. Run npm ci.', { cause: error }); }
     }
     assert.ok(['chromium', 'firefox'].includes(engine), 'UMININN_BROWSER_ENGINE must be chromium or firefox.');
-    const candidates = engine === 'firefox' || executablePath
-        ? [{ headless: true, ...(executablePath ? { executablePath } : {}) }]
-        : [{ headless: true }, { channel: 'msedge', headless: true }];
-    for (const options of candidates) {
-        try {
-            launchOptions = engine === 'firefox'
-                ? { ...options, firefoxUserPrefs: { 'media.autoplay.default': 0 } }
-                : { ...options, args: ['--autoplay-policy=no-user-gesture-required'] };
-            browser = await playwright[engine].launch(launchOptions);
-            break;
-        } catch (_) { /* Try the installed Edge if bundled Chromium is absent. */ }
-    }
-    if (!browser) { unavailable = `Could not launch ${engine}; check the browser installation and local process permissions.`; return; }
+    launchOptions = { headless: true, ...(executablePath ? { executablePath } : {}),
+        ...(engine === 'firefox' ? { firefoxUserPrefs: { 'media.autoplay.default': 0 } }
+            : { args: ['--autoplay-policy=no-user-gesture-required'] }) };
+    try { browser = await playwright[engine].launch(launchOptions); }
+    catch (error) { throw new Error(`Cannot launch requested ${engine}; run npx playwright install --with-deps ${engine}.`, { cause: error }); }
     console.log(`Userscript fixture browser: ${engine} ${browser.version()} (no userscript manager or live platform).`);
     const filename = path.join(root, 'userscript', 'umininn-tv-player.user.js');
     assert.ok(fs.existsSync(filename), 'Build the userscript with node tools/build-player-userscript.cjs first.');
