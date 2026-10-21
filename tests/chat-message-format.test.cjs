@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const format = require('../chat-message-format.js');
+const { resolveChatFile } = require('./helpers/chat-paths.cjs');
+const format = require(resolveChatFile('chat-message-format.js'));
 
 function renderer(extra = {}) {
     const images = [], audio = [], trusted = new Map();
@@ -152,4 +153,99 @@ test('overlapping GIF/emote ranges preserve prefix and suffix outside the chosen
     assert.equal(context.images[0].nativeGif, true);
     assert.equal(context.images[0].label, 'GIF');
     assert.match(context.render(result.text), /^a <img .* z$/);
+});
+
+test('explicit media terminators preserve literal legacy terminators inside URL paths and signed queries', () => {
+    const context = renderer();
+    for (const [tag, end, url] of [
+        ['s', 'e', 'https://img.test/a.png?name=some]thing&sig=a%2Fb'],
+        ['s', 'e', 'https://img.test/route]preview/a.png'],
+        ['S', 'E', 'https://img.test/a.png?name=somE]thing'],
+        ['s', 'e', 'https://[2001:db8::e]/path[cache]/a.png?note=some]thing']
+    ]) {
+        const html = context.render(`[${tag}]${url}[${end}] trailing words`);
+        assert.equal(context.images.at(-1).url, url);
+        assert.match(html, / trailing words$/);
+        assert.ok(!html.endsWith(`[${end}] trailing words`));
+    }
+    const video = 'https://vid.test/clip.mp4?comment=part]two&token=a%2Fb';
+    const html = context.render(`[y]${video}[t] after video`);
+    assert.ok(html.includes(`src="${format.escapeHtml(video)}"`));
+    assert.match(html, / after video$/);
+});
+
+test('legacy terminators still stop before another media tag or trailing literal bracketed text', () => {
+    const context = renderer();
+    const html = context.render('[s]https://img.test/first.pnge] text [e] [s]https://img.test/second.png?note=some]thing[e]');
+    assert.deepEqual(context.images.map(item => item.url), [
+        'https://img.test/first.png', 'https://img.test/second.png?note=some]thing'
+    ]);
+    assert.match(html, / text \[e\] /);
+    context.render('[s]https://[2001:db8::e]/first.pnge][s]https://img.test/next.png[e]');
+    assert.deepEqual(context.images.slice(-2).map(item => item.url), [
+        'https://[2001:db8::e]/first.png', 'https://img.test/next.png'
+    ]);
+    const mixed = context.render('[y]https://vid.test/first.mp4t] [y]https://vid.test/second.mp4?note=part]two[t]');
+    assert.equal((mixed.match(/<video /g) || []).length, 2);
+    assert.ok(mixed.includes('src="https://vid.test/first.mp4"'));
+    assert.ok(mixed.includes('src="https://vid.test/second.mp4?note=part]two"'));
+});
+
+test('tagged X previews always retain a visible original URL when the widget cannot load', () => {
+    const url = 'https://mobile.x.com/example/status/123456789?token=a%2Fb&view=full#details';
+    const html = renderer().render(`[y]${url}[t]`);
+    assert.match(html, /data-embed-kind="twitter"/);
+    assert.ok(html.includes(`<div class="chat-media-origin">原連結：<a href="${format.escapeHtml(url)}"`));
+    assert.ok(html.includes(`>${format.escapeHtml(url)}</a></div>`));
+    assert.match(html, /若預覽無法顯示，可開啟原帖。/);
+    // The page owns one widget loader; per-message scripts would be inert when
+    // appended through a parsed HTML fragment, or cause duplicate executions.
+    assert.ok(!html.includes('<script'));
+    // The fallback lives outside the replaceable widget markup and is neither
+    // hidden nor dependent on script execution to provide message content.
+    assert.ok(html.indexOf('chat-media-origin') > html.indexOf('</blockquote></div>'));
+    assert.ok(!html.match(/class="chat-media-origin"[^>]*hidden/));
+    assert.match(renderer().render(url), new RegExp(`^<a href=`));
+});
+
+test('native video embeds preserve signed source links and expose controlled failure and retry hooks', () => {
+    for (const extension of ['mp4', 'm3u8', 'flv']) {
+        const url = `https://vid.test/path.${extension}?token=a%2Fb&expires=123#part`;
+        const html = renderer().render(`[y]${url}[t]`);
+        assert.match(html, /data-embed-kind="video"/);
+        assert.ok(html.includes(`src="${format.escapeHtml(url)}"`));
+        assert.ok(html.includes(`>${format.escapeHtml(url)}</a>`));
+        assert.match(html, /部分格式可能不受瀏覽器支援/);
+        assert.match(html, /onerror="onChatVideoError\(this\)"/);
+        assert.match(html, /onloadeddata="onChatVideoLoaded\(this\)"/);
+        assert.match(html, /class="chat-media-retry" hidden onclick="retryChatVideo\(this,event\)"/);
+    }
+});
+
+test('cross-origin iframe previews keep original links even if the frame loads an error page', () => {
+    for (const [kind, url] of [
+        ['youtube', 'https://youtu.be/abc12345?t=90&sig=a%2Fb'],
+        ['threads', 'https://www.threads.net/@name/post/abc123?token=a%2Fb&x=1'],
+        ['steam', 'https://store.steampowered.com/app/123/title/?token=a%2Fb&x=1'],
+        ['facebook', 'https://www.facebook.com/watch/?v=123&token=a%2Fb']
+    ]) {
+        const html = renderer().render(`[y]${url}[t]`);
+        assert.ok(html.includes(`data-embed-kind="${kind}"`));
+        assert.match(html, /<iframe /);
+        assert.match(html, /onerror="onChatEmbedError\(this\)"/);
+        assert.ok(html.includes(`>${format.escapeHtml(url)}</a>`));
+        assert.match(html, /若預覽無法顯示，可開啟原連結。/);
+    }
+});
+
+test('media fallback links escape URL markup and reject unsafe source protocols', () => {
+    const url = 'https://vid.test/clip.mp4?text="onerror=bad&next=<tag>';
+    const html = renderer().render(`[y]${url}[t]`);
+    assert.ok(html.includes(`>${format.escapeHtml(url)}</a>`));
+    assert.ok(!html.includes('next=<tag>'));
+    assert.ok(!html.includes('href="https://vid.test/clip.mp4?text="onerror'));
+    const invalid = renderer().render('[y]javascript:alert(1)[t]');
+    assert.ok(!invalid.includes('chat-media-origin'));
+    assert.ok(!invalid.includes('<iframe'));
+    assert.ok(!invalid.includes('<video'));
 });

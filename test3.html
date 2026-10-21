@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Chickchat7</title>
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-    <script src="./chat-message-format.js?v=20261016-chat-reliability"></script>
-    <script src="./chat-message-store.js?v=20261016-chat-reliability"></script>
+    <script src="./chat-message-format.js?v=20261021-chat-reliability"></script>
+    <script src="./chat-message-store.js?v=20261021-chat-reliability"></script>
     <style>
         :root { --t-bg: #0e0e10; --t-alt: #18181b; --t-purp: #9147ff; --t-text: #efeff1; --input-bg: #18181b; }
         body { background: var(--t-bg); color: var(--t-text); font-family: sans-serif; margin: 0; display: flex; flex-direction: column; height: 100vh; overflow: hidden;   --bg-base: #09090b;
@@ -136,6 +136,13 @@
         .chat-image-fallback button, .chat-image-fallback a { font: inherit; color: #bf94ff; white-space: nowrap; }
         .chat-image-fallback button { background: transparent; border: 0; padding: 0; cursor: pointer; text-decoration: underline; }
         .chat-image-fallback button:disabled { opacity: 0.6; cursor: wait; }
+        .chat-media-embed { max-width: 100%; }
+        .chat-media-origin { display: block; overflow-wrap: anywhere; font-size: .85em; }
+        .chat-media-status { display: block; color: var(--text-muted, #aaa); font-size: .85em; }
+        .chat-media-status:empty { display: none; }
+        .chat-media-retry { cursor: pointer; }
+        .chat-media-embed [hidden] { display: none !important; }
+        #chat-container .chat-media-embed blockquote.twitter-tweet { min-height: 0 !important; max-height: none !important; }
         .chat-image-fallback button:focus-visible, .chat-image-fallback a:focus-visible { outline: 2px solid #bf94ff; outline-offset: 2px; }
         .badge { width: 18px; height: 18px; vertical-align: middle; margin-right: 4px; display: inline-block; }
        .btn-danger:hover { background: var(--danger); color: white; }
@@ -1965,6 +1972,88 @@ function onMediaLoaded() {
     else restoreChatViewport(readingAnchor);
 }
 
+function setChatMediaState(media, state, text) {
+    const wrapper = media?.closest?.('.chat-media-embed');
+    if (!wrapper?.isConnected) return;
+    wrapper.dataset.embedState = state;
+    const status = wrapper.querySelector('.chat-media-status');
+    if (status) status.textContent = text;
+    onMediaLoaded();
+}
+function onChatVideoLoaded(video) {
+    video.hidden = false;
+    const retry = video.closest('.chat-media-embed')?.querySelector('.chat-media-retry');
+    if (retry) retry.hidden = true;
+    setChatMediaState(video, 'loaded', '');
+}
+function onChatVideoError(video) {
+    video.hidden = true;
+    const retry = video.closest('.chat-media-embed')?.querySelector('.chat-media-retry');
+    if (retry) retry.hidden = false;
+    setChatMediaState(video, 'failed', '影片未能播放；可重試或開啟原網址。');
+}
+function retryChatVideo(button, event) {
+    event?.preventDefault();
+    event?.stopPropagation();
+    const video = button.closest('.chat-media-embed')?.querySelector('video');
+    if (!video || button.hidden) return;
+    button.hidden = true;
+    video.hidden = false;
+    setChatMediaState(video, 'loading', '正在重試影片；也可開啟原網址。');
+    video.load();
+}
+function onChatEmbedError(frame) {
+    frame.hidden = true;
+    setChatMediaState(frame, 'failed', '嵌入內容未能載入；請開啟原網址。');
+}
+function onChatTwitterScriptError() {
+    document.querySelectorAll('.chat-media-embed[data-embed-kind="twitter"]').forEach(wrapper => {
+        if (wrapper.querySelector('iframe')) return;
+        const container = wrapper.querySelector('.twitter-tweet-container');
+        if (container) container.hidden = true;
+        setChatMediaState(wrapper, 'failed', '貼文未能嵌入；請開啟原網址。');
+    });
+}
+let chatTwitterScriptPromise = null;
+function ensureChatTwitterWidgets() {
+    if (window.twttr?.widgets?.load) { onChatTwitterScriptLoaded(); return; }
+    if (chatTwitterScriptPromise) return chatTwitterScriptPromise;
+    chatTwitterScriptPromise = new Promise(resolve => {
+        const script = document.createElement('script');
+        script.async = true;
+        script.src = 'https://platform.twitter.com/widgets.js';
+        let settled = false;
+        const finish = loaded => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            if (loaded) onChatTwitterScriptLoaded();
+            else onChatTwitterScriptError();
+            resolve(loaded);
+        };
+        const timeout = setTimeout(() => finish(false), 12000);
+        script.onload = () => finish(true);
+        script.onerror = () => finish(false);
+        document.head.appendChild(script);
+    });
+    return chatTwitterScriptPromise;
+}
+function onChatTwitterScriptLoaded() {
+    if (!window.twttr?.widgets?.load) { onChatTwitterScriptError(); return; }
+    document.querySelectorAll('.chat-media-embed[data-embed-kind="twitter"]').forEach(wrapper => {
+        const container = wrapper.querySelector('.twitter-tweet-container');
+        if (container) container.hidden = false;
+        try {
+            Promise.resolve(window.twttr.widgets.load(wrapper)).then(() => {
+                if (!wrapper.isConnected) return;
+                const loaded = Boolean(wrapper.querySelector('iframe'));
+                if (container) container.hidden = !loaded;
+                setChatMediaState(wrapper, loaded ? 'loaded' : 'unavailable', loaded ? '' : '貼文暫未顯示；可開啟原網址。');
+            }).catch(() => onChatTwitterScriptError());
+        } catch (_) { onChatTwitterScriptError(); }
+    });
+}
+
 function onChatImageLoaded(image) {
     const container = image.closest('.chat-image');
     if (!container?.isConnected) return;
@@ -2063,7 +2152,19 @@ function insertMessageElements($elements) {
 function flushMessageBuffer() {
     if (bufferFlushTask) return bufferFlushTask;
     const insert = entries => {
-        const allowed = entries.filter(item => !isSuppressedChatMetadata(bufferEntryMetadata(item)));
+        const displayed = new Set();
+        document.querySelectorAll('#messages .chat-line').forEach(row => displayed.add(row.dataset.messageKey || row.dataset.messageId));
+        if (chatVirtualizer) for (const page of chatVirtualizer.pages.values()) {
+            for (const item of page.items) displayed.add(item.key || item.id);
+        }
+        const allowed = entries.filter(item => {
+            const metadata = bufferEntryMetadata(item);
+            if (isSuppressedChatMetadata(metadata)) return false;
+            const identity = metadata.key || metadata.id;
+            if (identity && displayed.has(identity)) return false;
+            if (identity) displayed.add(identity);
+            return true;
+        });
         if (!allowed.length) return;
         const viewport = captureChatViewport();
         const $elements = $(allowed.map(item => {
@@ -2079,36 +2180,54 @@ function flushMessageBuffer() {
         finish(viewport);
     };
     if (!messageBuffer.length) return;
-    if (!messageBuffer.some(item => item.archiveId)) {
-        const entries = messageBuffer;
-        messageBuffer = [];
-        return insert(entries);
-    }
     bufferFlushTask = (async () => {
+        const unreadable = new Set();
         while (messageBuffer.length) {
-            const first = messageBuffer[0];
+            const first = messageBuffer.find(item => !unreadable.has(item));
+            if (!first) break;
             let entries;
             if (first.archiveId) {
-                entries = await chatMessageStore.restoreBuffered(first);
-                const retained = new Set(first.items.map(item => item.id));
-                entries = entries.filter(item => retained.has(bufferEntryMetadata(item).id));
+                try { entries = await chatMessageStore.restoreBuffered(first); }
+                catch (err) {
+                    // Moderation can remove a page while its read is pending.
+                    // A genuinely unreadable page remains retryable, but must
+                    // not block unrelated buffered messages behind it.
+                    if (messageBuffer.includes(first)) {
+                        unreadable.add(first);
+                        showChatStorageWarning(err);
+                    }
+                    continue;
+                }
                 await Promise.all(entries.map(async item => {
                     item.record = await chatMessageStore.getById(bufferEntryMetadata(item).id);
                 }));
-                if (messageBuffer[0] !== first) continue;
-                messageBuffer.shift();
+                // A late message can sort before this reference while reads await.
+                // Keep the page until insertion succeeds, and use its current
+                // metadata so moderation during that await cannot restore rows.
+                if (!messageBuffer.includes(first)) continue;
+                const retained = new Set(first.items.map(item => item.key || item.id));
+                entries = entries.filter(item => {
+                    const metadata = bufferEntryMetadata(item);
+                    return retained.has(metadata.key || metadata.id);
+                });
+                await insert(entries);
+                messageBuffer = messageBuffer.filter(item => item !== first);
+                await chatMessageStore.deletePage(first.archiveId).catch(err => showChatStorageWarning(err));
             } else {
-                const end = messageBuffer.findIndex(item => item.archiveId);
-                entries = messageBuffer.splice(0, end < 0 ? messageBuffer.length : end);
+                entries = messageBuffer.filter(item => !item.archiveId).slice(0, MAX_MESSAGES);
+                await insert(entries);
+                const inserted = new Set(entries);
+                messageBuffer = messageBuffer.filter(item => !inserted.has(item));
             }
-            await insert(entries);
+            if (retentionPaused) showPausedRetentionStatus();
+            updateHistoryButton();
         }
     })().catch(err => showChatStorageWarning(err)).finally(() => { bufferFlushTask = null; });
     return bufferFlushTask;
 }
 
 function archiveMessageBuffer() {
-    if (bufferArchiveTask || !retentionPaused || !chatMessageStore || chatMessageStore.failed) return;
+    if (bufferArchiveTask || !retentionPaused || !chatMessageStore || !chatMessageStore.canArchivePages()) return;
     const regular = messageBuffer.filter(item => !item.archiveId);
     if (regular.length <= MAX_MESSAGES * 2) return;
     const entries = regular.slice(0, MAX_MESSAGES);
@@ -2124,14 +2243,12 @@ function archiveMessageBuffer() {
 function observeChatMedia(rows) {
     refreshInsertedChatQuotes(rows);
     rows.forEach(row => row.querySelectorAll('video.media-preview').forEach(video => mediaObserver.observe(video)));
-    if (window.twttr?.widgets?.load) rows.forEach(row => {
-        try { Promise.resolve(window.twttr.widgets.load(row)).catch(() => {}); } catch (_) {}
-    });
+    if (rows.some(row => row.querySelector('.chat-media-embed[data-embed-kind="twitter"]'))) ensureChatTwitterWidgets();
 }
 function showChatStorageWarning(err) {
     console.warn('本機聊天暫存未能使用:', err);
     const notice = document.getElementById('chatStorageNotice');
-    if (notice) { notice.textContent = '本機暫存未能使用；閱讀中的留言仍保留。'; notice.hidden = false; }
+    if (notice) { notice.textContent = '本機暫存暫時未能使用；部分舊留言可能暫未顯示，其他留言會繼續顯示，可稍後重試。'; notice.hidden = false; }
 }
 function initializeChatStorage() {
     chatMessageStore = new ChatMessageStore({ maxCachedRecords: MAX_CACHED_CHAT_RECORDS, maxUserNames: MAX_CACHED_CHAT_USERS,
@@ -2374,7 +2491,7 @@ function processRTag(str, depth = 0, visited = new Set()) {
         if (quotedMsg?.ambiguous) return protectChatHtml(`${mentionHtml}:[同時有多則留言，無法確定引用]`);
         if (!quotedMsg || quotedMsg.deleted || !quotedMsg.content) {
             requestChatReference(decodeChatImageAttribute(login), ts);
-            return protectChatHtml(mentionHtml);
+            return protectChatHtml(`${mentionHtml}:[原留言暫未取得]`);
         }
         const quotedContent = quotedMsg.content;
         const reference = `${login}:${ts}`;
@@ -2930,6 +3047,7 @@ let historyRetryOlder = null;
 let hasMoreHistory = false;
 // API cursors are rm-received-ts, never Twitch's independent tmi-sent-ts clock.
 const HISTORY_PAGE_LIMIT = 800;
+const HISTORY_RETENTION_AGE = 24 * 60 * 60 * 1000;
 let historyReceivedCheckpoint = 0;
 let historyRecovery = null;
 let olderHistoryQueue = [];
@@ -2940,6 +3058,24 @@ let olderHistoryBoundaryKeys = new Set();
 let olderHistoryRemoteMore = false;
 let historyRecoveryTimer = null;
 let historyServiceWarning = '';
+// A later successful request cannot prove that an earlier collector outage or
+// expired service window contained no messages. Keep that uncertainty separate
+// from transient network failures for the remainder of this page's history.
+const historyCoverageWarnings = new Map();
+function rememberHistoryCoverageWarning(reason) {
+    const descriptions = {
+        expired: '上次歷史紀錄已超過24小時',
+        unavailable: '歷史服務曾未完整收錄此聊天室',
+        discontinuity: '未能銜接上次紀錄，可能超出800則或24小時保留範圍',
+        pagination: '歷史分頁曾無法完整前進'
+    };
+    if (descriptions[reason]) historyCoverageWarnings.set(reason, descriptions[reason]);
+}
+function historyCoverageWarningText() {
+    return historyCoverageWarnings.size
+        ? `部分留言可能未能補回（${Array.from(historyCoverageWarnings.values()).join('；')}）。`
+        : '';
+}
 function historyReceivedTime(message) {
     const value = Number(getTagValue(message.tags, 'rm-received-ts'));
     return Number.isFinite(value) && value > 0 ? value : 0;
@@ -3003,7 +3139,8 @@ async function alignOlderHistoryToRetainedRows() {
 }
 function setHistoryStatus(text) {
     const status = document.getElementById('historyStatus');
-    const warning = typeof chatConnectionWarning === 'string' && chatConnectionWarning ? chatConnectionWarning : historyServiceWarning;
+    const currentWarning = typeof chatConnectionWarning === 'string' && chatConnectionWarning ? chatConnectionWarning : historyServiceWarning;
+    const warning = [currentWarning, historyCoverageWarningText()].filter(Boolean).join(' ');
     const display = warning ? `${warning} ${text}` : text;
     if (status && status.textContent !== display) { status.textContent = display; status.title = display; }
 }
@@ -3043,6 +3180,7 @@ async function requestHistoryPage({ before = null, after = null } = {}) {
         if (!response.ok) throw new Error(`歷史訊息服務回應 ${response.status}`);
         const data = await response.json();
         if (!Array.isArray(data.messages)) throw new Error('歷史訊息格式無效');
+        if (data.error_code || data.error) rememberHistoryCoverageWarning('unavailable');
         const allEvents = data.messages.flatMap(raw => typeof raw === 'string' ? raw.split(/\r?\n/) : [])
             .map(parseIrcLine).filter(Boolean)
             .filter(message => {
@@ -3100,8 +3238,10 @@ async function fetchRecentMessages(older = false) {
     try {
         if (recovering) {
             // This state survives failed requests and newer live messages/reconnections.
-            historyRecovery ||= { after: Math.max(0, historyReceivedCheckpoint - 1), before: null, newest: historyReceivedCheckpoint, boundaryKeys: new Set(), resetVersion: requestUnreadResetVersion };
+            historyRecovery ||= { after: Math.max(0, historyReceivedCheckpoint - 1), before: null, checkpoint: historyReceivedCheckpoint,
+                newest: historyReceivedCheckpoint, overlapSeen: false, boundaryKeys: new Set(), resetVersion: requestUnreadResetVersion };
             const recovery = historyRecovery;
+            if (recovery.checkpoint > 0 && Date.now() - recovery.checkpoint > HISTORY_RETENTION_AGE) rememberHistoryCoverageWarning('expired');
             let completed = false;
             let unavailable = false;
             let paginationBlocked = false;
@@ -3111,6 +3251,7 @@ async function fetchRecentMessages(older = false) {
                 const events = result.events;
                 const times = result.allEvents.map(historyReceivedTime).filter(Boolean);
                 if (times.length) recovery.newest = Math.max(recovery.newest, ...times);
+                if (times.some(time => time <= recovery.checkpoint)) recovery.overlapSeen = true;
                 const fresh = events.filter(message => !recovery.boundaryKeys.has(historyEventKey(message)));
                 for (const message of fresh) {
                     const key = chatMessageKey(message);
@@ -3135,10 +3276,18 @@ async function fetchRecentMessages(older = false) {
             }
             historyRetryOlder = null;
             if (paginationBlocked) {
+                rememberHistoryCoverageWarning('pagination');
                 historyServiceWarning = '歷史服務分頁無法再前進，部分留言可能無法補回；可重試。';
                 historyRetryOlder = false;
                 historyRecovery = null;
             } else if (completed && !unavailable) {
+                // Filtering after checkpoint - 1 deliberately includes the last
+                // known receive millisecond. New rows without that overlap can
+                // be the tail of an already-truncated/purged service history.
+                // Empty quiet results alone are not evidence of missing rows.
+                if (recovery.checkpoint > 0 && recovery.newest > recovery.checkpoint && !recovery.overlapSeen) {
+                    rememberHistoryCoverageWarning('discontinuity');
+                }
                 historyReceivedCheckpoint = recovery.newest;
                 historyRecovery = null;
                 historyServiceWarning = '';
@@ -3174,6 +3323,7 @@ async function fetchRecentMessages(older = false) {
                     }
                     seedOlderHistory(events, result.full, result.allEvents);
                     if (!firstPage && result.full && olderHistoryBoundary !== null && previousBoundary !== null && olderHistoryBoundary >= previousBoundary && !events.length) {
+                        rememberHistoryCoverageWarning('pagination');
                         historyServiceWarning = '歷史服務分頁無法再前進，部分留言可能無法補回。';
                         olderHistoryRemoteMore = false;
                         break;
@@ -3299,17 +3449,34 @@ let latestChatTimestamp = 0;
 let chatResourcesReady = false;
 let hasJoinedChannel = false;
 let needsHistoryRefresh = false;
+let localChatMessageSequence = 0;
+const unkeyedChatMessageIds = new WeakMap();
+function chatMessageBody(message) {
+    return message.body || (message.command === 'USERNOTICE' ? ChatMessageFormat.getTag(message.tags, 'system-msg') : '') || '';
+}
 function chatMessageKey(message) {
     const id = getTagValue(message.tags, 'id');
     const ts = getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts');
-    return id || (ts ? `${message.params[0]}:${message.source}:${ts}:${message.body}` : null);
+    return id || (ts ? `${message.command}:${message.params[0]}:${message.source}:${ts}:${chatMessageBody(message)}` : null);
+}
+function chatMessageIdentity(message) {
+    const key = chatMessageKey(message);
+    if (key) return key;
+    if (!unkeyedChatMessageIds.has(message)) {
+        const identity = message.localMessageIdentity || `unkeyed-${Date.now()}-${++localChatMessageSequence}`;
+        unkeyedChatMessageIds.set(message, identity);
+        // IndexedDB clones the IRC object; carry the same identity through
+        // archival/restoration instead of assigning the restored row a new ID.
+        message.localMessageIdentity = identity;
+    }
+    return unkeyedChatMessageIds.get(message);
 }
 function isChatEventForChannel(message) {
     return ['PRIVMSG', 'USERNOTICE', 'CLEARMSG', 'CLEARCHAT'].includes(message.command) &&
         message.params[0]?.toLowerCase() === `#${CHANNEL.toLowerCase()}`;
 }
 function isDisplayableChatMessage(message) {
-    return isChatEventForChannel(message) && ['PRIVMSG', 'USERNOTICE'].includes(message.command) && Boolean(message.body) &&
+    return isChatEventForChannel(message) && ['PRIVMSG', 'USERNOTICE'].includes(message.command) && Boolean(chatMessageBody(message)) &&
         getTagValue(message.tags, 'rm-deleted') !== '1' && !isSuppressedChatMetadata({
             id: chatMessageKey(message), login: message.command === 'USERNOTICE' ? getTagValue(message.tags, 'login') : message.source.split('!')[0],
             timestamp: Number(getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts'))
@@ -3436,16 +3603,17 @@ function safeBuildChatMessageHtml(message, historical = false) {
         trustedChatHtml.clear();
         activeChatQuoteReferences = null;
         const ts = getTagValue(message.tags, 'tmi-sent-ts') || getTagValue(message.tags, 'rm-received-ts') || String(Date.now());
-        const id = getTagValue(message.tags, 'id') || chatMessageKey(message) || ts;
+        const id = chatMessageIdentity(message);
         const login = (message.command === 'USERNOTICE' ? '' : message.source.split('!')[0]) || getTagValue(message.tags, 'login') || '';
         const user = getTagValue(message.tags, 'display-name') || login || 'User';
         const references = Array.from(String(message.body).matchAll(/\[r\]([^,]+),([0-9]+)\[m\]/gi), match => chatReferenceKey(match[1], match[2]));
         const parent = getTagValue(message.tags, 'reply-parent-msg-id');
         if (parent) references.push(`id:${parent}`);
-        try { rememberChatRecord({ content: message.body, user: { login, displayName: user }, displayName: user,
+        const body = chatMessageBody(message);
+        try { rememberChatRecord({ content: body, user: { login, displayName: user }, displayName: user,
             timestamp: Number(ts), ircMessage: message }, id, chatMessageKey(message)); }
         catch (cacheError) { console.warn('留言快取失敗，保留文字:', cacheError); }
-        return `<div class="chat-line fallback-msg ${historical ? 'historical-msg ' : ''}id-${escapeChatText(id)}" data-message-id="${escapeChatText(id)}" data-user-login="${escapeChatText(login)}" data-msg-ts="${escapeChatText(ts)}" data-received-ts="${escapeChatText(getTagValue(message.tags, 'rm-received-ts') || '')}" data-quote-version="${chatQuoteVersion}" data-quote-refs="${escapeChatText(JSON.stringify(references))}"><b>${escapeChatText(user)}:</b> <span>${escapeChatText(message.body)}</span></div>`;
+        return `<div class="chat-line fallback-msg ${historical ? 'historical-msg ' : ''}id-${escapeChatText(id)}" data-message-id="${escapeChatText(id)}" data-user-login="${escapeChatText(login)}" data-msg-ts="${escapeChatText(ts)}" data-received-ts="${escapeChatText(getTagValue(message.tags, 'rm-received-ts') || '')}" data-quote-version="${chatQuoteVersion}" data-quote-refs="${escapeChatText(JSON.stringify(references))}"><b>${escapeChatText(user)}:</b> <span>${escapeChatText(body)}</span></div>`;
     }
 }
 function buildChatMessageHtml(message, historical = false) {
@@ -3453,10 +3621,10 @@ function buildChatMessageHtml(message, historical = false) {
     activeChatQuoteReferences = new Set();
     quoteRenderBudget = 80;
     const tags = message.tags;
-    const rawMsg = message.body;
+    const rawMsg = chatMessageBody(message);
     const nativeBody = ChatMessageFormat.prepareNativeBody(rawMsg, tags, { renderImage: buildChatImageHtml, protectHtml: protectChatHtml });
     const nickFromSource = message.command === 'USERNOTICE' ? '' : message.source.split("!")[0];
-    let msgId = getTagValue(tags, "id");
+    let msgId = chatMessageIdentity(message);
     let ts = getTagValue(tags, "tmi-sent-ts") || getTagValue(tags, "rm-received-ts") || Date.now().toString();
     let color = getTagValue(tags, "color") || "#9147ff";
     let badgeStr = getTagValue(tags, "badges");

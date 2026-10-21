@@ -86,6 +86,12 @@
         return `<a href="${escaped}" target="_blank" rel="noopener noreferrer" style="color:#58a6ff;">${escaped}</a>`;
     }
 
+    function embeddedMediaHtml(media, kind, preview, status, controls = '') {
+        // Keep this outside the third-party widget: it must remain readable when
+        // a script is blocked, an iframe refuses to embed, or a codec is absent.
+        return `<div class="chat-media-embed" data-embed-kind="${kind}" data-embed-state="loading">${preview}<div class="chat-media-status" role="status">${status}</div>${controls}<div class="chat-media-origin">原連結：${linkHtml(media.url)}</div></div>`;
+    }
+
     function mediaHtml(value, type, options) {
         const media = classifyMediaUrl(value);
         if (media.kind === 'invalid') return escapeHtml(value);
@@ -94,20 +100,20 @@
         if (type === 'S') return renderImage(media.url, { emote: false });
         if (type === 'a') return options.renderAudio ? options.renderAudio(media.url) : linkHtml(media.url);
         if (media.kind === 'youtube') {
-            return `<iframe class="media-preview" src="https://www.youtube.com/embed/${media.id}?start=${media.start}" frameborder="0" allowfullscreen onload="onMediaLoaded()" loading="lazy"></iframe>`;
+            return embeddedMediaHtml(media, 'youtube', `<iframe class="media-preview" title="YouTube 影片預覽" src="https://www.youtube.com/embed/${media.id}?start=${media.start}" frameborder="0" allowfullscreen onload="onMediaLoaded()" onerror="onChatEmbedError(this)" loading="lazy"></iframe>`, '若預覽無法顯示，可開啟原連結。');
         }
         if (media.kind === 'twitter') {
-            return `<div class="twitter-tweet-container" style="max-height:400px; height:400px; overflow:hidden;"><blockquote class="twitter-tweet"><a href="${escapeHtml(media.canonicalUrl)}"></a></blockquote></div><script async src="https://platform.twitter.com/widgets.js" onload="onMediaLoaded()"><\/script>`;
+            return embeddedMediaHtml(media, 'twitter', `<div class="twitter-tweet-container" style="max-height:400px; overflow:hidden;"><blockquote class="twitter-tweet"><a href="${escapeHtml(media.canonicalUrl)}"></a></blockquote></div>`, '若預覽無法顯示，可開啟原帖。');
         }
         if (media.kind === 'threads') {
-            return `<iframe src="https://www.threads.com${media.path}/embed" allowtransparency="true" allowfullscreen frameborder="0" height="300" style="background:#FFF;border-radius:12px;width:100%" onload="onMediaLoaded()" loading="lazy"></iframe>`;
+            return embeddedMediaHtml(media, 'threads', `<iframe title="Threads 帖子預覽" src="https://www.threads.com${media.path}/embed" allowtransparency="true" allowfullscreen frameborder="0" height="300" style="background:#FFF;border-radius:12px;width:100%" onload="onMediaLoaded()" onerror="onChatEmbedError(this)" loading="lazy"></iframe>`, '若預覽無法顯示，可開啟原連結。');
         }
         if (media.kind === 'video') {
-            return `<video controls class="media-preview" autoplay loop muted playsinline src="${escaped}" onloadeddata="onMediaLoaded()"></video>`;
+            return embeddedMediaHtml(media, 'video', `<video controls class="media-preview" autoplay loop muted playsinline src="${escaped}" onloadeddata="onChatVideoLoaded(this)" onerror="onChatVideoError(this)"></video>`, '若影片無法播放，可開啟原連結；部分格式可能不受瀏覽器支援。', '<button type="button" class="chat-media-retry" hidden onclick="retryChatVideo(this,event)">重試</button>');
         }
-        if (media.kind === 'steam') return `<iframe class="media-preview" src="https://store.steampowered.com/widget/${media.id}" frameborder="0" onload="onMediaLoaded()" loading="lazy"></iframe>`;
+        if (media.kind === 'steam') return embeddedMediaHtml(media, 'steam', `<iframe class="media-preview" title="Steam 遊戲預覽" src="https://store.steampowered.com/widget/${media.id}" frameborder="0" onload="onMediaLoaded()" onerror="onChatEmbedError(this)" loading="lazy"></iframe>`, '若預覽無法顯示，可開啟原連結。');
         if (media.kind === 'facebook' && type === 'y') {
-            return `<iframe src="https://www.facebook.com/plugins/video.php?href=${escapeHtml(encodeURIComponent(media.url))}&amp;show_text=0&amp;width=300" width="300" height="200" style="border:none;overflow:hidden" scrolling="no" frameborder="0" allowfullscreen onload="onMediaLoaded()" loading="lazy"></iframe>`;
+            return embeddedMediaHtml(media, 'facebook', `<iframe title="Facebook 影片預覽" src="https://www.facebook.com/plugins/video.php?href=${escapeHtml(encodeURIComponent(media.url))}&amp;show_text=0&amp;width=300" width="300" height="200" style="border:none;overflow:hidden" scrolling="no" frameborder="0" allowfullscreen onload="onMediaLoaded()" onerror="onChatEmbedError(this)" loading="lazy"></iframe>`, '若預覽無法顯示，可開啟原連結。');
         }
         return type === 's' || media.kind === 'image' ? renderImage(media.url, { emote: false }) : linkHtml(media.url);
     }
@@ -132,6 +138,9 @@
             const start = prefix.lastIndex;
             const remainder = source.slice(start);
             const closing = type === 'a' ? /\[o\]/ig : type === 'S' ? /\[?E\]/g : type === 's' ? /\[?e\]/g : /\[?t\]/ig;
+            const explicitClosing = type === 'a' ? /\[o\]/i : type === 'S' ? /\[E\]/ : type === 's' ? /\[e\]/ : /\[t\]/i;
+            const explicitEnd = explicitClosing.exec(remainder);
+            const nextPrefix = /\[(?:S|s|y|Y|a|A)\]/.exec(remainder);
             let end;
             while ((end = closing.exec(remainder))) {
                 // A legacy e]/t] terminator is not the closing bracket of an IPv6 host or URL path.
@@ -139,7 +148,12 @@
                 if (!end[0].startsWith('[') && before.lastIndexOf('[') > before.lastIndexOf(']')) continue;
                 break;
             }
-            const nextPrefix = /\[(?:S|s|y|Y|a|A)\]/.exec(remainder);
+            // An unescaped e]/t] can occur inside a valid URL query or path.
+            // Prefer the unambiguous bracketed terminator for this media tag,
+            // without borrowing a terminator from the next tag or swallowing
+            // ordinary text after an already complete legacy media URL.
+            if (explicitEnd && (!nextPrefix || explicitEnd.index < nextPrefix.index) &&
+                safeUrl(remainder.slice(0, explicitEnd.index).replace(/[\r\n]/g, '').trim())) end = explicitEnd;
             let value, after;
             if (end && (!nextPrefix || end.index < nextPrefix.index)) {
                 value = remainder.slice(0, end.index).replace(/[\r\n]/g, '').trim();

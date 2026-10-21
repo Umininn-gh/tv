@@ -2,13 +2,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
+const { resolveChatFile } = require('./helpers/chat-paths.cjs');
 let playwright;
 try { playwright = require('playwright'); }
 catch (_) {
     playwright = require(path.join(require('node:os').homedir(), '.cache', 'codex-runtimes', 'codex-primary-runtime', 'dependencies', 'node', 'node_modules', 'playwright'));
 }
 const { chromium } = playwright;
-const helper = fs.readFileSync(path.join(__dirname, '..', 'chat-message-store.js'));
+const helper = fs.readFileSync(resolveChatFile('chat-message-store.js'));
 const server = http.createServer((req, res) => {
     if (req.url === '/chat-message-store.js') return res.writeHead(200, { 'content-type': 'text/javascript' }).end(helper);
     res.writeHead(200, { 'content-type': 'text/html' }).end('<style>body{margin:0}#pane{width:600px;height:400px;overflow:auto;overflow-anchor:none}#messages{padding:0}.chat-line{height:60px;box-sizing:border-box;margin:0 0 4px}</style><div id="pane"><div id="messages"></div></div><script src="/chat-message-store.js"></script>');
@@ -176,7 +177,10 @@ async function main() {
             }))));
             const referenceBytes = JSON.stringify(references).length;
             const restored = [];
-            for (const reference of references) restored.push(...await store.restoreBuffered(reference));
+            for (const reference of references) {
+                restored.push(...await store.restoreBuffered(reference));
+                await store.deletePage(reference.archiveId);
+            }
             return { refs: references.length, referenceBytes, restored: restored.length, unique: new Set(restored.map(entry => entry.key)).size,
                 first: restored[0].key, last: restored.at(-1).key };
         });
@@ -184,6 +188,19 @@ async function main() {
         assert.equal(results.backgroundSpool.unique, 2000);
         assert.equal(results.backgroundSpool.first, 'background-0');
         assert.equal(results.backgroundSpool.last, 'background-1999');
+
+        results.bufferReadNeedsExplicitAcknowledgement = await page.evaluate(async () => {
+            const reference = await store.archiveBuffered([{ key: 'unacknowledged', timestamp: 250000,
+                html: '<div data-message-id="unacknowledged" data-user-login="reader">Retained until inserted</div>' }]);
+            const first = await store.restoreBuffered(reference);
+            const second = await store.restoreBuffered(reference);
+            const stillSaved = (await store.loadPage(reference.archiveId)).entries.length;
+            await store.deletePage(reference.archiveId);
+            let removed = false;
+            try { await store.loadPage(reference.archiveId); } catch (_) { removed = true; }
+            return { first: first[0].key, second: second[0].key, stillSaved, removed };
+        });
+        assert.deepEqual(results.bufferReadNeedsExplicitAcknowledgement, { first: 'unacknowledged', second: 'unacknowledged', stillSaved: 1, removed: true });
 
         results.diskFailurePreservesRows = await page.evaluate(async () => {
             virtualizer.disconnect();
@@ -291,6 +308,117 @@ async function main() {
         assert.equal(results.activeOldTabSurvivesCleanup.removed, null);
         assert.equal(results.activeOldTabSurvivesCleanup.activeDeliveryPreserved, true);
         assert.equal(results.activeOldTabSurvivesCleanup.closedDeliveryRemoved, true);
+
+        await page.goto(`http://127.0.0.1:${server.address().port}/`);
+        results.quotaAfterArchiveKeepsOldPagesReadable = await page.evaluate(async () => {
+            const messages = document.getElementById('messages'), pane = document.getElementById('pane');
+            const warnings = [], records = new Map();
+            const store = new ChatMessageStore({ databaseName: 'owned-quota-archive-' + Date.now(),
+                onError: error => warnings.push(error.message) });
+            await store.ready;
+            const virtualizer = store.createVirtualizer({ messages, container: pane, isPaused: () => true, keepRecent: 300,
+                getRecord: id => records.get(id), renderRecord: (_, entry) => entry.html });
+            for (let i = 0; i < 900; i++) {
+                const row = document.createElement('div');
+                row.className = 'chat-line'; row.dataset.messageId = 'quota-row-' + i; row.dataset.msgTs = String(1000 + i);
+                row.textContent = 'Stored row ' + i;
+                records.set(row.dataset.messageId, { id: row.dataset.messageId, timestamp: 1000 + i, content: row.textContent });
+                messages.append(row);
+            }
+            await virtualizer.run();
+            const archivedBefore = virtualizer.statistics().archivedRows;
+            const [, archive] = [...virtualizer.pages][1];
+            const target = archive.items[25].id;
+            const transaction = store.transaction.bind(store);
+            let recordFailure = true, pagesFail = true, pageWrites = 0;
+            store.transaction = (name, mode, callback) => {
+                if (name === 'records' && recordFailure) {
+                    recordFailure = false;
+                    return Promise.reject(new DOMException('Owned record quota failure', 'QuotaExceededError'));
+                }
+                if (name === 'pages' && mode === 'readwrite') {
+                    return transaction(name, mode, objectStore => callback(new Proxy(objectStore, {
+                        get(target, key) {
+                            if (key === 'put') return value => {
+                                pageWrites++;
+                                if (pagesFail) throw new DOMException('Owned page quota failure', 'QuotaExceededError');
+                                return target.put(value);
+                            };
+                            const value = Reflect.get(target, key);
+                            return typeof value === 'function' ? value.bind(target) : value;
+                        }
+                    })));
+                }
+                return transaction(name, mode, callback);
+            };
+            store.remember({ id: 'quota-trigger', timestamp: 99999, content: 'Quota trigger' });
+            await store.pending;
+            const reportedFailed = store.failed;
+            pane.scrollTop = archive.element.offsetTop + 200;
+            try { await virtualizer.run(); } catch (_) { /* The fresh archive write fails, but saved pages must restore first. */ }
+            const visibleAfterScroll = !!document.querySelector('[data-message-id="' + target + '"]');
+            const firstDelay = store.pageWriteRetryAfter - Date.now();
+            const firstWrites = pageWrites;
+            for (let i = 0; i < 3; i++) await virtualizer.run();
+            await new Promise(resolve => setTimeout(resolve, 120));
+            await virtualizer.whenIdle();
+            const writesDuringCooldown = pageWrites - firstWrites;
+            const realNow = Date.now;
+            let clock = realNow();
+            Date.now = () => clock;
+            let secondDelay, secondWrites, recovered;
+            try {
+                clock = store.pageWriteRetryAfter + 1;
+                try { await virtualizer.run(); } catch (_) {}
+                secondDelay = store.pageWriteRetryAfter - clock;
+                secondWrites = pageWrites - firstWrites;
+                clock = store.pageWriteRetryAfter + 1;
+                pagesFail = false;
+                await virtualizer.run();
+                recovered = { ...virtualizer.statistics(), canArchive: store.canArchivePages() };
+            } finally { Date.now = realNow; virtualizer.disconnect(); store.close(); }
+            return { archivedBefore, reportedFailed, visibleAfterScroll, count: virtualizer.logicalCount(),
+                firstDelay, firstWrites, writesDuringCooldown, secondDelay, secondWrites, recovered, warnings };
+        });
+        const quota = results.quotaAfterArchiveKeepsOldPagesReadable;
+        assert.ok(quota.archivedBefore >= 500);
+        assert.equal(quota.reportedFailed, true);
+        assert.equal(quota.visibleAfterScroll, true);
+        assert.equal(quota.count, 900);
+        assert.equal(quota.firstWrites, 1);
+        assert.ok(quota.firstDelay > 500 && quota.firstDelay <= 1000);
+        assert.equal(quota.writesDuringCooldown, 0);
+        assert.equal(quota.secondDelay, 2000);
+        assert.equal(quota.secondWrites, 1);
+        assert.equal(quota.recovered.logicalRows, 900);
+        assert.ok(quota.recovered.liveRows <= 450);
+        assert.equal(quota.recovered.storageFailed, false);
+        assert.equal(quota.recovered.canArchive, true);
+
+        const blockedPage = await context.newPage();
+        blockedPage.on('pageerror', error => errors.push(error.message));
+        await blockedPage.addInitScript(() => Object.defineProperty(window, 'indexedDB', {
+            configurable: true, get() { throw new DOMException('Owned storage blocked at startup', 'SecurityError'); }
+        }));
+        await blockedPage.goto(`http://127.0.0.1:${server.address().port}/`);
+        results.initiallyBlockedStorageKeepsEveryRow = await blockedPage.evaluate(async () => {
+            const store = new ChatMessageStore(); await store.ready;
+            const messages = document.getElementById('messages'), pane = document.getElementById('pane');
+            const virtualizer = store.createVirtualizer({ messages, container: pane, isPaused: () => true, keepRecent: 300 });
+            for (let i = 0; i < 900; i++) {
+                const row = document.createElement('div'); row.className = 'chat-line'; row.dataset.messageId = 'blocked-' + i;
+                row.dataset.msgTs = String(1000 + i); row.textContent = 'Visible row ' + i; messages.append(row);
+            }
+            await virtualizer.run();
+            const result = { ...virtualizer.statistics(), canArchive: store.canArchivePages() };
+            virtualizer.disconnect(); store.close();
+            return result;
+        });
+        await blockedPage.close();
+        assert.equal(results.initiallyBlockedStorageKeepsEveryRow.liveRows, 900);
+        assert.equal(results.initiallyBlockedStorageKeepsEveryRow.logicalRows, 900);
+        assert.equal(results.initiallyBlockedStorageKeepsEveryRow.archivedRows, 0);
+        assert.equal(results.initiallyBlockedStorageKeepsEveryRow.canArchive, false);
         assert.deepEqual(errors, []);
         fs.mkdirSync(path.join(__dirname, '..', 'work'), { recursive: true });
         fs.writeFileSync(path.join(__dirname, '..', 'work', 'chat-message-store-test-results.json'), JSON.stringify(results, null, 2));

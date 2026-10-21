@@ -42,6 +42,8 @@
             this.pinned = new Set();
             this.pending = Promise.resolve();
             this.failed = false;
+            this.pageWriteRetryAfter = 0;
+            this.pageWriteRetryDelay = 1000;
             this.cache = this.makeCacheProxy();
             this.userCache = this.makeUserProxy();
             this.ready = this.open();
@@ -279,10 +281,23 @@
                 for (const uid of removed) store.delete(this.session + ':' + uid);
             })).catch(() => {});
         }
+        canArchivePages() { return Boolean(this.db) && Date.now() >= this.pageWriteRetryAfter; }
         savePage(page) {
+            if (!this.canArchivePages() && this.db) return Promise.reject(new Error('Local chat page archiving is temporarily paused'));
             return this.queue(() => this.transaction('pages', 'readwrite', store => store.put({
                 ...page, key: this.session + ':' + page.id, session: this.session, updatedAt: Date.now()
-            })));
+            }))).then(value => {
+                this.pageWriteRetryAfter = 0;
+                this.pageWriteRetryDelay = 1000;
+                this.failed = false;
+                return value;
+            }, error => {
+                // Retry only on later chat/scroll activity, with a bounded
+                // backoff. No polling timer or recursive quota-error loop.
+                this.pageWriteRetryAfter = Date.now() + this.pageWriteRetryDelay;
+                this.pageWriteRetryDelay = Math.min(60000, this.pageWriteRetryDelay * 2);
+                throw error;
+            });
         }
         async loadPage(id) {
             await this.pending;
@@ -301,7 +316,8 @@
         }
         async restoreBuffered(reference) {
             const page = await this.loadPage(reference.archiveId);
-            await this.deletePage(reference.archiveId);
+            // Reading is not acknowledgement. The caller deletes this page
+            // only after its still-retained entries are successfully inserted.
             return page.entries || [];
         }
         async clear() {
@@ -393,7 +409,7 @@
             element.dataset.firstMessageId = metadata?.id || metadata?.key || '';
         }
         schedule() {
-            if (this.scheduled || this.disconnected || this.store.failed) return;
+            if (this.scheduled || this.disconnected) return;
             this.scheduled = true;
             setTimeout(() => { this.scheduled = false; this.run().catch(error => this.options.onError?.(error)); }, 40);
         }
@@ -406,13 +422,19 @@
         viewport() { return this.options.captureViewport?.(); }
         restore(viewport) { this.options.restoreViewport?.(viewport); }
         async sweep() {
-            if (!this.options.isPaused() || this.store.failed || this.disconnected) return;
+            if (!this.options.isPaused() || this.disconnected) return;
             const viewport = this.container.getBoundingClientRect();
             const margin = Math.max(800, this.container.clientHeight * 2);
             for (const [id, page] of this.pages) {
                 if (!page.element.isConnected) { this.pages.delete(id); continue; }
                 const rect = page.element.getBoundingClientRect();
                 if (rect.bottom >= viewport.top - margin && rect.top <= viewport.bottom + margin) await this.restorePage(id);
+            }
+            // A failed write cannot hide pages that were already saved. Read
+            // them above even while writes are unavailable or cooling down.
+            if (!this.store.canArchivePages()) {
+                this.store.prune(this.rows().map(row => row.dataset.messageId).filter(Boolean));
+                return;
             }
             const rows = this.rows();
             const protectedRows = new Set(rows.slice(-this.keepRecent));

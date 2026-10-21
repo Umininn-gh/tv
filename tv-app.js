@@ -2779,7 +2779,7 @@ function showUserscript() {
         if (isAltChat) {
             iframe.src = `https://www.twitch.tv/embed/whitewing940920/chat?darkpopout&parent=${encodeURIComponent(parent)}`;
         } else {
-            const custom = new URL('./test3.html?v=20261019-chat-toggle', location.href).href;
+            const custom = new URL('./test3.html?v=20261021-chat-reliability', location.href).href;
             if (iframe.src !== custom) iframe.src = custom;
             else placeControl();
         }
