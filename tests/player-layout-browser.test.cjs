@@ -22,13 +22,13 @@ test.before(async () => {
     try { playwright = require('playwright'); }
     catch (_) {
         try { playwright = require(path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright')); }
-        catch (_) { unavailable = 'Optional Playwright browser model unavailable.'; return; }
+        catch (error) { throw new Error('Browser tests were requested but Playwright is unavailable. Run npm ci.', { cause: error }); }
     }
     playwrightRuntime=playwright;
     assert.ok(['chromium', 'firefox'].includes(engine));
     try { browser = await playwright[engine].launch({headless:true,...(executablePath ? {executablePath} : {}),
         ...(engine==='firefox'?{firefoxUserPrefs:{'media.autoplay.default':0}}:{args:['--autoplay-policy=no-user-gesture-required']})}); }
-    catch (error) { if(executablePath)throw error; unavailable='Optional browser executable unavailable.'; return; }
+    catch (error) { throw new Error(`Cannot launch requested ${engine}; run npx playwright install --with-deps ${engine}.`, { cause: error }); }
     const read = file => fs.readFileSync(path.join(root, file), 'utf8');
     const source=read('tv-app.js');
     const coreEnd=source.indexOf('/* =============== 頻道儲存 / 載入');
@@ -2429,6 +2429,89 @@ test('audio focus fails closed after a refused mute and never unmutes a removed 
         assert.ok(after.every(entry=>entry.media?entry.media.muted:entry.child.media[0].muted),'surviving players remain muted after cancellation');
         assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);assert.ok([...f.navigations.values()].every(count=>count===1));
     });
+});
+
+test('audio focus waits for a late iframe navigation before opening the enlarged target',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+    await primeAudio(f);const before=await snapshot(f);
+    const url='https://player.kick.com/player?index=late';
+    let release,requested;
+    const held=new Promise(resolve=>{release=resolve}),navigation=new Promise(resolve=>{requested=resolve});
+    // Hold the actual HTTP navigation, not an ACK or a mocked readiness flag.
+    // The normal fixture route still serves the document and real media bytes.
+    await f.page.context().route(url,async route=>{requested();await held;await route.fallback()});
+    try{
+        await f.page.evaluate(url=>{
+            const pane=document.getElementById('multi-stream-container'),frame=document.createElement('iframe');
+            frame.id='late-player';frame.className='video';frame.src=url;frame.allow='autoplay';pane.appendChild(frame);
+            const video=fixtureMedia[0].video,descriptor=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'muted');
+            window.fixtureTargetUnmutes=0;
+            Object.defineProperty(video,'muted',{get(){return descriptor.get.call(this)},set(value){if(!value)fixtureTargetUnmutes++;descriptor.set.call(this,value)}});
+        },url);
+        await navigation;
+        await actualMouseWindowAction(f,keys[0],'enlarge');await waitFocusStatus(f,'正在');
+        await f.page.waitForTimeout(250);
+        assert.equal(await f.page.evaluate(()=>fixtureTargetUnmutes),0,'an unconnected peer cannot be counted as confirmed silent');
+        assert.ok(audibleMedia(await snapshot(f)).every(media=>media.muted));
+        release();
+        await f.page.waitForFunction(()=>document.getElementById('umininn-player-panel-host').shadowRoot.querySelectorAll('.player').length===6);
+        const late=f.page.frames().find(frame=>frame.url()===url)||await f.page.waitForEvent('framenavigated',{predicate:frame=>frame.url()===url});
+        await late.waitForFunction(()=>window.fixtureMedia?.[0]?.video.readyState>=2);
+        await waitOnlyAudible(f,0);await waitFocusStatus(f,'只開啟');
+        assert.equal(await late.evaluate(()=>fixtureMedia[0].video.muted),true);
+        // The newly connected peer must join the guard as well as the barrier.
+        await late.evaluate(()=>{fixtureMedia[0].video.muted=false});
+        await late.waitForFunction(()=>fixtureMedia[0].video.muted);
+        assert.deepEqual(await late.evaluate(()=>fixtureMedia[0].actions),{play:0,pause:0,load:0,seek:0,source:0});
+        assert.equal(f.navigations.get(url),1,'the late peer is not reloaded to obtain control');
+        await assertAudioContinuity(f,before);
+    }finally{release()}
+});
+
+test('audio focus supersedes real bookmark recovery queued behind a delayed acknowledgement',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+    await primeAudio(f);const before=await snapshot(f),bookmark=await f.page.evaluate(()=>capturePlayerBookmark());
+    await holdAudioReply(f,{muted:false});
+    await actualMouseWindowAction(f,keys[2],'enlarge');await waitHeldAudioReply(f);
+    assert.equal((await snapshot(f)).frames[0].media[0].muted,false,'the old target has opened sound but its real ACK is held');
+    await f.page.evaluate(bookmark=>applyPlayerBookmark(bookmark),bookmark);
+    await f.page.waitForTimeout(100); // let the production bookmark task start waiting
+    for(const frame of f.frames)assert.equal(await frame.evaluate(()=>fixtureAudioMessages.some(message=>message.command?.action==='recover')),false);
+    await actualMouseWindowAction(f,keys[4],'enlarge');
+    await releaseAudioReply(f);await waitOnlyAudible(f,2);await waitFocusStatus(f,'只開啟');
+    await f.page.waitForTimeout(700);
+    await waitOnlyAudible(f,2);
+    // Real recovery would play the two deliberately paused sources. They must
+    // retain identity, pause state and play counters when the newer focus wins.
+    await assertAudioContinuity(f,before);
+    for(const frame of f.frames)assert.equal(await frame.evaluate(()=>fixtureAudioMessages.some(message=>message.command?.action==='recover')),false);
+});
+
+test('audio focus yields to real bookmark recovery without a late unmute',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+    await primeAudio(f);const before=await snapshot(f),bookmark=await f.page.evaluate(()=>capturePlayerBookmark());
+    await holdAudioReply(f,{muted:true});
+    await actualMouseWindowAction(f,keys[0],'enlarge');await waitHeldAudioReply(f);
+    await f.page.evaluate(bookmark=>{for(let i=0;i<3;i++)applyPlayerBookmark(bookmark)},bookmark);
+    await f.page.waitForTimeout(100);
+    assert.deepEqual(audibleMedia(await snapshot(f)).map(media=>media.actions),audibleMedia(before).map(media=>media.actions),'recovery waits for the pending audio command');
+    await releaseAudioReply(f);
+    await waitAudio(f,media=>media.every(value=>!value.paused&&value.muted));
+    await f.page.waitForFunction(()=>document.getElementById('umininn-player-panel-host').shadowRoot.getElementById('recovery-status').textContent.includes('2 台已恢復'));
+    await f.page.waitForTimeout(700);
+    const after=await snapshot(f),old=audibleMedia(before),now=audibleMedia(after);
+    for(let index=0;index<now.length;index++){
+        assert.equal(now[index].muted,true,'cancelled focus cannot open sound after recovery');
+        assert.equal(now[index].volume,old[index].volume);
+        assert.equal(now[index].source,old[index].source);
+        assert.deepEqual(now[index].actions,{...old[index].actions,play:old[index].actions.play+(old[index].paused?1:0)},'each paused source resumes once despite three restores');
+    }
+    assert.deepEqual(after.frames.map(frame=>frame.id),before.frames.map(frame=>frame.id));
+    assert.deepEqual(await f.page.evaluate(()=>fixture.identity()),{elements:true,entries:true,windows:true,removals:0,frameSources:0,loads:[1,1]});
+    assert.ok([...f.navigations.values()].every(count=>count===1));assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
 });
 
 test('audio focus default autoplay policy receives actual mouse enlargement without script play or recovery calls',{skip:!enabled,timeout:60000},async t=>{

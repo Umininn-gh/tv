@@ -1,2 +1,4 @@
 work/
 outputs/
+node_modules/
+test-results/

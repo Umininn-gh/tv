@@ -34,7 +34,7 @@ test.before(async () => {
     if (!browserTests) return;
     assert.ok(['chromium', 'firefox'].includes(engine));
     const executablePath = process.env.UMININN_BROWSER_EXECUTABLE;
-    const launch = executablePath ? { executablePath } : engine === 'chromium' ? { channel: 'msedge' } : {};
+    const launch = executablePath ? { executablePath } : {};
     browser = await playwright[engine].launch({ headless: true, ...launch });
 });
 test.after(async () => { await browser?.close(); });
