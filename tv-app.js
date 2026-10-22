@@ -748,7 +748,7 @@ function updatePlayerLayout({ force = false } = {}) {
     const pane = document.getElementById('multi-stream-container');
     if (!pane) return;
     if (!playerGrid) playerGrid = PlayerLayout.observe(pane, {
-        runUpdate: action => withPlayerAudioLayout(action),
+        runUpdate: action => withPlayerAudioLayout(action, false),
         stabilizeResize: true,
         getResizeStability: () => activePlayers.size > 1 && activePlayers.has(enlargedPlayerFocus?.key),
         getCount: () => activePlayers.size,
@@ -1131,15 +1131,17 @@ function setChannelSelectionVisible(visible) {
 // Layout mutations share one preparation/commit/restore transaction. The
 // userscript reads foreign players before this page changes their layout;
 // callbacks stay synchronous inside the transaction, including nested calls.
-let playerAudioLayoutDepth = 0, playerAudioLayoutSequence = 0;
+let playerAudioLayoutDepth = 0, playerAudioLayoutSequence = 0, playerAudioLayoutRevision = 0;
 let playerAudioLayoutBatch = null;
 const playerAudioLayoutQueue = [];
 function playerLayoutAudioAvailable() {
     return document.documentElement.hasAttribute('data-umininn-player-userscript') &&
         document.documentElement.hasAttribute('data-umininn-player-layout-audio-ready');
 }
-function withPlayerAudioLayout(action) {
-    if (playerAudioLayoutDepth || !playerLayoutAudioAvailable()) return action();
+function withPlayerAudioLayout(action, supersedeFocus = true) {
+    if (playerAudioLayoutDepth) return action();
+    if (supersedeFocus) playerAudioLayoutRevision++;
+    if (!playerLayoutAudioAvailable()) return action();
     return new Promise((resolve, reject) => {
         playerAudioLayoutQueue.push({ action, resolve, reject });
         startPlayerAudioLayout();
@@ -1207,10 +1209,10 @@ window.addEventListener('pagehide', () => {
     }
     for (const request of playerAudioLayoutQueue.splice(0)) request.resolve(false);
 });
-function guardPlayerAudioLayout(action) {
-    return function (...args) { return withPlayerAudioLayout(() => action.apply(this, args)); };
+function guardPlayerAudioLayout(action, supersedeFocus = true) {
+    return function (...args) { return withPlayerAudioLayout(() => action.apply(this, args), supersedeFocus); };
 }
-updatePlayerLayout = guardPlayerAudioLayout(updatePlayerLayout);
+updatePlayerLayout = guardPlayerAudioLayout(updatePlayerLayout, false);
 applyPlayerSize = guardPlayerAudioLayout(applyPlayerSize);
 enlargePlayer = guardPlayerAudioLayout(enlargePlayer);
 shrinkPlayer = guardPlayerAudioLayout(shrinkPlayer);
@@ -2764,7 +2766,21 @@ applyPlayerBookmark = guardPlayerAudioLayout(applyPlayerBookmark);
             if (event.detail > 1) return;
             await closePlayer(key);
         } else if (button.dataset.playerAction === 'enlarge') {
-            await enlargePlayer(key);
+            const entry = activePlayers.get(key);
+            if (!entry) return;
+            const target = getPlayerElement(entry);
+            const audioIntent = document.documentElement.getAttribute('data-umininn-player-audio-intent');
+            const pending = enlargePlayer(key);
+            const revision = playerAudioLayoutRevision;
+            const changed = await pending;
+            // Restore the layout snapshot first. A later layout or manual sound
+            // command owns the result and must not be overwritten by this click.
+            if (changed && audioIntent && !suspended && audioFocusAvailable() &&
+                revision === playerAudioLayoutRevision && enlargedPlayerFocus?.key === key &&
+                target?.isConnected && activePlayers.get(key) === entry && getPlayerElement(entry) === target &&
+                document.documentElement.getAttribute('data-umininn-player-audio-intent') === audioIntent) {
+                target.dispatchEvent(new Event('umininn-player-audio-focus', { bubbles: true }));
+            }
         }
         else if (button.dataset.playerAction === 'audio-focus') {
             if (!audioFocusAvailable() || !activePlayers.has(key)) return;

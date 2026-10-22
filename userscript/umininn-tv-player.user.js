@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.23
+// @version      1.0.24
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -30,7 +30,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.23",
+        userscriptVersion: "1.0.24",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -2364,7 +2364,8 @@
         async function execute(entry, command, settings = {}) {
             const readable = entry.kind === 'native' || entry.kind === 'frame' && Boolean(entry.target);
             const guard = command.action === 'setMuted' && command.value === true && command.guard === true;
-            if (entry.busy && !guard && !settings.revoke || guard && entry.guardInFlight || !entries.has(entry.element) ||
+            const priority = settings.priority === true && ['setMuted', 'setVolume'].includes(command.action);
+            if (entry.busy && !guard && !settings.revoke && !priority || guard && entry.guardInFlight || !entries.has(entry.element) ||
                 (command.action === 'getState' || guard || settings.revoke ? !readable : !can(entry, command.action))) return { ok: false, code: 'unavailable' };
             const generation = entry.generation;
             const target = entry.target;
@@ -2410,7 +2411,9 @@
         async function applyAll(command) {
             const all = currentEntries();
             if (!all.length) { summary.textContent = '請先開始觀看，再調整聲音。'; return; }
-            const results = await Promise.all(all.map(async entry => ({ entry, result: await execute(entry, command) })));
+            // Global sound input supersedes a pending layout getState read;
+            // commandSequence prevents that older reply from replacing it.
+            const results = await Promise.all(all.map(async entry => ({ entry, result: await execute(entry, command, { priority: true }) })));
             if (disposed) return;
             const failed = results.filter(item => !item.result?.ok);
             summary.textContent = failed.length ? `${failed.length} 台未能套用：${failed.map(item => item.entry.name.textContent).join('、')}` : `${all.length} 台已套用。`;
@@ -2742,9 +2745,18 @@
         }
         function invalidateLayoutAudio() {
             layoutUserEpoch++;
+            publishAudioIntent();
             automaticRecoveryReason = null;
             layoutTicket = null;
             layoutAudioFlow?.cancel();
+        }
+        function publishAudioIntent() {
+            if (!disposed && doc.documentElement.hasAttribute('data-umininn-player-audio-focus-ready')) {
+                // A stale page callback must not override a newer manual sound
+                // action, or a freshly installed controller on the same page.
+                doc.documentElement.setAttribute('data-umininn-player-audio-intent',
+                    `${layoutUserEpoch}:${Math.random().toString(36).slice(2)}`);
+            }
         }
         function layoutAudioEntries() {
             const pane = doc.getElementById('multi-stream-container');
@@ -3110,6 +3122,7 @@
             doc.addEventListener('umininn-player-audio-focus', onAudioFocus, true);
             if (doc.documentElement.hasAttribute('data-umininn-player-userscript')) {
                 doc.documentElement.setAttribute('data-umininn-player-audio-focus-ready', '');
+                publishAudioIntent();
                 if (options.layoutAudio?.createLayoutAudioFlow) {
                     layoutAudioFlow = options.layoutAudio.createLayoutAudioFlow({
                         clock: win, getEntries: layoutAudioEntries, isCurrent: layoutAudioCurrent,
@@ -3148,6 +3161,7 @@
             if (disposed) return;
             disposed = true;
             doc.documentElement.removeAttribute('data-umininn-player-audio-focus-ready');
+            doc.documentElement.removeAttribute('data-umininn-player-audio-intent');
             doc.documentElement.removeAttribute('data-umininn-player-layout-audio-ready');
             onLayoutPageHide();
             doc.removeEventListener('umininn-player-layout-before', onLayoutBefore, true);
