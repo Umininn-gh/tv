@@ -1,6 +1,12 @@
 # Umininn TV 播放器控制 Userscript
 
-版本：1.0.22。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+版本：1.0.23。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+
+## 1.0.23 捲軸及嵌入內容收起選單
+
+「看更台」、「書籤」及「播放控制」共用選單外操作偵測，補上聊天室原生捲軸的滑塊、軌道與箭頭，以及同源嵌入內容、右鍵和滾輪等實際操作。聊天室自動捲動、新訊息和程式事件不會收起選單；選單內的捲軸和控制項照常使用。
+
+官方 Twitch 聊天室新增限定 `/embed/<頻道>/chat` 的腳本執行範圍，只在選單開啟並核對父頁後轉送操作通知，不讀取或轉送訊息、輸入內容及滑鼠座標，也不控制聊天室媒體。更新腳本後請重新整理觀看頁；如果管理器要求允許新增的 Twitch 聊天室範圍，須允許後才可涵蓋官方聊天室捲軸。
 
 ## 1.0.22 聊天室點擊收起選單
 
@@ -134,7 +140,7 @@ Twitch、Kick、其他 iframe 及原生影片的亮框改在播放器外的獨�
 
 ## 權限與資料
 
-腳本只匹配本站指定觀看頁及固定 HTTPS 播放器主機，不匹配 `localhost`、管理頻道資料頁或任意網站；即使手動貼入其他頁面，啟動時亦會重新核對網址。外站播放器只有收到已核准父頁的探測後才建立控制器。
+腳本只匹配本站指定觀看頁、固定 HTTPS 播放器主機及官方 Twitch 嵌入聊天室路徑，不匹配 `localhost`、管理頻道資料頁或任意網站；即使手動貼入其他頁面，啟動時亦會重新核對網址。外站播放器只有收到已核准父頁的探測後才建立控制器；聊天室只啟用選單操作通知。
 
 沒有要求 `GM_*` 資料儲存、跨來源請求或 `unsafeWindow` 權限，沒有遠端 `@require`、遙測、憑證處理或持久控制偏好。模組封裝在私有作用域，跨頁框指令只在本機瀏覽器傳遞；每次文件會有獨立隨機識別，舊文件、錯誤來源及重複指令會被拒絕。腳本管理器和直播平台本身的資料處理由各自政策負責。
 
@@ -147,7 +153,7 @@ node tools/build-player-userscript.cjs
 node --test "tests/player-userscript-*.test.cjs" "tests/player-extension-*.test.cjs"
 ```
 
-建置把 `browser-extension/shared/` 的媒體、Twitch 及恢復流程和控制介面，與 `userscript/angelthump-logo.js`、`transport.js`、`bootstrap.js` 合成單一檔案。不要手動修改產出的 `.user.js` 或 `.meta.js`；修改來源後提高版本並重新建置。輸出是本資料夾的發行檔及版本標頭，以及 `outputs/player-userscript/` 的相同副本。
+建置把 `browser-extension/shared/` 的媒體、Twitch 及恢復流程和控制介面、`menu-dismiss.js`，與 `userscript/angelthump-logo.js`、`transport.js`、`bootstrap.js` 合成單一檔案。不要手動修改產出的 `.user.js` 或 `.meta.js`；修改來源後提高版本並重新建置。輸出是本資料夾的發行檔及版本標頭，以及 `outputs/player-userscript/` 的相同副本。
 
 瀏覽器整合測試可選用 `UMININN_BROWSER_TESTS=1` 執行，需可用的 Playwright 與相應瀏覽器引擎。預設 Chromium／Edge；設定 `UMININN_BROWSER_ENGINE=firefox` 可測 Firefox。測試把實際腳本注入網站／跨來源播放器模型，驗證真實 `postMessage` 及 HTML 媒體控制；這不等於已在 Tampermonkey／Violentmonkey 或三款瀏覽器實際安裝，也不代表所有外站直播已驗證。
 

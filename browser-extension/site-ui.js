@@ -291,6 +291,7 @@
         const permissionHint = cfg.PERMISSION_HINT || '擴充功能的網站權限';
         const factory = options.media;
         const recoveryFactory = options.recovery || recovery;
+        const menuDismiss = options.menuDismiss || root.UmininnMenuDismiss;
         const entries = new Map();
         const guardedEntries = new Map(), urgentAudioTasks = new Set();
         let host, shadow, panelHost, panelShadow, toggle, quickDetect, panel, list, summary, observer, lateObserver, masterVolume, masterReadout, detectButton, recoveryStatus, recoveryFlow, audioFocusStatus, audioFocusFlow;
@@ -1139,7 +1140,7 @@
             doc.body.appendChild(panelHost);
             panel.addEventListener('scroll', updateHighlights, true);
             panel.addEventListener('scroll', scheduleHighlights, true);
-            let idleTimer = null, frameFocusTimer = null;
+            let idleTimer = null, frameFocusTimer = null, outsideObserver = null;
             function clearFrameFocusTimer() {
                 if (frameFocusTimer !== null) win.clearTimeout(frameFocusTimer);
                 frameFocusTimer = null;
@@ -1171,7 +1172,7 @@
                 clearPreparation();
             }
             function onOutsidePointer(event) {
-                if (disposed || panel.hidden) return;
+                if (menuDismiss || disposed || panel.hidden) return;
                 const path = event.composedPath?.() || [];
                 // Shadow events are retargeted to the host in the page world.
                 if (path.includes(toggle) || path.includes(panelHost) || toggle.contains(event.target) || panelHost.contains(event.target)) return;
@@ -1179,7 +1180,7 @@
             }
             function onPlayerFrameFocus(delay = 200) {
                 clearFrameFocusTimer();
-                if (disposed || panel.hidden) return;
+                if (menuDismiss || disposed || panel.hidden) return;
                 // Foreign frames and browser-native media controls can consume
                 // pointer events. Their focused element is still visible here.
                 frameFocusTimer = win.setTimeout(() => {
@@ -1193,7 +1194,7 @@
             }
             const onFrameBlur = () => onPlayerFrameFocus(0);
             function onPlayerInteraction(event) {
-                if (!disposed && !panel.hidden && event.target?.tagName === 'IFRAME' &&
+                if (!menuDismiss && !disposed && !panel.hidden && event.target?.tagName === 'IFRAME' &&
                     doc.getElementById('multi-stream-container')?.contains(event.target)) setOpen(false);
             }
             for (const type of activityEvents) panel.addEventListener(type, onPanelActivity, { capture: true, passive: true });
@@ -1204,6 +1205,8 @@
             panelIdleCleanup = () => {
                 clearIdleTimer();
                 clearFrameFocusTimer();
+                outsideObserver?.dispose();
+                outsideObserver = null;
                 for (const type of activityEvents) panel.removeEventListener(type, onPanelActivity, true);
                 win.removeEventListener('pagehide', onPanelPageHide);
                 doc.removeEventListener('pointerdown', onOutsidePointer, true);
@@ -1213,6 +1216,8 @@
             function setOpen(open) {
                 clearIdleTimer();
                 clearFrameFocusTimer();
+                outsideObserver?.dispose();
+                outsideObserver = null;
                 panel.hidden = !open;
                 doc.documentElement.toggleAttribute('data-umininn-player-controls-open', open);
                 toggle.setAttribute('aria-expanded', String(open));
@@ -1223,6 +1228,8 @@
                     scan();
                     for (const entry of entries.values()) if (!entry.target) probe(entry);
                     close.focus({ preventScroll: true });
+                    if (menuDismiss) outsideObserver = menuDismiss.observe({ window: win,
+                        inside: [panelHost, toggle], onOutside: () => setOpen(false) });
                     onPlayerFrameFocus();
                     armIdleTimer();
                 }

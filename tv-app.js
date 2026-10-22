@@ -1084,24 +1084,8 @@ function watchSelectedChannels() {
 const channelSelectionIdleTimer = (() => {
     const panel = document.getElementById('channel-selection');
     let timer = null;
-    let frameFocusTimer = null;
+    let outsideObserver = null;
     let visible = false;
-    function clearFrameFocusTimer() {
-        if (frameFocusTimer !== null) clearTimeout(frameFocusTimer);
-        frameFocusTimer = null;
-    }
-    function watchPlayerFrameFocus(delay = 200) {
-        clearFrameFocusTimer();
-        if (!visible) return;
-        frameFocusTimer = setTimeout(() => {
-            frameFocusTimer = null;
-            const frame = document.activeElement;
-            if (!document.hidden && document.hasFocus() && frame?.matches?.('iframe,video,audio') &&
-                (document.getElementById('multi-stream-container')?.contains(frame) ||
-                    frame === document.getElementById('chat_embed'))) setChannelSelectionVisible(false);
-            else watchPlayerFrameFocus();
-        }, delay);
-    }
     function reset() {
         if (timer !== null) clearTimeout(timer);
         timer = visible ? setTimeout(() => setChannelSelectionVisible(false), PLAYER_OVERLAY_TIMEOUT_SECONDS * 1000) : null;
@@ -1116,34 +1100,21 @@ const channelSelectionIdleTimer = (() => {
         'input', 'change', 'wheel', 'touchstart', 'touchmove', 'touchend']) {
         panel?.addEventListener(type, onActivity, { capture: true, passive: true });
     }
-    document.addEventListener('pointerdown', event => {
-        if (!visible) return;
-        const button = document.getElementById('more-channels-btn');
-        const path = event.composedPath?.() || [];
-        if (path.includes(panel) || path.includes(button) || panel?.contains(event.target) || button?.contains(event.target)) return;
-        setChannelSelectionVisible(false);
-    }, { capture: true, passive: true });
-    document.addEventListener('umininn-player-interaction', event => {
-        if (visible && event.target?.tagName === 'IFRAME' &&
-            document.getElementById('multi-stream-container')?.contains(event.target)) setChannelSelectionVisible(false);
-    });
-    // Foreign documents and native media controls can consume pointer events.
-    // Firefox may omit the focus event entirely for a foreign document. A
-    // single activeElement check while this menu is open covers that case.
-    // Chat input also dismisses the menu; tab/app switches and unrelated frames do not.
-    window.addEventListener('blur', () => watchPlayerFrameFocus(0), true);
     window.addEventListener('pagehide', () => setChannelSelectionVisible(false));
     return {
         setVisible(next) {
             next = Boolean(panel && next);
             if (next === visible) return;
             visible = next;
-            clearFrameFocusTimer();
+            outsideObserver?.dispose();
+            outsideObserver = null;
             // Some browsers do not focus pointer-activated buttons. Keep focus
             // in this page so even another click in the same foreign player
             // creates a detectable focus transition after each opening.
             if (visible) document.getElementById('more-channels-btn')?.focus({ preventScroll: true });
-            watchPlayerFrameFocus();
+            if (visible) outsideObserver = window.UmininnMenuDismiss.observe({ window,
+                inside: [panel, document.getElementById('more-channels-btn')],
+                onOutside: () => setChannelSelectionVisible(false) });
             reset();
         }
     };

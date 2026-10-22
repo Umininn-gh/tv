@@ -46,7 +46,8 @@ function fixture({ nativeHls = false } = {}) {
     const loginNodes = new Map(['login-screen', 'login-form', 'login-password', 'login-submit', 'toggle-password', 'login-status']
         .map(id => [id, new Element('div')]));
     const context = vm.createContext({
-        document: { head, getElementById: id => id === 'multi-stream-container' ? pane : loginNodes.get(id) || null,
+        document: { head, documentElement: { hasAttribute() { return false; } },
+            getElementById: id => id === 'multi-stream-container' ? pane : loginNodes.get(id) || null,
             createElement: tag => new Element(tag), addEventListener() {}, querySelectorAll: () => [] },
         location: { hostname: 'site.invalid', origin: 'https://site.invalid' },
         sessionStorage: { getItem() { return null; } }, localStorage: { setItem() {}, removeItem() {} },

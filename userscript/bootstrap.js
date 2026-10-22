@@ -32,7 +32,12 @@
     });
     const site = win.top === win && config.isSiteUrl(win.location.href);
     const frame = win.parent !== win && config.isPlayerUrl(win.location.href);
-    if (!site && !frame) return;
+    const chatUrl = parse(win.location.href);
+    // This role only notifies the direct, approved parent of genuine gestures.
+    // It never discovers media or exposes the chat document to the parent.
+    const chat = win.parent !== win && secure(chatUrl) && chatUrl.hostname === 'www.twitch.tv' &&
+        /^\/embed\/[a-z0-9_]+\/chat\/?$/i.test(chatUrl.pathname);
+    if (!site && !frame && !chat) return;
     const marker = 'data-umininn-player-userscript';
     if (!doc.documentElement || doc.documentElement.hasAttribute(marker)) return;
     // Only one script installation owns a document, including while login mounts.
@@ -43,8 +48,11 @@
     if (site) {
         client = scope.UmininnUserscript.createSiteTransport({ window: win, config });
         controller = scope.UmininnSite.createSiteController({ window: win, document: doc,
-            config, runtime: client, media: scope.UmininnMedia, recovery: scope.UmininnRecovery, layoutAudio: scope.UmininnLayoutAudio });
+            config, runtime: client, media: scope.UmininnMedia, recovery: scope.UmininnRecovery,
+            layoutAudio: scope.UmininnLayoutAudio, menuDismiss: scope.UmininnMenuDismiss });
         controller.start();
+    } else if (chat) {
+        client = scope.UmininnMenuDismiss.startFrameNotifier({ window: win, parentOrigin: 'https://umininn-gh.github.io' });
     } else {
         client = scope.UmininnUserscript.createFrameClient({ window: win, config,
             media: scope.UmininnMedia, twitch: scope.UmininnTwitch, angelthump: scope.UmininnAngelThump });

@@ -16,7 +16,7 @@ const origin = 'https://umininn-gh.github.io';
 const siteUrl = origin + '/tv/';
 const frameOrigin = 'https://bookmark-player.invalid';
 const browserCase = { skip: !enabled, timeout: 30000 };
-let browser, css, bookmarkCss, appScript, modules;
+let browser, playwrightRuntime, css, bookmarkCss, appScript, modules;
 const read = filename => fs.readFileSync(path.join(root, filename), 'utf8');
 
 function productionFunction(source, name) {
@@ -35,7 +35,7 @@ function loadProduction() {
     const html = read('index.html'), source = read('tv-app.js');
     css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match => match[1]).join('\n');
     bookmarkCss = read('layout-bookmarks.css');
-    modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'layout-bookmarks']
+    modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'menu-dismiss', 'layout-bookmarks']
         .map(name => ['/tv/' + name + '.js', read('' + name + '.js')]));
     const names = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'updatePlayerLayout',
         'playerGridArea', 'getCurrentPlayerGeometry', 'savePlayerEnlargement', 'getPlayerPositionKeys', 'syncActivePlayers',
@@ -48,6 +48,7 @@ test.before(async () => {
     let playwright;
     try { playwright = require('playwright'); }
     catch (_) { playwright = require(path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright')); }
+    playwrightRuntime = playwright;
     assert.ok(['chromium', 'firefox'].includes(engine));
     const executablePath = process.env.UMININN_BROWSER_EXECUTABLE;
     const launch = executablePath ? { executablePath } : engine === 'chromium' ? { channel: 'chrome' } : {};
@@ -159,7 +160,7 @@ if (process.argv.includes('--export')) {
 }
 
 async function fixture(t, options = {}) {
-    const context = await browser.newContext({ viewport: options.viewport || { width: 1300, height: 900 }, serviceWorkers: 'block' });
+    const context = await (options.fixtureBrowser || browser).newContext({ viewport: options.viewport || { width: 1300, height: 900 }, serviceWorkers: 'block' });
     t.after(() => context.close());
     if (options.storage) await context.addInitScript(({ storage, origin }) => { if (location.origin === origin) for (const [key, value] of Object.entries(storage)) localStorage.setItem(key, value); }, { storage: options.storage, origin });
     const requests = [], errors = [], navigations = [];
@@ -416,6 +417,69 @@ for (const chatOrigin of [origin, frameOrigin]) test('bookmark menu dismisses on
     }
     assert.deepEqual(await chat.locator('body').evaluate(() => ({ clicks: fixtureChatClicks, submits: fixtureChatSubmits })), { clicks: 1, submits: 0 });
     assert.deepEqual(f.navigations, navigations, 'chat interaction and menu dismissal must not navigate or reload any frame');
+});
+
+test('bookmark menu handles actual native chat viewport and inner scrollbar gestures while its own scrollbar remains usable', { skip: !enabled, timeout: 90000 }, async t => {
+    const native = await playwrightRuntime[engine].launch({ headless: engine !== 'firefox',
+        ...(process.env.UMININN_BROWSER_EXECUTABLE ? { executablePath: process.env.UMININN_BROWSER_EXECUTABLE } : engine === 'chromium' ? { channel: 'chrome' } : {}),
+        ...(engine === 'firefox' ? { firefoxUserPrefs: { 'widget.windows.overlay-scrollbars.enabled': false, 'ui.useOverlayScrollbars': 0,
+            'widget.non-native-theme.scrollbar.style': 4, 'widget.non-native-theme.scrollbar.size.override': 17 } } : { ignoreDefaultArgs: ['--hide-scrollbars'] }) });
+    t.after(() => native.close());
+    const f = await fixture(t, { fixtureBrowser: native }), before = await remember(f);
+    await f.page.evaluate(src => {
+        const chat = document.createElement('iframe'); chat.id = 'chat_embed'; chat.title = '原生捲軸測試';
+        chat.style.cssText = 'position:fixed;left:8px;bottom:8px;width:420px;height:240px;z-index:2;background:white;border:0';
+        chat.src = src; document.body.appendChild(chat);
+    }, origin + '/chat-fixture');
+    const chat = f.page.frameLocator('#chat_embed'); await chat.locator('#chat-input').waitFor();
+    const child = f.page.frames().find(frame => frame.url() === origin + '/chat-fixture'); assert.ok(child);
+    await child.evaluate(() => {
+        const style = document.createElement('style'); style.textContent = 'html{overflow:scroll;scroll-behavior:auto}body{min-width:850px}#inner-chat-scroll{width:320px;height:100px;overflow:scroll}'; document.head.appendChild(style);
+        const pane = document.createElement('div'); pane.id = 'inner-chat-scroll'; pane.innerHTML = '<div style="width:900px;height:700px">內層聊天訊息</div>'; document.getElementById('chat-message').after(pane);
+        window.chatNativePointers = [];
+        window.addEventListener('pointerdown', event => chatNativePointers.push({ target: event.target.id || event.target.tagName, trusted: event.isTrusted }), true);
+    });
+    const gutters = await child.evaluate(() => ({ vertical: innerWidth - document.documentElement.clientWidth, horizontal: innerHeight - document.documentElement.clientHeight,
+        innerVertical: document.getElementById('inner-chat-scroll').offsetWidth - document.getElementById('inner-chat-scroll').clientWidth }));
+    for (const [axis, size] of Object.entries(gutters)) assert.ok(size >= 10, `visible native ${axis} scrollbar required, got ${size}px`);
+    t.diagnostic(JSON.stringify({ engine, menu: 'bookmark', gutters, firefoxHeaded: engine === 'firefox' }));
+    const trigger = f.page.locator('#layout-bookmarks-btn');
+    for (const mode of ['track', 'thumb', 'top-boundary-button', 'horizontal-track', 'inner-track', 'inner-thumb']) {
+        await child.evaluate(() => { scrollTo(0, 0); const inner = document.getElementById('inner-chat-scroll'); inner.scrollTop = inner.scrollLeft = 0; chatNativePointers = []; });
+        await trigger.click(); assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true);
+        await child.evaluate(() => { scrollTo(0, 5); scrollTo(0, 0); });
+        await f.page.waitForTimeout(250); assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true, 'background chat scrolling does not dismiss');
+        const rootBox = await f.page.locator('#chat_embed').boundingBox(), box = mode.startsWith('inner') ? await chat.locator('#inner-chat-scroll').boundingBox() : rootBox;
+        let x = box.x + box.width - gutters.vertical / 2, y = box.y + box.height * .72;
+        if (mode === 'horizontal-track') { x = box.x + box.width * .72; y = box.y + box.height - gutters.horizontal / 2; }
+        if (mode.includes('thumb')) y = box.y + 26;
+        if (mode === 'top-boundary-button') y = box.y + 7;
+        await f.page.mouse.move(x, y); await f.page.mouse.down();
+        if (mode.includes('thumb')) await f.page.mouse.move(x, y + (mode.startsWith('inner') ? 40 : 100), { steps: 6 });
+        await f.page.mouse.up(); await f.page.waitForFunction(() => !layoutBookmarkMenu.isOpen()); await f.page.waitForTimeout(250);
+        const state = await child.evaluate(() => ({ top: scrollY, left: scrollX, inner: document.getElementById('inner-chat-scroll').scrollTop, pointers: chatNativePointers, submits: fixtureChatSubmits }));
+        assert.equal(state.pointers.length, 1, mode + ': trusted native input delivered once'); assert.equal(state.pointers[0].trusted, true);
+        if (mode === 'track' || mode === 'thumb') assert.ok(state.top > 0, 'viewport scrollbar actually moves');
+        if (mode === 'horizontal-track') assert.ok(state.left > 0, 'horizontal track actually moves');
+        if (mode.startsWith('inner')) assert.ok(state.inner > 0, 'inner scrollbar actually moves');
+        if (mode === 'top-boundary-button') assert.equal(state.top, 0, 'boundary input closes even without scrolling');
+        assert.equal(state.submits, 0); assert.equal(await chat.locator('#chat-input').inputValue(), '保留草稿');
+        await assertContinuity(f, before);
+    }
+    await trigger.click();
+    const panel = f.page.locator('#layout-bookmarks');
+    await panel.evaluate(panel => { panel.style.cssText += ';height:180px;overflow-y:scroll;scrollbar-width:auto;scroll-behavior:auto'; const spacer = document.createElement('div'); spacer.style.height = '1000px'; panel.appendChild(spacer); });
+    const ownWidth = await panel.evaluate(panel => panel.offsetWidth - panel.clientWidth - parseFloat(getComputedStyle(panel).borderLeftWidth) - parseFloat(getComputedStyle(panel).borderRightWidth));
+    // The site's themed WebKit scrollbar is deliberately narrower than the
+    // operating-system chat bars above. Require a real gutter and actual drag.
+    assert.ok(ownWidth > 0, 'the menu has a real visible scrollbar');
+    t.diagnostic(JSON.stringify({ ownBookmarkScrollbarWidth: ownWidth }));
+    await panel.evaluate(panel => { panel.scrollTop = 0; }); await f.page.waitForTimeout(100);
+    const ownBox = await panel.boundingBox(), ownX = ownBox.x + ownBox.width - ownWidth / 2 - 1;
+    await f.page.mouse.move(ownX, ownBox.y + 24); await f.page.mouse.down(); await f.page.mouse.move(ownX, ownBox.y + 115, { steps: 8 }); await f.page.mouse.up();
+    await f.page.waitForTimeout(250); assert.equal(await panel.isVisible(), true, 'the menu scrollbar is inside the menu');
+    assert.ok(await panel.evaluate(panel => panel.scrollTop) > 0, 'the own-menu scrollbar remains functional');
+    await assertContinuity(f, before);
 });
 
 test('bookmark menu dismisses when native media controls consume pointer events while scripted playback leaves it open', browserCase, async t => {

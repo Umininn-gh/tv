@@ -15,7 +15,7 @@ const root = path.resolve(__dirname, '..');
 const siteFile = name => fs.existsSync(path.join(root,name)) ? name : name.replace(/^site\/assets\/(?:js|css)\//,'').replace(/^site\//,'');
 const siteUrl = 'https://umininn-gh.github.io/tv/';
 const frameOrigin = 'https://layout-player.invalid';
-let browser, unavailable, playwrightRuntime, appScript, layoutScript, geometryScript, channelScript, performanceScript, bookmarkScript, qualityScript, css;
+let browser, unavailable, playwrightRuntime, appScript, layoutScript, geometryScript, channelScript, performanceScript, bookmarkScript, menuDismissScript, qualityScript, css;
 
 test.before(async () => {
     if (!enabled) return;
@@ -41,7 +41,7 @@ test.before(async () => {
     const editorEnd=source.indexOf('\nfunction toggleChannelMenu()',editorStart);
     assert.ok(coreEnd>0&&statusClassStart>coreEnd&&statusClassEnd>statusClassStart&&summaryStart>statusClassEnd&&selectionStart>summaryStart&&editorStart>selectionStart&&editorEnd>editorStart,'reviewed production core/status/selection/editor seams must exist');
     appScript=source.slice(0,coreEnd)+'\n'+source.slice(statusClassStart,statusClassEnd)+'\n'+source.slice(summaryStart,editorEnd)+'\n'+fixtureApp;
-    layoutScript=read('player-layout.js');geometryScript=read('player-geometry.js');channelScript=read('channel-list.js');performanceScript=read('stream-performance.js');bookmarkScript=read('layout-bookmarks.js');
+    layoutScript=read('player-layout.js');geometryScript=read('player-geometry.js');channelScript=read('channel-list.js');performanceScript=read('stream-performance.js');bookmarkScript=read('layout-bookmarks.js');menuDismissScript=read('menu-dismiss.js');
     qualityScript=read('stream-quality.js');
     css=[...read('index.html').matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match=>match[1]).join('\n');
     console.log(`Player layout model: ${engine} ${browser.version()} (headless; production CSS/app sections; all network intercepted; no live platform).`);
@@ -187,7 +187,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body data-fixture-players="${players}" data-fixture-catalog-channels="${catalogChannels}" data-fixture-frame-platform="${framePlatform}" data-fixture-production-kick="${productionKick}" data-fixture-production-twitch="${productionTwitch}" data-fixture-audio-userscript="${audioUserscript}">
     <div ${audioUserscript?'id="input-container"':''} style="height:${audioUserscript?40:30}px;flex:none;${audioUserscript?'margin-left:0;width:100%;padding-left:0':''}"><button id="more-channels-btn" onclick="toggleChannelSelection()">看更台</button><button id="adjust-player-positions">調整位置</button><button id="enlarge-player">放大模式</button><button id="reset-player-positions">重設</button><button id="toggle-all-audio">聲音</button></div>
     <div id="channel-selection" style="display:none"><div id="channel-options"></div><button id="fixture-watch-selected" onclick="watchSelectedChannels()">開始觀看</button></div><div id="multi-stream-container-wrapper" style="flex:none;width:${width}px;height:${height}px;min-height:0"><div id="multi-stream-container" class="video-wrapper"></div></div>
-    <script src="/instrument.js"></script><script src="/channel-list.js"></script><script src="/stream-performance.js"></script><script src="/player-geometry.js"></script><script src="/player-layout.js"></script><script src="/layout-bookmarks.js"></script>${productionTwitch?'<script src="/stream-quality.js"></script>':''}<script src="/fixture-app.js"></script></body></html>`;
+    <script src="/instrument.js"></script><script src="/channel-list.js"></script><script src="/stream-performance.js"></script><script src="/player-geometry.js"></script><script src="/player-layout.js"></script><script src="/menu-dismiss.js"></script><script src="/layout-bookmarks.js"></script>${productionTwitch?'<script src="/stream-quality.js"></script>':''}<script src="/fixture-app.js"></script></body></html>`;
     const child=`<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0"><video id="frame-video" loop muted playsinline preload="auto" src="/silent.wav" style="width:100%;height:100%"></video><script>${instrument}\ninstrumentMedia(document.getElementById('frame-video'));window.fixtureExternalAudioResetCount=0;addEventListener('message',event=>{if(event.data?.fixtureLayoutAudioReset){fixtureExternalAudioResetCount++;for(const saved of fixtureMedia){saved.video.muted=event.data.muted;saved.video.volume=event.data.volume}}});</script></body></html>`;
     await context.route('**/*',route=>{
         const request=route.request(),url=new URL(request.url());
@@ -196,7 +196,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
             if(request.url()===siteUrl)return route.fulfill({contentType:'text/html',body:main});
             if(url.origin===modelFrameOrigin&&['/player','/layout-added'].includes(url.pathname))return route.fulfill({contentType:'text/html',body:child});
         }
-        const scripts={'/instrument.js':instrument,'/channel-list.js':channelScript,'/stream-performance.js':performanceScript,'/player-geometry.js':geometryScript,'/player-layout.js':layoutScript,'/layout-bookmarks.js':bookmarkScript,'/stream-quality.js':qualityScript,'/fixture-app.js':fixtureScript};
+        const scripts={'/instrument.js':instrument,'/channel-list.js':channelScript,'/stream-performance.js':performanceScript,'/player-geometry.js':geometryScript,'/player-layout.js':layoutScript,'/menu-dismiss.js':menuDismissScript,'/layout-bookmarks.js':bookmarkScript,'/stream-quality.js':qualityScript,'/fixture-app.js':fixtureScript};
         if(url.origin===new URL(siteUrl).origin&&scripts[url.pathname])return route.fulfill({contentType:'application/javascript; charset=utf-8',body:scripts[url.pathname]});
         if(url.pathname==='/silent.wav'&&[new URL(siteUrl).origin,modelFrameOrigin].includes(url.origin)){
             const range=/^bytes=(\d+)-(\d*)$/.exec(request.headers().range||'');const start=range?Number(range[1]):0;
@@ -2988,8 +2988,7 @@ async function assertCrossOriginPlayerDismissal(f,{trigger,isOpen,suppressPointe
     });
     await f.page.frameLocator('#fixture-unrelated-frame').getByRole('button').click();await f.page.waitForTimeout(250);
     assert.equal(await f.page.evaluate(()=>document.activeElement?.id),'fixture-unrelated-frame');
-    await isOpen(true); // Only focus entering the actual playback area dismisses.
-    await trigger.click();await isOpen(false);
+    await isOpen(false); // Focus entering any outside frame is an outside interaction.
     await f.page.locator('#fixture-unrelated-frame').evaluate(frame=>frame.remove());
 }
 
@@ -3033,6 +3032,122 @@ async function installChatDismissFixture(f,foreign){
     await f.page.waitForTimeout(100); // Allow Chromium's new OOPIF hit-test surface to reach its parent compositor.
     return {frame,chat,loads:()=>loads};
 }
+
+async function nativeScrollbarBrowser(t){
+    // Firefox headless does not paint native scrollbars on Windows. A headed
+    // window is required here; zero-width overlay gutters never count as coverage.
+    const native=await playwrightRuntime[engine].launch({headless:engine!=='firefox',...(executablePath?{executablePath}:{}),
+        ...(engine==='firefox'?{firefoxUserPrefs:{'media.autoplay.default':0,'widget.windows.overlay-scrollbars.enabled':false,
+            'ui.useOverlayScrollbars':0,'widget.non-native-theme.scrollbar.style':4,'widget.non-native-theme.scrollbar.size.override':17}}:
+            {args:['--autoplay-policy=no-user-gesture-required'],ignoreDefaultArgs:['--hide-scrollbars']})});
+    t.after(()=>native.close());return native;
+}
+
+async function prepareNativeChatScrollbars(frame){
+    await frame.evaluate(()=>{
+        const style=document.createElement('style');style.textContent='html{overflow:scroll;scroll-behavior:auto}body{min-width:900px}#fixture-chat-scroller{width:360px;height:110px;overflow:scroll;border:0;scroll-behavior:auto}';document.head.appendChild(style);
+        const scroller=document.createElement('div');scroller.id='fixture-chat-scroller';scroller.innerHTML='<div style="width:1000px;height:800px">聊天內層捲動範圍</div>';
+        document.getElementById('chat-message').after(scroller);
+        window.chatFixturePointers=[];
+        window.addEventListener('pointerdown',event=>chatFixturePointers.push({target:event.target.id||event.target.tagName,trusted:event.isTrusted}),true);
+    });
+    return frame.evaluate(()=>({vertical:innerWidth-document.documentElement.clientWidth,horizontal:innerHeight-document.documentElement.clientHeight,
+        innerVertical:document.getElementById('fixture-chat-scroller').offsetWidth-document.getElementById('fixture-chat-scroller').clientWidth,
+        innerHorizontal:document.getElementById('fixture-chat-scroller').offsetHeight-document.getElementById('fixture-chat-scroller').clientHeight}));
+}
+
+test('actual native chat scrollbar track, thumb, boundary buttons and inner bars dismiss real menus without replay or media changes',{skip:!enabled,timeout:120000},async t=>{
+    if(!optional(t))return;const native=await nativeScrollbarBrowser(t);
+    for(const menu of ['selection','playback'])await t.test(menu,async()=>{
+        const playback=menu==='playback',f=await fixture(t,{width:1200,height:700,viewport:{width:1800,height:1100},audioUserscript:playback,fixtureBrowser:native}),before=await snapshot(f);
+        const {frame,chat,loads}=await installChatDismissFixture(f,false),identity=await frame.evaluate(()=>chatFixtureId);
+        const gutters=await prepareNativeChatScrollbars(frame);
+        for(const [axis,size]of Object.entries(gutters))assert.ok(size>=10,`a visible native ${axis} scrollbar is required, got ${size}px`);
+        t.diagnostic(JSON.stringify({engine,menu,nativeChatGutters:gutters,firefoxHeaded:engine==='firefox'}));
+        const trigger=f.page.locator(playback?'#umininn-player-control-host #toggle':'#more-channels-btn'),isOpen=open=>playback?controlsMenuOpen(f,open):selectionMenuOpen(f,open);
+        const reset=()=>frame.evaluate(()=>{scrollTo(0,0);const inner=document.getElementById('fixture-chat-scroller');inner.scrollTop=inner.scrollLeft=0;chatFixturePointers=[]});
+        const closeCheck=async()=>{await f.page.waitForFunction(()=>!document.documentElement.hasAttribute('data-umininn-player-controls-open')&&getComputedStyle(document.getElementById('channel-selection')).display==='none');await isOpen(false)};
+        for(const mode of ['track','thumb','top-boundary-button','bottom-boundary-button','horizontal-track','inner-track','inner-thumb','inner-horizontal-track']){
+            await reset();await trigger.click();await isOpen(true);
+            if(mode==='bottom-boundary-button')await frame.evaluate(()=>scrollTo(0,document.scrollingElement.scrollHeight));
+            // Programmatic chat refresh/scroll produces trusted scroll events,
+            // but no input gesture and must leave the open menu alone.
+            await f.page.waitForTimeout(250);await isOpen(true);
+            const rootBox=await f.page.locator('#chat_embed').boundingBox();
+            let box=rootBox,gutter=mode.includes('horizontal')?gutters.horizontal:gutters.vertical;
+            if(mode.startsWith('inner'))box=await chat.locator('#fixture-chat-scroller').boundingBox();
+            let x=box.x+box.width-gutter/2,y=box.y+box.height*.72;
+            if(mode.includes('horizontal')){x=box.x+box.width*.72;y=box.y+box.height-gutter/2;}
+            if(mode.includes('thumb'))y=box.y+27;
+            if(mode==='top-boundary-button')y=box.y+7;
+            if(mode==='bottom-boundary-button')y=box.y+box.height-gutters.horizontal-7;
+            await f.page.mouse.move(x,y);await f.page.mouse.down();
+            if(mode.includes('thumb'))await f.page.mouse.move(x,y+(mode.startsWith('inner')?45:105),{steps:6});
+            await f.page.mouse.up();await closeCheck();await f.page.waitForTimeout(250);
+            const state=await frame.evaluate(()=>({pointers:chatFixturePointers,top:scrollY,left:scrollX,innerTop:document.getElementById('fixture-chat-scroller').scrollTop,innerLeft:document.getElementById('fixture-chat-scroller').scrollLeft,submits:chatFixtureSends,id:chatFixtureId}));
+            assert.equal(state.pointers.length,1,mode+': one native gesture reaches the child once');assert.equal(state.pointers[0].trusted,true);
+            if(mode==='track'||mode==='thumb')assert.ok(state.top>0,mode+' must actually scroll the chat viewport');
+            if(mode==='horizontal-track')assert.ok(state.left>0,'horizontal viewport track must actually scroll');
+            if(mode==='inner-track'||mode==='inner-thumb')assert.ok(state.innerTop>0,mode+' must actually scroll the nested message pane');
+            if(mode==='inner-horizontal-track')assert.ok(state.innerLeft>0,'nested horizontal track must actually scroll');
+            if(mode==='top-boundary-button')assert.equal(state.top,0,'a boundary click closes even when scrollTop cannot change');
+            assert.equal(state.submits,0);assert.equal(state.id,identity);assert.equal(await chat.locator('#chat-draft').inputValue(),'尚未傳送的草稿');
+            await assertContinuity(f,before);
+        }
+        assert.equal(loads(),1,'scrollbar interactions keep the chat document mounted');
+        await trigger.click();await isOpen(true);
+        const ownPanel=f.page.locator(playback?audioPanel+' #panel':'#channel-selection');
+        await ownPanel.evaluate(panel=>{panel.style.cssText+=';height:190px;max-height:190px;overflow-y:scroll;scrollbar-width:auto;scroll-behavior:auto';const spacer=document.createElement('div');spacer.style.height='1000px';panel.appendChild(spacer)});
+        const ownWidth=await ownPanel.evaluate(panel=>panel.offsetWidth-panel.clientWidth-parseFloat(getComputedStyle(panel).borderLeftWidth)-parseFloat(getComputedStyle(panel).borderRightWidth));
+        assert.ok(ownWidth>0,'the open menu has a painted scrollbar gutter');
+        await ownPanel.evaluate(panel=>{panel.scrollTop=0});await f.page.waitForTimeout(100);
+        const ownBox=await ownPanel.boundingBox(),ownX=ownBox.x+ownBox.width-ownWidth/2-1;
+        await f.page.mouse.move(ownX,ownBox.y+24);await f.page.mouse.down();await f.page.mouse.move(ownX,ownBox.y+120,{steps:8});await f.page.mouse.up();
+        await f.page.waitForTimeout(250);await isOpen(true);assert.ok(await ownPanel.evaluate(panel=>panel.scrollTop)>0,'scrolling inside its own menu remains usable');
+        await assertContinuity(f,before);
+    });
+});
+
+test('same-origin chat nested documents, prevented focus and replacement frames rebind menu dismissal while background and stale input do not',{skip:!enabled,timeout:90000},async t=>{
+    if(!optional(t))return;
+    for(const menu of ['selection','playback'])await t.test(menu,async()=>{
+        const playback=menu==='playback',f=await fixture(t,{width:1200,height:700,viewport:{width:1800,height:1100},audioUserscript:playback}),before=await snapshot(f);
+        const {frame,chat}=await installChatDismissFixture(f,false);
+        const trigger=f.page.locator(playback?'#umininn-player-control-host #toggle':'#more-channels-btn'),isOpen=open=>playback?controlsMenuOpen(f,open):selectionMenuOpen(f,open);
+        await frame.evaluate(()=>{
+            document.getElementById('chat-options').addEventListener('pointerdown',event=>event.preventDefault());
+            const nested=document.createElement('iframe');nested.id='fixture-nested-chat';nested.style.cssText='width:250px;height:60px;border:0';
+            nested.srcdoc='<!doctype html><button id="nested-chat-button" onpointerdown="event.preventDefault()" onclick="window.clicks=(window.clicks||0)+1">聊天巢狀選項</button>';
+            document.getElementById('chat-message').after(nested);
+        });
+        const nested=chat.frameLocator('#fixture-nested-chat');await nested.locator('#nested-chat-button').waitFor();
+        for(const [target,position]of [[chat.locator('#chat-options'),null],[nested.locator('#nested-chat-button'),null],[chat.locator('body'),{x:450,y:170}]]){
+            await trigger.click();await isOpen(true);await f.page.waitForTimeout(50);
+            await target.click(position?{position}:{});
+            await f.page.waitForFunction(()=>!document.documentElement.hasAttribute('data-umininn-player-controls-open')&&getComputedStyle(document.getElementById('channel-selection')).display==='none');await isOpen(false);
+        }
+        assert.equal(await nested.locator('body').evaluate(()=>window.clicks),1,'nested input is not replayed');
+        assert.equal(await frame.evaluate(()=>chatFixtureSends),0);assert.equal(await chat.locator('#chat-draft').inputValue(),'尚未傳送的草稿');
+        // A fresh document and a replacement iframe must acquire listeners on
+        // the next opening; old detached documents cannot dismiss later menus.
+        await frame.goto(frame.url(),{waitUntil:'load'});await chat.locator('#chat-draft').waitFor();
+        await trigger.click();await isOpen(true);await chat.locator('#chat-options').click();
+        await f.page.waitForFunction(()=>!document.documentElement.hasAttribute('data-umininn-player-controls-open')&&getComputedStyle(document.getElementById('channel-selection')).display==='none');await isOpen(false);
+        const localUrl=frame.url(),foreignUrl='https://layout-chat.invalid/navigation-chat-fixture';
+        await f.page.route(foreignUrl,route=>route.fulfill({contentType:'text/html',body:'<!doctype html><button id="chat-options">官方聊天室選項</button>'}));
+        await trigger.click();await isOpen(true);
+        const foreignNavigation=f.page.waitForEvent('framenavigated',{predicate:live=>live.url()===foreignUrl});
+        await f.page.locator('#chat_embed').evaluate((iframe,url)=>{iframe.src=url},foreignUrl);await foreignNavigation;await chat.locator('#chat-options').waitFor();await f.page.waitForTimeout(250);await isOpen(true);
+        await chat.locator('#chat-options').click();await f.page.waitForFunction(()=>!document.documentElement.hasAttribute('data-umininn-player-controls-open')&&getComputedStyle(document.getElementById('channel-selection')).display==='none');await isOpen(false);
+        const localNavigation=f.page.waitForEvent('framenavigated',{predicate:live=>live.url()===localUrl});
+        await f.page.locator('#chat_embed').evaluate((iframe,url)=>{iframe.src=url},localUrl);await localNavigation;await chat.locator('#chat-draft').waitFor();
+        await trigger.click();await isOpen(true);await chat.locator('#chat-options').click();await f.page.waitForFunction(()=>!document.documentElement.hasAttribute('data-umininn-player-controls-open')&&getComputedStyle(document.getElementById('channel-selection')).display==='none');await isOpen(false);
+        await f.page.evaluate(()=>{const old=document.getElementById('chat_embed');window.fixtureDetachedChat=old;const replacement=old.cloneNode();old.replaceWith(replacement)});
+        await chat.locator('#chat-draft').waitFor();await trigger.click();await isOpen(true);await f.page.waitForTimeout(250);await isOpen(true);
+        await chat.locator('#chat-options').click();await f.page.waitForFunction(()=>!document.documentElement.hasAttribute('data-umininn-player-controls-open')&&getComputedStyle(document.getElementById('channel-selection')).display==='none');await isOpen(false);
+        await assertContinuity(f,before);
+    });
+});
 
 test('chat iframe input dismisses real menus without sending the draft, stealing focus or changing playback',{skip:!enabled,timeout:60000},async t=>{
     if(!optional(t))return;
@@ -3092,14 +3207,6 @@ test('chat iframe input dismisses real menus without sending the draft, stealing
         assert.deepEqual(await f.page.evaluate(()=>fixtureChatChromeClicks),[true]);
         assert.equal(await f.page.evaluate(()=>document.activeElement?.id),'fixture-chat-chrome');
         assert.equal(await f.page.evaluate(()=>fixtureParentChatPointers),0,'iframe content input is genuinely isolated from the parent pointer listener');
-        const scrollbarWidth=await frame.evaluate(()=>innerWidth-document.documentElement.clientWidth);
-        if(scrollbarWidth>0){
-            await trigger.click();await isOpen(true);
-            const box=await f.page.locator('#chat_embed').boundingBox();
-            await f.page.mouse.click(box.x+box.width-scrollbarWidth/2,box.y+box.height-25);await f.page.waitForTimeout(250);
-            t.diagnostic(JSON.stringify({menu,foreign,nativeScrollbar:scrollbarWidth,scrollTop:await frame.evaluate(()=>document.scrollingElement.scrollTop),dismissed:!await f.page.locator(playback?audioPanel+' #panel':'#channel-selection').isVisible()}));
-            if(await f.page.locator(playback?audioPanel+' #panel':'#channel-selection').isVisible())await trigger.click();
-        }
         assert.equal(loads(),1);await assertContinuity(f,before);
     });
 });
@@ -3197,7 +3304,8 @@ test('selection menu dismisses on outside pointer input while retaining inside c
     const card=selectionCard(f,key),checkbox=card.locator('input'),checked=await checkbox.isChecked();
     await card.locator('.channel-option-label').click();assert.equal(await checkbox.isChecked(),!checked);await selectionMenuOpen(f,true);
     await f.page.locator('#channel-selection').click({position:{x:10,y:40}});await selectionMenuOpen(f,true);
-    await outside.focus();await f.page.keyboard.press('Enter');await selectionMenuOpen(f,true);
+    await outside.focus();await f.page.keyboard.press('Enter');await selectionMenuOpen(f,false);
+    await trigger.click();await selectionMenuOpen(f,true);
     await outside.click();await selectionMenuOpen(f,false);await waitMenuHover(f);
     assert.equal((await nameGeometry(f)).hidden,true);assert.equal(await f.page.evaluate(()=>document.activeElement.id),'fixture-menu-outside','dismissal must not take focus back from the clicked outside control');
     assert.deepEqual(await f.page.evaluate(()=>fixtureMenuOutsideActions),[
@@ -3220,7 +3328,8 @@ test('playback-controls menu dismisses on outside pointer input while preserving
     await f.page.mouse.move(bounds.x+bounds.width*.25,bounds.y+bounds.height/2);await f.page.mouse.down();await controlsMenuOpen(f,true);
     await f.page.mouse.move(bounds.x+bounds.width*.6,bounds.y+bounds.height/2);await controlsMenuOpen(f,true);await f.page.mouse.up();await controlsMenuOpen(f,true);
     const value=Number(await slider.inputValue())/100;await waitAudio(f,media=>Math.abs(media[0].volume-value)<.001);
-    await outside.focus();await f.page.keyboard.press('Enter');await controlsMenuOpen(f,true);
+    await outside.focus();await f.page.keyboard.press('Enter');await controlsMenuOpen(f,false);
+    await toggle.click();await controlsMenuOpen(f,true);
     const afterControls=await snapshot(f);
     await outside.click();await controlsMenuOpen(f,false);await waitMenuHover(f);assert.equal((await nameGeometry(f)).hidden,true);
     assert.equal(await f.page.evaluate(()=>document.activeElement.id),'fixture-menu-outside');
@@ -3255,7 +3364,9 @@ test('selection hover integrates both real menus without echoing markers or clea
             return JSON.stringify(actual)===JSON.stringify([...expected].sort());
         },rowIndices.map(index=>titles[index]));
     }
-    await f.page.locator('#more-channels-btn').click();await toggle.focus();await f.page.keyboard.press('Enter');await waitNames(f);
+    // Open the second owner through its production handler without a user
+    // outside gesture; normal pointer/keyboard opening is tested separately.
+    await f.page.locator('#more-channels-btn').click();await toggle.evaluate(button=>button.click());await waitNames(f);
     // First keep both production panel positions and exercise actual tile input.
     // Either menu's controls must identify that same tile without intercepting it.
     await hoverSelectionTile(f,keys[0]);await matched({selection:[keys[0]],controls:[keys[0]],cards:[keys[0]]},[0]);
@@ -3273,15 +3384,15 @@ test('selection hover integrates both real menus without echoing markers or clea
     await rows.nth(4).locator('strong').hover();await matched({controls:[keys[4]],cards:[keys[4]]},[4]);
     assert.equal(await f.page.locator('#channel-selection').evaluate(panel=>panel.scrollTop),menuScroll,'hovering the other menu row may highlight this card but cannot scroll this menu');
     assert.equal(await f.page.evaluate(()=>fixtureIntegratedRowTrusted),true);
-    // Keyboard activation leaves the mouse on the still-open owner's row.
-    await f.page.locator('#more-channels-btn').focus();await f.page.keyboard.press('Enter');await matched({controls:[keys[4]],cards:[]},[4]);
+    // Programmatic owner changes leave the mouse on the still-open owner's row.
+    await f.page.locator('#more-channels-btn').evaluate(button=>button.click());await matched({controls:[keys[4]],cards:[]},[4]);
     assert.equal((await nameGeometry(f)).hidden,false);
-    await f.page.keyboard.press('Enter');await matched({controls:[keys[4]],cards:[keys[4]]},[4]);
-    await close.focus();await f.page.keyboard.press('Enter');await matched({});await waitNames(f);
+    await f.page.locator('#more-channels-btn').evaluate(button=>button.click());await matched({controls:[keys[4]],cards:[keys[4]]},[4]);
+    await close.evaluate(button=>button.click());await matched({});await waitNames(f);
     await selectionCard(f,keys[0]).hover();await matched({selection:[keys[0]],cards:[keys[0]]});
-    await toggle.focus();await f.page.keyboard.press('Enter');await matched({selection:[keys[0]],cards:[keys[0]]},[0]);
-    await close.focus();await f.page.keyboard.press('Enter');await matched({selection:[keys[0]],cards:[keys[0]]});
-    await f.page.locator('#more-channels-btn').focus();await f.page.keyboard.press('Enter');await matched({});
+    await toggle.evaluate(button=>button.click());await matched({selection:[keys[0]],cards:[keys[0]]},[0]);
+    await close.evaluate(button=>button.click());await matched({selection:[keys[0]],cards:[keys[0]]});
+    await f.page.locator('#more-channels-btn').evaluate(button=>button.click());await matched({});
     assert.equal((await nameGeometry(f)).hidden,true);await assertContinuity(f,before);
 });
 
@@ -3470,7 +3581,7 @@ test('Twitch highlight follows enlargement, swapping and portrait reflow without
 test('Twitch highlights from the real userscript row and both menu owners survive closing either owner',{skip:!enabled,timeout:30000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:2200,height:1200},productionTwitch:true,audioUserscript:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
     const toggle=f.page.locator('#umininn-player-control-host #toggle'),close=f.page.locator(audioPanel).getByRole('button',{name:'關閉',exact:true}),rows=f.page.locator(audioPanel).locator('.player');
-    await f.page.locator('#more-channels-btn').click();await toggle.focus();await f.page.keyboard.press('Enter');await waitNames(f);
+    await f.page.locator('#more-channels-btn').click();await toggle.evaluate(button=>button.click());await waitNames(f);
     // As in the general two-menu integration, separate only the existing fixed
     // fixture panels so trusted input can reach both actual control surfaces.
     await f.page.locator('#channel-selection').evaluate(panel=>{panel.style.left='1300px';panel.style.right='auto'});
@@ -3481,10 +3592,10 @@ test('Twitch highlights from the real userscript row and both menu owners surviv
     // The real recovery strip is parent-document input even in Chromium's
     // OOPIF model and belongs to the same live Twitch wrapper for both menus.
     await f.page.locator('.twitch-recover-button').hover();await waitMenuHover(f,{selection:[keys[2]],controls:[keys[2]],cards:[keys[2]]});await assertVisibleTileEdges(f,keys[2]);
-    await f.page.locator('#more-channels-btn').focus();await f.page.keyboard.press('Enter');await waitMenuHover(f,{controls:[keys[2]],cards:[]});await assertVisibleTileEdges(f,keys[2]);
-    await f.page.keyboard.press('Enter');await waitMenuHover(f,{selection:[keys[2]],controls:[keys[2]],cards:[keys[2]]});
-    await close.focus();await f.page.keyboard.press('Enter');await waitMenuHover(f,{selection:[keys[2]]});await assertVisibleTileEdges(f,keys[2]);
-    await f.page.locator('#more-channels-btn').focus();await f.page.keyboard.press('Enter');await waitMenuHover(f);
+    await f.page.locator('#more-channels-btn').evaluate(button=>button.click());await waitMenuHover(f,{controls:[keys[2]],cards:[]});await assertVisibleTileEdges(f,keys[2]);
+    await f.page.locator('#more-channels-btn').evaluate(button=>button.click());await waitMenuHover(f,{selection:[keys[2]],controls:[keys[2]],cards:[keys[2]]});
+    await close.evaluate(button=>button.click());await waitMenuHover(f,{selection:[keys[2]]});await assertVisibleTileEdges(f,keys[2]);
+    await f.page.locator('#more-channels-btn').evaluate(button=>button.click());await waitMenuHover(f);
     assert.equal((await tileEdgePixels(f,keys[2])).some(pixel=>JSON.stringify(pixel)==='[88,200,255,255]'),false,'closing both owners clears all four painted edges');
     await assertContinuity(f,before);
 });

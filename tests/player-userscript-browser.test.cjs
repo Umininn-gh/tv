@@ -14,6 +14,7 @@ const siteOrigin = 'https://umininn-gh.github.io';
 const siteUrl = siteOrigin + '/tv/';
 const playerUrl = 'https://player.kick.com/qa-player';
 const twitchUrl = 'https://player.twitch.tv/?channel=qa-player&parent=umininn-gh.github.io';
+const chatUrl = 'https://www.twitch.tv/embed/qa_channel/chat?darkpopout&parent=umininn-gh.github.io';
 const unknownUrl = 'https://unapproved.invalid/player';
 const channel = 'umininn-tv-userscript';
 const panel = '#umininn-player-panel-host';
@@ -36,7 +37,7 @@ test.before(async () => {
         try {
             launchOptions = engine === 'firefox'
                 ? { ...options, firefoxUserPrefs: { 'media.autoplay.default': 0 } }
-                : { ...options, args: ['--autoplay-policy=no-user-gesture-required'] };
+                : { ...options, ignoreDefaultArgs: ['--hide-scrollbars'], args: ['--autoplay-policy=no-user-gesture-required'] };
             browser = await playwright[engine].launch(launchOptions);
             break;
         } catch (_) { /* Try the installed Edge if bundled Chromium is absent. */ }
@@ -84,6 +85,7 @@ async function fixture(html = siteHtml, initialUrl = siteUrl, options = {}) {
             if (request.url() === initialUrl) return route.fulfill({ contentType: 'text/html', body: html });
             if (request.url() === playerUrl || request.url() === unknownUrl) return route.fulfill({ contentType: 'text/html', body: playerHtml });
             if (request.url() === twitchUrl && options.twitchHtml) return route.fulfill({ contentType: 'text/html', body: options.twitchHtml });
+            if (request.url() === chatUrl && options.chatHtml) return route.fulfill({ contentType: 'text/html', body: options.chatHtml });
         }
         if (url.pathname === '/silent.wav' && [siteOrigin, new URL(playerUrl).origin, new URL(unknownUrl).origin, new URL(twitchUrl).origin].includes(url.origin)) {
             return route.fulfill({ contentType: 'audio/wav', body: wav, headers: { 'Accept-Ranges': 'bytes' } });
@@ -95,11 +97,17 @@ async function fixture(html = siteHtml, initialUrl = siteUrl, options = {}) {
     // origin/role checks. Running at DOMContentLoaded models document-idle.
     await context.addInitScript({ content: `
         window.fixtureMessages = [];
+        window.fixtureMenuMessages = [];
         addEventListener('message', event => {
             if (event.data && event.data.channel === ${JSON.stringify(channel)})
                 fixtureMessages.push({ origin: event.origin, ...event.data });
+            if (event.data && event.data.channel === 'umininn-menu-interaction')
+                fixtureMenuMessages.push({ origin: event.origin, ...event.data });
         });
-        addEventListener('DOMContentLoaded', () => {\n${script}\n}, { once: true });
+        addEventListener('DOMContentLoaded', () => {
+            if (${JSON.stringify(options.lateChatScript === true)} && location.href === ${JSON.stringify(chatUrl)}) return;
+            \n${script}\n
+        }, { once: true });
     ` });
     const page = await context.newPage();
     page.setDefaultTimeout(10000);
@@ -401,4 +409,83 @@ test('standalone userscript waits for the production login template and mounts o
         await page.addScriptTag({ content: script });
         assert.equal(await page.locator('#umininn-player-control-host').count(), 1);
     } finally { await context.close(); }
+});
+
+test('late userscript injection into official Twitch chat relays native scrollbar and wheel gestures without changing media', { skip: !enabled, timeout: 45000 }, async t => {
+    if (!optional(t)) return;
+    // Firefox's headless protocol hides native scrollbars regardless of classic
+    // scrollbar preferences. This isolated local fixture uses headed Firefox so
+    // the test can assert and operate a real, non-zero-width native gutter.
+    const nativeBrowser = engine === 'firefox' ? await playwright.firefox.launch({
+        ...launchOptions, headless: false,
+        firefoxUserPrefs: { ...launchOptions.firefoxUserPrefs,
+            'widget.windows.overlay-scrollbars.enabled': false, 'ui.useOverlayScrollbars': 0,
+            'widget.non-native-theme.scrollbar.style': 4,
+            'widget.non-native-theme.scrollbar.size.override': 17 }
+    }) : null;
+    const chatHtml = `<!doctype html><html style="overflow-y:scroll"><meta charset="utf-8"><body style="margin:0">
+<input id="draft" value="保留這個草稿" style="position:fixed;top:4px;left:4px;width:180px">
+<div style="height:2400px;background:linear-gradient(#123,#789)"></div>
+<script>window.fixtureGestures=[];addEventListener('pointerdown',e=>fixtureGestures.push({trusted:e.isTrusted,target:e.target.tagName}),true);<\/script>
+</body></html>`;
+    const { context, page, navigationRequests } = await fixture(siteHtml, siteUrl,
+        { ...(nativeBrowser ? { browser: nativeBrowser } : {}), chatHtml, lateChatScript: true });
+    try {
+        await page.setViewportSize({ width: 1600, height: 900 });
+        const player = await addPlayers(page);
+        await page.evaluate(chatUrl => {
+            const wrapper = document.createElement('div'); wrapper.id = 'chat-panel';
+            wrapper.style.cssText = 'position:absolute;left:340px;top:50px;width:320px;height:240px';
+            const chat = document.createElement('iframe'); chat.id = 'chat_embed'; chat.src = chatUrl;
+            chat.style.cssText = 'display:block;width:320px;height:240px;border:0';
+            wrapper.appendChild(chat); document.body.appendChild(wrapper);
+        }, chatUrl);
+        const chat = await frameAt(page, chatUrl);
+        await chat.waitForSelector('#draft');
+        const gutter = await chat.evaluate(() => innerWidth - document.documentElement.clientWidth);
+        assert.ok(gutter >= 10, `The native scrollbar must exist, actual gutter ${gutter}px.`);
+        const bounds = await page.locator('#chat_embed').boundingBox();
+        const barX = bounds.x + bounds.width - gutter / 2;
+        const barY = bounds.y + bounds.height - 35;
+        const opened = () => page.locator(panel + ' #panel').isVisible();
+        assert.equal(await opened(), true);
+
+        // Before the late notifier exists, native scrollbar clicks do not give
+        // focus to the iframe. This reproduces the reported focus-only gap.
+        const beforeScroll = await chat.evaluate(() => document.documentElement.scrollTop);
+        await page.mouse.click(barX, barY);
+        await chat.waitForFunction(before => document.documentElement.scrollTop > before, beforeScroll);
+        await page.waitForTimeout(250);
+        assert.equal(await opened(), true, 'Native scrollbar input does not produce parent iframe focus.');
+        assert.equal(await chat.evaluate(() => fixtureGestures.at(-1)?.trusted), true);
+
+        const initialNavigations = new Map(navigationRequests);
+        const initialNative = await mediaState(page, '#native-video');
+        const initialPlayer = await mediaState(player, 'video');
+        await chat.addScriptTag({ content: script });
+        await page.waitForFunction(() => fixtureMenuMessages.some(message => message.type === 'ready' && message.origin === 'https://www.twitch.tv'));
+        await chat.waitForFunction(() => fixtureMenuMessages.some(message => message.type === 'watch' && message.origin === 'https://umininn-gh.github.io'));
+        assert.equal(await chat.locator('#umininn-player-control-host').count(), 0, 'The chat role never mounts playback controls.');
+        assert.equal(await chat.evaluate(() => fixtureMessages.length), 0, 'The chat role never creates a media transport.');
+        await page.mouse.click(barX, barY);
+        await page.waitForFunction(() => document.getElementById('umininn-player-panel-host').shadowRoot.getElementById('panel').hidden);
+        assert.ok(await page.evaluate(() => fixtureMenuMessages.some(message => message.type === 'interaction' && message.origin === 'https://www.twitch.tv')));
+        assert.equal(await chat.locator('#draft').inputValue(), '保留這個草稿');
+
+        await page.locator('#umininn-player-control-host #toggle').click();
+        await chat.evaluate(() => {
+            document.documentElement.scrollTop = 150;
+            dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+            dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 90 }));
+        });
+        await page.waitForTimeout(300);
+        assert.equal(await opened(), true, 'Automatic scroll and synthetic gestures do not dismiss the menu.');
+        await page.mouse.move(bounds.x + 80, bounds.y + 120);
+        await page.mouse.wheel(0, 120);
+        await page.waitForFunction(() => document.getElementById('umininn-player-panel-host').shadowRoot.getElementById('panel').hidden);
+        await chat.waitForFunction(() => document.documentElement.scrollTop > 150);
+        assert.deepEqual(await mediaState(page, '#native-video'), initialNative);
+        assert.deepEqual(await mediaState(player, 'video'), initialPlayer);
+        assert.deepEqual(navigationRequests, initialNavigations, 'Chat interactions never reload any document.');
+    } finally { await context.close(); await nativeBrowser?.close(); }
 });

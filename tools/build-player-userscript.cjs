@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const RELEASE_VERSION = '1.0.22';
+const RELEASE_VERSION = '1.0.23';
 const FILENAME = 'umininn-tv-player.user.js';
 const META_FILENAME = 'umininn-tv-player.meta.js';
 const DISTRIBUTION_URL = 'https://umininn-gh.github.io/tv/userscript/';
@@ -15,6 +15,7 @@ const SITE_MATCHES = Object.freeze([
     'https://umininn-gh.github.io/tv/', 'https://umininn-gh.github.io/tv/?*',
     'https://umininn-gh.github.io/tv/index.html*', 'https://umininn-gh.github.io/tv/admin.html*'
 ]);
+const CHAT_MATCHES = Object.freeze(['https://www.twitch.tv/embed/*/chat*']);
 const MODULES = Object.freeze([
     ['browser-extension/shared/config.js', 'UmininnConfig'],
     ['browser-extension/shared/media-controller.js', 'UmininnMedia'],
@@ -22,6 +23,7 @@ const MODULES = Object.freeze([
     ['browser-extension/shared/layout-audio.js', 'UmininnLayoutAudio'],
     ['browser-extension/shared/twitch-controller.js', 'UmininnTwitch'],
     ['userscript/angelthump-logo.js', 'UmininnAngelThump'],
+    ['menu-dismiss.js', 'UmininnMenuDismiss'],
     ['browser-extension/site-ui.js', 'UmininnSite'],
     ['userscript/transport.js', 'UmininnUserscript']
 ].map(entry => Object.freeze(entry)));
@@ -67,7 +69,7 @@ function productionMatches(configSource) {
     const playerMatches = playerHosts.map(host => 'https://' + host + '/*');
     const configuredPlayerMatches = Array.from(config.PLAYER_MATCHES || []).filter(match => typeof match === 'string' && match.startsWith('https://'));
     if (!sameValues(configuredPlayerMatches, playerMatches)) throw new Error('Unexpected production player match in shared config');
-    return [...SITE_MATCHES, ...playerMatches];
+    return [...SITE_MATCHES, ...playerMatches, ...CHAT_MATCHES];
 }
 
 function metadata(matches) {
@@ -146,12 +148,14 @@ function buildUserscript(options = {}) {
     const script = renderUserscript({ projectRoot });
     const scriptPath = path.join(outputRoot, FILENAME);
     const metaPath = path.join(outputRoot, META_FILENAME);
-    const distributionPath = path.join(projectRoot, 'userscript', FILENAME);
-    const distributionMetaPath = path.join(projectRoot, 'userscript', META_FILENAME);
+    const distributionRoot = path.join(projectRoot, 'userscript');
+    const distributionPath = path.join(distributionRoot, FILENAME);
+    const distributionMetaPath = path.join(distributionRoot, META_FILENAME);
     assertOutputDirectory(outputRoot);
     for (const filename of [scriptPath, metaPath, distributionPath, distributionMetaPath]) assertRegularDestination(filename);
     const header = script.slice(0, script.indexOf('// ==/UserScript==') + '// ==/UserScript=='.length) + '\n';
     fs.mkdirSync(outputRoot, { recursive: true });
+    fs.mkdirSync(distributionRoot, { recursive: true });
     fs.writeFileSync(scriptPath, script, 'utf8');
     fs.writeFileSync(metaPath, header, 'utf8');
     fs.writeFileSync(distributionPath, script, 'utf8');
@@ -167,4 +171,4 @@ if (require.main === module) {
     catch (error) { console.error(error.message); process.exitCode = 1; }
 }
 
-module.exports = { RELEASE_VERSION, FILENAME, META_FILENAME, UPDATE_URL, DOWNLOAD_URL, SITE_MATCHES, SOURCE_FILES, renderUserscript, buildUserscript };
+module.exports = { RELEASE_VERSION, FILENAME, META_FILENAME, UPDATE_URL, DOWNLOAD_URL, SITE_MATCHES, CHAT_MATCHES, SOURCE_FILES, renderUserscript, buildUserscript };

@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const {
-    RELEASE_VERSION, FILENAME, META_FILENAME, UPDATE_URL, DOWNLOAD_URL, SITE_MATCHES, SOURCE_FILES, renderUserscript, buildUserscript
+    RELEASE_VERSION, FILENAME, META_FILENAME, UPDATE_URL, DOWNLOAD_URL, SITE_MATCHES, CHAT_MATCHES, SOURCE_FILES, renderUserscript, buildUserscript
 } = require('../tools/build-player-userscript.cjs');
 
 const root = path.resolve(__dirname, '..');
@@ -48,7 +48,7 @@ function parseHeader(script) {
     return fields;
 }
 
-test('installable header has production site/player matches and minimum sandbox settings', t => {
+test('installable header has production site/player matches and a narrow official-chat notification scope', t => {
     const context = fixture(t);
     const header = parseHeader(renderUserscript({ projectRoot: context.root }));
     assert.deepEqual(header.get('name'), ['Umininn TV 播放器控制（Userscript）']);
@@ -59,7 +59,8 @@ test('installable header has production site/player matches and minimum sandbox 
     assert.equal(DOWNLOAD_URL, 'https://umininn-gh.github.io/tv/userscript/umininn-tv-player.user.js');
     assert.deepEqual(header.get('updateURL'), [UPDATE_URL]);
     assert.deepEqual(header.get('downloadURL'), [DOWNLOAD_URL]);
-    assert.deepEqual(header.get('match'), [...SITE_MATCHES, ...expectedPlayers]);
+    assert.deepEqual(CHAT_MATCHES, ['https://www.twitch.tv/embed/*/chat*']);
+    assert.deepEqual(header.get('match'), [...SITE_MATCHES, ...expectedPlayers, ...CHAT_MATCHES]);
     assert.deepEqual(header.get('run-at'), ['document-idle']);
     assert.deepEqual(header.get('sandbox'), ['DOM']);
     assert.deepEqual(header.get('inject-into'), ['content']);
@@ -84,13 +85,65 @@ test('bundle is deterministic, self-contained and keeps module exports private',
     });
     const sandbox = { window, document: {}, location: { href: 'https://umininn-gh.github.io/tv/' }, URL };
     vm.runInNewContext(rendered, sandbox);
-    assert.deepEqual(Array.from(window.started), ['UmininnConfig', 'UmininnMedia', 'UmininnRecovery', 'UmininnLayoutAudio', 'UmininnTwitch', 'UmininnAngelThump', 'UmininnSite', 'UmininnUserscript']);
+    assert.deepEqual(Array.from(window.started), ['UmininnConfig', 'UmininnMedia', 'UmininnRecovery', 'UmininnLayoutAudio', 'UmininnTwitch', 'UmininnAngelThump', 'UmininnMenuDismiss', 'UmininnSite', 'UmininnUserscript']);
     for (const property of window.started) {
         assert.equal(Object.hasOwn(sandbox, property), false, property);
         assert.equal(Object.hasOwn(window, property), false, property);
     }
     assert.equal(Object.hasOwn(sandbox, 'module'), false);
     assert.equal(Object.hasOwn(sandbox, 'scope'), false);
+});
+
+test('official Twitch chat bootstrap only starts the scoped notifier and cleans up document ownership', () => {
+    const bootstrap = fs.readFileSync(path.join(root, 'userscript', 'bootstrap.js'), 'utf8');
+    function run(href, framed = true) {
+        const calls = [], attributes = new Map(), listeners = new Map();
+        const window = { location: { href }, addEventListener(type, fn) { listeners.set(type, fn); },
+            removeEventListener(type, fn) { if (listeners.get(type) === fn) listeners.delete(type); } };
+        window.parent = framed ? {} : window; window.top = window.parent;
+        const document = { documentElement: {
+            hasAttribute(name) { return attributes.has(name); }, setAttribute(name, value) { attributes.set(name, value); },
+            removeAttribute(name) { attributes.delete(name); }
+        } };
+        const scope = { userscriptVersion: RELEASE_VERSION, UmininnConfig: { PLAYER_HOSTS: [] },
+            UmininnMenuDismiss: { startFrameNotifier(options) {
+                calls.push({ window: options.window, parentOrigin: options.parentOrigin });
+                return { dispose() { calls.push('dispose'); } };
+            } },
+            UmininnUserscript: { createSiteTransport() { throw new Error('Chat must not create a media transport.'); },
+                createFrameClient() { throw new Error('Chat must not create a media controller.'); } },
+            UmininnSite: { createSiteController() { throw new Error('Chat must not mount playback controls.'); } } };
+        vm.runInNewContext(bootstrap, { window, document, scope, URL });
+        return { window, calls, attributes, listeners };
+    }
+    for (const href of [
+        'https://www.twitch.tv/embed/Some_Channel123/chat',
+        'https://www.twitch.tv:443/embed/test/chat/?darkpopout&parent=umininn-gh.github.io'
+    ]) {
+        const result = run(href);
+        assert.equal(result.calls.length, 1, href);
+        assert.equal(result.calls[0].window, result.window);
+        assert.equal(result.calls[0].parentOrigin, 'https://umininn-gh.github.io');
+        assert.equal(result.attributes.get('data-umininn-player-userscript'), RELEASE_VERSION);
+        result.listeners.get('pagehide')({ persisted: true });
+        assert.equal(result.calls.length, 1, 'Back/forward cache retains the notifier lifecycle.');
+        result.listeners.get('pagehide')({ persisted: false });
+        assert.equal(result.calls.at(-1), 'dispose');
+        assert.equal(result.attributes.size, 0);
+        assert.equal(result.listeners.size, 0);
+    }
+    for (const href of [
+        'http://www.twitch.tv/embed/test/chat', 'https://twitch.tv/embed/test/chat',
+        'https://www.twitch.tv:8443/embed/test/chat', 'https://user:secret@www.twitch.tv/embed/test/chat',
+        'https://www.twitch.tv/test/chat', 'https://www.twitch.tv/embed//chat',
+        'https://www.twitch.tv/embed/test/chatting', 'https://www.twitch.tv/embed/test/chat/extra',
+        'https://www.twitch.tv/embed/test%2fother/chat', 'https://www.twitch.tv.evil.invalid/embed/test/chat'
+    ]) {
+        const result = run(href);
+        assert.equal(result.calls.length, 0, href);
+        assert.equal(result.attributes.size, 0, href);
+    }
+    assert.equal(run('https://www.twitch.tv/embed/test/chat', false).calls.length, 0, 'A standalone chat tab is untouched.');
 });
 
 test('build emits identical install file and tracked distribution plus header-only metadata', t => {
