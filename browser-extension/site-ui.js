@@ -1166,12 +1166,21 @@
                 recoveryFlow?.cancel();
                 clearPreparation();
             }
+            function onOutsidePointer(event) {
+                if (disposed || panel.hidden) return;
+                const path = event.composedPath?.() || [];
+                // Shadow events are retargeted to the host in the page world.
+                if (path.includes(toggle) || path.includes(panelHost) || toggle.contains(event.target) || panelHost.contains(event.target)) return;
+                setOpen(false);
+            }
             for (const type of activityEvents) panel.addEventListener(type, onPanelActivity, { capture: true, passive: true });
             win.addEventListener('pagehide', onPanelPageHide);
+            doc.addEventListener('pointerdown', onOutsidePointer, { capture: true, passive: true });
             panelIdleCleanup = () => {
                 clearIdleTimer();
                 for (const type of activityEvents) panel.removeEventListener(type, onPanelActivity, true);
                 win.removeEventListener('pagehide', onPanelPageHide);
+                doc.removeEventListener('pointerdown', onOutsidePointer, true);
             };
             function setOpen(open) {
                 clearIdleTimer();

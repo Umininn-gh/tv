@@ -165,7 +165,9 @@ function fixture(initialChannels, { active = [], statuses = {}, hideOffline = fa
             ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]),
         setChannelSelectionVisible(visible) { panel.style.display = visible ? 'block' : 'none'; },
         getComputedStyle(element) { return { display: element.hidden ? 'none' : element.style.display || 'block' }; },
-        statusRefreshCount: 0, updateButtonStatus() {}, updateMenuButtonStatus() {}
+        statusRefreshCount: 0, updateButtonStatus() {}, updateMenuButtonStatus() {},
+        // This fixture checks selection state; layout audio is covered separately.
+        guardPlayerAudioLayout: action => action
     });
     vm.runInContext(source.slice(statusStart, statusEnd) + '\n' + source.slice(selectionStart, selectionEnd) +
         '\nfunction fetchAllStatuses(){statusRefreshCount++;return Promise.resolve([]);}', context);

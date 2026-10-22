@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.18
+// @version      1.0.19
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -29,7 +29,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.18",
+        userscriptVersion: "1.0.19",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -2673,12 +2673,21 @@
                 recoveryFlow?.cancel();
                 clearPreparation();
             }
+            function onOutsidePointer(event) {
+                if (disposed || panel.hidden) return;
+                const path = event.composedPath?.() || [];
+                // Shadow events are retargeted to the host in the page world.
+                if (path.includes(toggle) || path.includes(panelHost) || toggle.contains(event.target) || panelHost.contains(event.target)) return;
+                setOpen(false);
+            }
             for (const type of activityEvents) panel.addEventListener(type, onPanelActivity, { capture: true, passive: true });
             win.addEventListener('pagehide', onPanelPageHide);
+            doc.addEventListener('pointerdown', onOutsidePointer, { capture: true, passive: true });
             panelIdleCleanup = () => {
                 clearIdleTimer();
                 for (const type of activityEvents) panel.removeEventListener(type, onPanelActivity, true);
                 win.removeEventListener('pagehide', onPanelPageHide);
+                doc.removeEventListener('pointerdown', onOutsidePointer, true);
             };
             function setOpen(open) {
                 clearIdleTimer();

@@ -91,7 +91,7 @@
             await loadScript('./embed-audio.js').catch(error => console.warn('YouTube 聲音同步暫時未能載入，請使用播放器聲音控制。', error));
             await loadScript('./layout-bookmarks.js?v=20261022-bookmark-top');
             await loadScript('./shared-bookmarks.js?v=20261022-bookmark-top');
-            await loadScript('./tv-app.js?v=20261023-layout-audio');
+            await loadScript('./tv-app.js?v=20261023-menu-dismiss');
             if (!window.tvAppReady || typeof window.tvAppReady.then !== 'function') {
                 throw new Error('TV application did not initialize');
             }

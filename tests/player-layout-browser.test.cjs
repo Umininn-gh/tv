@@ -31,7 +31,7 @@ test.before(async () => {
         ...(engine==='firefox'?{firefoxUserPrefs:{'media.autoplay.default':0}}:{args:['--autoplay-policy=no-user-gesture-required']})}); }
     catch (error) { if(executablePath)throw error; unavailable='Optional browser executable unavailable.'; return; }
     const read = file => fs.readFileSync(path.join(root, siteFile(file)), 'utf8');
-    const source=read('site/assets/js/tv-app.js');
+    const source=read('tv-app.js');
     const coreEnd=source.indexOf('/* =============== 頻道儲存 / 載入');
     const statusClassStart=source.indexOf('function applyStatusClass(');
     const statusClassEnd=source.indexOf('\nfunction updateButtonStatus(',statusClassStart);
@@ -41,9 +41,9 @@ test.before(async () => {
     const editorEnd=source.indexOf('\nfunction toggleChannelMenu()',editorStart);
     assert.ok(coreEnd>0&&statusClassStart>coreEnd&&statusClassEnd>statusClassStart&&summaryStart>statusClassEnd&&selectionStart>summaryStart&&editorStart>selectionStart&&editorEnd>editorStart,'reviewed production core/status/selection/editor seams must exist');
     appScript=source.slice(0,coreEnd)+'\n'+source.slice(statusClassStart,statusClassEnd)+'\n'+source.slice(summaryStart,editorEnd)+'\n'+fixtureApp;
-    layoutScript=read('site/assets/js/player-layout.js');geometryScript=read('site/assets/js/player-geometry.js');channelScript=read('site/assets/js/channel-list.js');performanceScript=read('site/assets/js/stream-performance.js');bookmarkScript=read('site/assets/js/layout-bookmarks.js');
-    qualityScript=read('site/assets/js/stream-quality.js');
-    css=[...read('site/index.html').matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match=>match[1]).join('\n');
+    layoutScript=read('player-layout.js');geometryScript=read('player-geometry.js');channelScript=read('channel-list.js');performanceScript=read('stream-performance.js');bookmarkScript=read('layout-bookmarks.js');
+    qualityScript=read('stream-quality.js');
+    css=[...read('index.html').matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match=>match[1]).join('\n');
     console.log(`Player layout model: ${engine} ${browser.version()} (headless; production CSS/app sections; all network intercepted; no live platform).`);
 });
 test.after(async()=>{await browser?.close()});
@@ -206,7 +206,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
         blocked.push(request.url());return route.abort();
     });
     if(audioUserscript){
-        const built=fs.readFileSync(path.join(root,siteFile('site/userscript/umininn-tv-player.user.js')),'utf8');
+        const built=fs.readFileSync(path.join(root,siteFile('userscript/umininn-tv-player.user.js')),'utf8');
         assert.equal(built.match(/^\/\/ @version\s+(\S+)/m)?.[1],require('../tools/build-player-userscript.cjs').RELEASE_VERSION,'integrated userscript tests must use the newly built distribution');
         await context.addInitScript({content:`
             window.fixtureAudioMessages=[];window.fixtureAudioRequestActions={};window.fixtureLayoutEvents=[];window.fixtureAudioGate={hold:false,targetId:'frame-2',muted:null,action:null,blockUpdates:false,firstDocumentOnly:false,documentId:null,held:[]};
@@ -2390,11 +2390,11 @@ test('audio focus pending work yields to explicit global and per-player sound co
         await primeAudio(f);await openAudioPanel(f);const before=await snapshot(f);
         await holdAudioReply(f);await actualMouseWindowAction(f,keys[0],'audio-focus');await waitHeldAudioReply(f);
         if(kind==='global')await f.page.locator('#toggle-all-audio').click();
-        else await f.page.locator(audioPanel+' .player').nth(1).locator('button').first().click();
+        else {await openAudioPanel(f);await f.page.locator(audioPanel+' .player').nth(1).locator('button').first().click();}
         await releaseAudioReply(f);
         if(kind==='global')await waitAudio(f,media=>media.every(value=>!value.muted));else await waitOnlyAudible(f,1,{volume:before.main[1].volume});
         await f.page.waitForTimeout(200);
-        assert.equal(await f.page.locator(audioPanel+' #audio-focus-status').isVisible(),false,'explicit audio controls cancel the pending focus status');
+        assert.equal(await f.page.locator(audioPanel+' #audio-focus-status').evaluate(element=>element.hidden),true,'explicit audio controls cancel the pending focus status even while the outside action has closed the panel');
         await assertAudioContinuity(f,before);
     });
 });
@@ -2555,6 +2555,7 @@ test('layout audio yields delayed restoration to newer trusted row volume, globa
         await resetSoundAfterNextLayout(f);await holdAudioReply(f,{action:'setVolume'});
         await actualMouseWindowAction(f,keys[0],'enlarge');await waitHeldAudioReply(f);
         if(kind==='row-volume'){
+            await openAudioPanel(f);
             const volume=f.page.locator(audioPanel+' .player').first().locator('input[type="range"]');await volume.focus();await volume.press('End');
         }else if(kind==='global-mute')await f.page.locator('#umininn-player-control-host #quick-mute').click();
         else await actualMouseWindowAction(f,keys[4],'audio-focus');
@@ -2843,6 +2844,10 @@ test('selection hover pairs real menu cards and native or foreign players by cha
         assert.equal(await f.page.evaluate(({key,point})=>document.elementFromPoint(point.x,point.y)===getPlayerElement(activePlayers.get(key)),{key,point}),true,'highlighting cannot place a hit target over the media center');
         await f.page.mouse.click(point.x,point.y);
         assert.deepEqual(index?await f.frames[1].evaluate(()=>fixtureHoverFrameClicks):await f.page.evaluate(()=>fixtureHoverNativeClicks),[true]);
+        if(!index){
+            assert.equal(await f.page.locator('#channel-selection').isVisible(),false,'outside native-media input also dismisses the selection menu');
+            await f.page.locator('#more-channels-btn').click();await waitNames(f);
+        }
     }
     await f.page.mouse.move(5,5);await waitMenuHover(f);
     await f.page.locator('#more-channels-btn').click();await waitMenuHover(f);assert.equal((await nameGeometry(f)).hidden,true);
@@ -2901,8 +2906,83 @@ test('selection hover never leaves a sticky tile or menu marker after trusted to
     await selectionCard(f,key).locator('.channel-option-label').tap();await waitMenuHover(f);
     const point=await f.page.evaluate(key=>{const rect=getPlayerElement(activePlayers.get(key)).getBoundingClientRect();return {x:rect.left+rect.width/2,y:rect.top+rect.height/2}},key);
     await f.page.touchscreen.tap(point.x,point.y);await waitMenuHover(f);
+    assert.equal(await f.page.locator('#channel-selection').isVisible(),false,'outside touch input dismisses the selection menu');
     assert.equal(await selectionCard(f,key).locator('input').isChecked(),false,'the touch still operates the real checkbox rather than a highlight overlay');
     await assertContinuity(f,before);
+});
+
+async function installMenuOutsideActions(f){
+    await f.page.evaluate(()=>{
+        window.fixtureMenuOutsideActions=[];
+        const button=document.createElement('button');button.id='fixture-menu-outside';button.textContent='選單外按鍵';
+        document.getElementById('more-channels-btn').parentElement.appendChild(button);
+        for(const element of [button,document.getElementById('native-0')]){
+            for(const type of ['pointerdown','click'])element.addEventListener(type,event=>{
+                fixtureMenuOutsideActions.push({id:element.id,type,trusted:event.isTrusted});
+                if(element.tagName==='VIDEO'&&type==='click')event.preventDefault();
+            });
+        }
+    });
+}
+async function selectionMenuOpen(f,open){assert.equal(await f.page.locator('#channel-selection').isVisible(),open)}
+async function controlsMenuOpen(f,open){
+    assert.equal(await f.page.locator(audioPanel).locator('#panel').isVisible(),open);
+    assert.equal(await f.page.locator('#umininn-player-control-host #toggle').getAttribute('aria-expanded'),String(open));
+    assert.equal(await f.page.evaluate(()=>document.documentElement.hasAttribute('data-umininn-player-controls-open')),open);
+}
+
+test('selection menu dismisses on outside pointer input while retaining inside checkbox input and the original outside action',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000}}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]);
+    await installMenuOutsideActions(f);
+    const trigger=f.page.locator('#more-channels-btn'),outside=f.page.locator('#fixture-menu-outside');
+    await trigger.click();await waitNames(f);await selectionMenuOpen(f,true);
+    const card=selectionCard(f,key),checkbox=card.locator('input'),checked=await checkbox.isChecked();
+    await card.locator('.channel-option-label').click();assert.equal(await checkbox.isChecked(),!checked);await selectionMenuOpen(f,true);
+    await f.page.locator('#channel-selection').click({position:{x:10,y:40}});await selectionMenuOpen(f,true);
+    await outside.focus();await f.page.keyboard.press('Enter');await selectionMenuOpen(f,true);
+    await outside.click();await selectionMenuOpen(f,false);await waitMenuHover(f);
+    assert.equal((await nameGeometry(f)).hidden,true);assert.equal(await f.page.evaluate(()=>document.activeElement.id),'fixture-menu-outside','dismissal must not take focus back from the clicked outside control');
+    assert.deepEqual(await f.page.evaluate(()=>fixtureMenuOutsideActions),[
+        {id:'fixture-menu-outside',type:'click',trusted:true},{id:'fixture-menu-outside',type:'pointerdown',trusted:true},{id:'fixture-menu-outside',type:'click',trusted:true}
+    ]);
+    await trigger.click();await waitNames(f);const point=await hoverSelectionTile(f,key);await waitMenuHover(f,{selection:[key]});
+    await f.page.mouse.click(point.x,point.y);await selectionMenuOpen(f,false);await waitMenuHover(f);
+    assert.deepEqual(await f.page.evaluate(()=>fixtureMenuOutsideActions.slice(-2)),[{id:'native-0',type:'pointerdown',trusted:true},{id:'native-0',type:'click',trusted:true}]);
+    await trigger.click();await selectionMenuOpen(f,true);await trigger.click();await selectionMenuOpen(f,false);
+    await assertContinuity(f,before);
+});
+
+test('playback-controls menu dismisses on outside pointer input while preserving shadow controls, slider drags and playback',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},audioUserscript:true}),before=await snapshot(f);
+    await installMenuOutsideActions(f);
+    const toggle=f.page.locator('#umininn-player-control-host #toggle'),outside=f.page.locator('#fixture-menu-outside'),panel=f.page.locator(audioPanel);
+    await toggle.click();await controlsMenuOpen(f,true);await panel.locator('#summary').click();await controlsMenuOpen(f,true);
+    await panel.getByRole('button',{name:'全部靜音',exact:true}).click();await controlsMenuOpen(f,true);await waitAudio(f,media=>media.every(item=>item.muted));
+    const slider=panel.locator('.player').first().locator('input'),bounds=await slider.boundingBox();
+    await f.page.mouse.move(bounds.x+bounds.width*.25,bounds.y+bounds.height/2);await f.page.mouse.down();await controlsMenuOpen(f,true);
+    await f.page.mouse.move(bounds.x+bounds.width*.6,bounds.y+bounds.height/2);await controlsMenuOpen(f,true);await f.page.mouse.up();await controlsMenuOpen(f,true);
+    const value=Number(await slider.inputValue())/100;await waitAudio(f,media=>Math.abs(media[0].volume-value)<.001);
+    await outside.focus();await f.page.keyboard.press('Enter');await controlsMenuOpen(f,true);
+    const afterControls=await snapshot(f);
+    await outside.click();await controlsMenuOpen(f,false);await waitMenuHover(f);assert.equal((await nameGeometry(f)).hidden,true);
+    assert.equal(await f.page.evaluate(()=>document.activeElement.id),'fixture-menu-outside');
+    await toggle.click();await controlsMenuOpen(f,true);const point=await hoverSelectionTile(f,await f.page.evaluate(()=>fixture.keys[0]));
+    await f.page.mouse.click(point.x,point.y);await controlsMenuOpen(f,false);await waitMenuHover(f);
+    assert.deepEqual(await f.page.evaluate(()=>fixtureMenuOutsideActions.slice(-2)),[{id:'native-0',type:'pointerdown',trusted:true},{id:'native-0',type:'click',trusted:true}]);
+    await toggle.click();await controlsMenuOpen(f,true);await toggle.click();await controlsMenuOpen(f,false);
+    await toggle.click();await controlsMenuOpen(f,true);await f.page.locator('#umininn-player-control-host #quick-mute').click();await controlsMenuOpen(f,false);
+    await assertContinuity(f,afterControls);await assertAudioContinuity(f,before);
+});
+
+test('pointer opening either real menu closes the other owner without replaying, muting or losing the newly opened menu',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},audioUserscript:true}),before=await snapshot(f);
+    const selection=f.page.locator('#more-channels-btn'),controls=f.page.locator('#umininn-player-control-host #toggle');
+    for(let iteration=0;iteration<2;iteration++){
+        await selection.click();await selectionMenuOpen(f,true);await controlsMenuOpen(f,false);await waitNames(f);
+        await controls.click();await selectionMenuOpen(f,false);await controlsMenuOpen(f,true);await waitNames(f);
+    }
+    await selection.click();await selectionMenuOpen(f,true);await controlsMenuOpen(f,false);await selection.click();await selectionMenuOpen(f,false);await waitMenuHover(f);
+    assert.equal((await nameGeometry(f)).hidden,true);await assertContinuity(f,before);
 });
 
 test('selection hover integrates both real menus without echoing markers or clearing the other open owner',{skip:!enabled,timeout:30000},async t=>{
@@ -2917,7 +2997,7 @@ test('selection hover integrates both real menus without echoing markers or clea
             return JSON.stringify(actual)===JSON.stringify([...expected].sort());
         },rowIndices.map(index=>titles[index]));
     }
-    await f.page.locator('#more-channels-btn').click();await toggle.click();await waitNames(f);
+    await f.page.locator('#more-channels-btn').click();await toggle.focus();await f.page.keyboard.press('Enter');await waitNames(f);
     // First keep both production panel positions and exercise actual tile input.
     // Either menu's controls must identify that same tile without intercepting it.
     await hoverSelectionTile(f,keys[0]);await matched({selection:[keys[0]],controls:[keys[0]],cards:[keys[0]]},[0]);
@@ -3128,7 +3208,7 @@ test('Twitch highlight follows enlargement, swapping and portrait reflow without
 test('Twitch highlights from the real userscript row and both menu owners survive closing either owner',{skip:!enabled,timeout:30000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:2200,height:1200},productionTwitch:true,audioUserscript:true}),before=await snapshot(f),keys=await f.page.evaluate(()=>fixture.keys);
     const toggle=f.page.locator('#umininn-player-control-host #toggle'),close=f.page.locator(audioPanel).getByRole('button',{name:'關閉',exact:true}),rows=f.page.locator(audioPanel).locator('.player');
-    await f.page.locator('#more-channels-btn').click();await toggle.click();await waitNames(f);
+    await f.page.locator('#more-channels-btn').click();await toggle.focus();await f.page.keyboard.press('Enter');await waitNames(f);
     // As in the general two-menu integration, separate only the existing fixed
     // fixture panels so trusted input can reach both actual control surfaces.
     await f.page.locator('#channel-selection').evaluate(panel=>{panel.style.left='1300px';panel.style.right='auto'});
@@ -3164,6 +3244,10 @@ test('selection highlight suspends during actual Twitch fullscreen and resumes a
     assert.equal(await f.page.evaluate(key=>document.fullscreenElement===getPlayerElement(activePlayers.get(key)),key),true);
     await waitMenuHover(f);assert.equal(await f.page.locator('#player-name-overlay').evaluate(layer=>layer.hidden),true,'the sibling name/highlight layer is suspended for actual fullscreen');
     await f.page.locator('.twitch-recover-button').click();await f.page.waitForFunction(()=>!document.fullscreenElement);
+    // The fullscreen button is outside the menu, so its original trusted input
+    // also dismisses selection. Reopen before checking hover after fullscreen.
+    assert.equal(await f.page.locator('#channel-selection').isVisible(),false);
+    await f.page.locator('#more-channels-btn').focus();await f.page.keyboard.press('Enter');await waitNames(f);
     await f.page.mouse.move(5,5);await selectionCard(f,key).hover();
     try{await waitMenuHover(f,{selection:[key]})}catch(error){
         console.error('Fullscreen hover diagnostic:',await f.page.evaluate(key=>({hidden:document.hidden,fullscreen:Boolean(document.fullscreenElement),viewport:[innerWidth,innerHeight],

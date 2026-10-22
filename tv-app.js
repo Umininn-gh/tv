@@ -1099,6 +1099,13 @@ const channelSelectionIdleTimer = (() => {
         'input', 'change', 'wheel', 'touchstart', 'touchmove', 'touchend']) {
         panel?.addEventListener(type, onActivity, { capture: true, passive: true });
     }
+    document.addEventListener('pointerdown', event => {
+        if (!visible) return;
+        const button = document.getElementById('more-channels-btn');
+        const path = event.composedPath?.() || [];
+        if (path.includes(panel) || path.includes(button) || panel?.contains(event.target) || button?.contains(event.target)) return;
+        setChannelSelectionVisible(false);
+    }, { capture: true, passive: true });
     window.addEventListener('pagehide', () => setChannelSelectionVisible(false));
     return {
         setVisible(next) {

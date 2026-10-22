@@ -290,6 +290,8 @@ test('standalone userscript controls native and cross-origin media, restores pla
         await page.locator('#toggle-all-audio').click();
         await untilMedia(page, '#native-video', { muted: true });
         await untilMedia(frame, 'video', { muted: true });
+        assert.equal(await page.locator(panel + ' #panel').isVisible(), false, 'The outside website sound button dismisses the playback menu.');
+        await page.locator('#umininn-player-control-host #toggle').click();
 
         await rows.nth(0).getByRole('button', { name: '恢復播放', exact: true }).click();
         await untilMedia(page, '#native-video', { paused: false });
