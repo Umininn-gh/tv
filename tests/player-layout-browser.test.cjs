@@ -949,7 +949,8 @@ test('channel-name overlays follow the real menu lifecycle and native/iframe cen
     const framePoint=await f.page.locator('#frame-3').evaluate(frame=>{const r=frame.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2,hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===frame}});
     assert.equal(framePoint.hit,true,'the label center must hit the iframe');await f.page.mouse.click(framePoint.x,framePoint.y);
     assert.equal(await f.frames[1].evaluate(()=>nameFrameClicks),1,'the actual click reaches the cross-origin document');
-    await f.page.locator('#more-channels-btn').click();assert.equal((await nameGeometry(f)).hidden,true);
+    await f.page.waitForFunction(()=>getComputedStyle(document.getElementById('channel-selection')).display==='none');
+    assert.equal((await nameGeometry(f)).hidden,true,'cross-origin player input also closes its name overlay');
     await f.page.locator('#more-channels-btn').click();await waitNames(f);
     await f.page.locator('#fixture-watch-selected').click();assert.equal((await nameGeometry(f)).hidden,true,'start watching closes names immediately');
     await f.page.locator('#more-channels-btn').click();await waitNames(f);
@@ -2847,6 +2848,9 @@ test('selection hover pairs real menu cards and native or foreign players by cha
         if(!index){
             assert.equal(await f.page.locator('#channel-selection').isVisible(),false,'outside native-media input also dismisses the selection menu');
             await f.page.locator('#more-channels-btn').click();await waitNames(f);
+        }else{
+            await f.page.waitForFunction(()=>getComputedStyle(document.getElementById('channel-selection')).display==='none');
+            await f.page.locator('#more-channels-btn').click();await waitNames(f);
         }
     }
     await f.page.mouse.move(5,5);await waitMenuHover(f);
@@ -2930,6 +2934,108 @@ async function controlsMenuOpen(f,open){
     assert.equal(await f.page.locator('#umininn-player-control-host #toggle').getAttribute('aria-expanded'),String(open));
     assert.equal(await f.page.evaluate(()=>document.documentElement.hasAttribute('data-umininn-player-controls-open')),open);
 }
+
+async function assertCrossOriginPlayerDismissal(f,{trigger,isOpen,suppressPointerFocus=false,openFromCode=false,nativeKeyboardReturn=false}){
+    await f.page.evaluate(()=>{
+        window.fixtureParentFramePointers=0;
+        document.getElementById('multi-stream-container').addEventListener('pointerdown',()=>fixtureParentFramePointers++,true);
+    });
+    for(const frame of f.frames)await frame.evaluate(suppressPointerFocus=>{
+        window.fixtureMenuFrameClicks=[];
+        document.addEventListener('click',event=>fixtureMenuFrameClicks.push({trusted:event.isTrusted,target:event.target.id}),true);
+        if(suppressPointerFocus)for(const type of ['pointerdown','mousedown'])document.addEventListener(type,event=>event.preventDefault(),true);
+    },suppressPointerFocus);
+    const counts=[0,0];let previousFrameId=null;
+    for(const [iteration,index]of (openFromCode?[0,0,1,1]:[0,0,1]).entries()){
+        if(iteration===0)await trigger.click();
+        else{
+            assert.equal(await f.page.evaluate(frameId=>document.activeElement?.id===frameId,previousFrameId),!suppressPointerFocus,'the previous player retains focus unless its own handler suppresses that default');
+            if(nativeKeyboardReturn){
+                // Firefox's no-script fixture can retain the child's keyboard
+                // target despite parent DOM focus()/Tab calls. Return through
+                // trusted native input, then exercise real Enter close/reopen.
+                await trigger.click();await isOpen(true);await trigger.press('Enter');await isOpen(false);
+            }
+            if(iteration===3){
+                await f.page.evaluate(()=>toggleChannelSelection());
+                assert.equal(await f.page.evaluate(()=>document.activeElement?.id),'more-channels-btn','code reopening rearms focus when the same foreign player was active');
+            }else{
+                await trigger.press('Enter');
+            }
+        }
+        await isOpen(true);await waitNames(f);
+        const frameId='frame-'+(index+2);
+        const point=await f.page.locator('#'+frameId).evaluate(frame=>{
+            const rect=frame.getBoundingClientRect(),x=rect.left+rect.width/2,y=rect.top+rect.height/2;
+            return {x,y,hit:document.elementFromPoint(x,y)===frame};
+        });
+        assert.equal(point.hit,true,'the real foreign iframe remains the click target beneath the name overlay');
+        await f.page.mouse.click(point.x,point.y);counts[index]++;
+        await f.page.waitForFunction(()=>!document.documentElement.hasAttribute('data-umininn-player-controls-open')&&getComputedStyle(document.getElementById('channel-selection')).display==='none');
+        await isOpen(false);assert.equal((await nameGeometry(f)).hidden,true);
+        assert.equal(await f.page.evaluate(frameId=>document.activeElement?.id===frameId,frameId),!suppressPointerFocus,'dismissal preserves the player control\'s own focus policy');
+        assert.equal(await f.page.evaluate(()=>fixtureParentFramePointers),0,'the regression uses input inside the foreign document, which does not bubble to the parent');
+        for(const [frameIndex,frame]of f.frames.entries())assert.deepEqual(await frame.evaluate(()=>fixtureMenuFrameClicks),Array.from({length:counts[frameIndex]},()=>({trusted:true,target:'frame-video'})),'each actual player click is delivered once without synthetic replay');
+        previousFrameId=frameId;
+    }
+    await trigger.click();await isOpen(true);
+    await f.page.evaluate(()=>window.dispatchEvent(new Event('blur')));
+    await f.page.waitForTimeout(30);await isOpen(true);
+    await f.page.evaluate(()=>{
+        const frame=document.createElement('iframe');frame.id='fixture-unrelated-frame';frame.srcdoc='<button>非播放器內容</button>';
+        frame.style.cssText='position:fixed;left:1300px;top:900px;width:180px;height:60px';document.body.appendChild(frame);
+    });
+    await f.page.frameLocator('#fixture-unrelated-frame').getByRole('button').click();await f.page.waitForTimeout(250);
+    assert.equal(await f.page.evaluate(()=>document.activeElement?.id),'fixture-unrelated-frame');
+    await isOpen(true); // Only focus entering the actual playback area dismisses.
+    await trigger.click();await isOpen(false);
+    await f.page.locator('#fixture-unrelated-frame').evaluate(frame=>frame.remove());
+}
+
+test('selection menu dismisses for trusted cross-origin player clicks including the same focused player after keyboard reopening',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000}}),before=await snapshot(f);
+    await assertCrossOriginPlayerDismissal(f,{trigger:f.page.locator('#more-channels-btn'),isOpen:open=>selectionMenuOpen(f,open),openFromCode:true,nativeKeyboardReturn:engine==='firefox'});
+    await assertContinuity(f,before);
+});
+
+test('playback-controls menu dismisses for trusted cross-origin player clicks including the same focused player after keyboard reopening',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},audioUserscript:true}),before=await snapshot(f);
+    await assertCrossOriginPlayerDismissal(f,{trigger:f.page.locator('#umininn-player-control-host #toggle'),isOpen:open=>controlsMenuOpen(f,open)});
+    await assertContinuity(f,before);
+});
+
+test('player interaction relay dismisses real menus when the foreign player prevents pointer focus',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    for(const menu of ['selection','playback'])await t.test(menu,async()=>{
+        const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},audioUserscript:true}),before=await snapshot(f);
+        const selection=menu==='selection';
+        await assertCrossOriginPlayerDismissal(f,{
+            trigger:f.page.locator(selection?'#more-channels-btn':'#umininn-player-control-host #toggle'),
+            isOpen:open=>selection?selectionMenuOpen(f,open):controlsMenuOpen(f,open),suppressPointerFocus:true
+        });
+        await assertContinuity(f,before);
+    });
+});
+
+test('menu focus fallback checks one document at a bounded rate only while its menu is open',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;
+    for(const menu of ['selection','playback'])await t.test(menu,async()=>{
+        const playback=menu==='playback',f=await fixture(t,{audioUserscript:playback}),before=await snapshot(f);
+        await f.page.evaluate(()=>{
+            const original=document.hasFocus.bind(document);window.fixtureFocusReadCount=0;
+            Object.defineProperty(document,'hasFocus',{configurable:true,value(){fixtureFocusReadCount++;return original()}});
+        });
+        const trigger=f.page.locator(playback?'#umininn-player-control-host #toggle':'#more-channels-btn');
+        await trigger.click();await f.page.waitForTimeout(40);
+        const start=await f.page.evaluate(()=>fixtureFocusReadCount);await f.page.waitForTimeout(450);
+        const checks=await f.page.evaluate(start=>fixtureFocusReadCount-start,start);
+        assert.ok(checks>=1&&checks<8,`${menu}: ${checks} document focus reads in450ms; no per-player polling`);
+        await trigger.click();await f.page.waitForTimeout(40);
+        const stopped=await f.page.evaluate(()=>fixtureFocusReadCount);await f.page.waitForTimeout(450);
+        assert.equal(await f.page.evaluate(()=>fixtureFocusReadCount),stopped,'closing cancels focus monitoring instead of leaving a background loop');
+        await assertContinuity(f,before);
+    });
+});
 
 test('selection menu dismisses on outside pointer input while retaining inside checkbox input and the original outside action',{skip:!enabled,timeout:30000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000}}),before=await snapshot(f),key=await f.page.evaluate(()=>fixture.keys[0]);
@@ -3057,6 +3163,8 @@ test('selection hover reaches real scaled Kick wrappers and keeps their iframe a
         }
         await f.frames[index].evaluate(()=>{window.fixtureKickClicks=[];document.addEventListener('click',event=>{fixtureKickClicks.push(event.isTrusted);event.preventDefault()},true)});
         await f.page.mouse.click(point.x,point.y);assert.deepEqual(await f.frames[index].evaluate(()=>fixtureKickClicks),[true]);
+        await f.page.waitForFunction(()=>getComputedStyle(document.getElementById('channel-selection')).display==='none');
+        await f.page.locator('#more-channels-btn').click();await waitNames(f);
     }
     await f.page.mouse.move(5,5);await waitMenuHover(f);await f.page.locator('#more-channels-btn').click();await assertContinuity(f,before);
 });
@@ -3173,6 +3281,8 @@ test('selection hover paints all four Twitch SDK and direct fallback edges above
         if(engine==='firefox')await waitMenuHover(f,{selection:[key]});
         await f.frames[index].evaluate(()=>{window.fixtureTwitchClicks=[];document.addEventListener('click',event=>{fixtureTwitchClicks.push(event.isTrusted);event.preventDefault()},true)});
         await f.page.mouse.click(point.x,point.y);assert.deepEqual(await f.frames[index].evaluate(()=>fixtureTwitchClicks),[true]);
+        await f.page.waitForFunction(()=>getComputedStyle(document.getElementById('channel-selection')).display==='none');
+        await f.page.locator('#more-channels-btn').click();await waitNames(f);
     }
     const recovery=f.page.locator('.twitch-wrapper .twitch-recover-button');
     await recovery.evaluate(button=>{window.fixtureRecoveryTrusted=null;button.addEventListener('click',event=>{fixtureRecoveryTrusted=event.isTrusted},{once:true})});

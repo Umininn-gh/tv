@@ -36,7 +36,7 @@ function loadProduction() {
     css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match => match[1]).join('\n');
     bookmarkCss = read('layout-bookmarks.css');
     modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'layout-bookmarks']
-        .map(name => ['/tv/' + name + '.js', read(name + '.js')]));
+        .map(name => ['/tv/' + name + '.js', read('' + name + '.js')]));
     const names = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'updatePlayerLayout',
         'playerGridArea', 'getCurrentPlayerGeometry', 'savePlayerEnlargement', 'getPlayerPositionKeys', 'syncActivePlayers',
         'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible'];
@@ -97,6 +97,9 @@ function fixtureDocument({ width = 1100, height = 600, framePlatform = 'at' } = 
     const channelSelectionIdleTimer={setVisible(){}};
     window.fixture={rendered:0,editorCloses:0,nextId:0,remembered:new Map()};
     function getPlatform(platform){return {type:platform==='m3u8'?'hls':'iframe'}}
+    // This fixture has no userscript; its audio transaction branch is inactive.
+    function playerLayoutAudioAvailable(){return false}
+    function withPlayerAudioLayout(action){return action()}
     function showGlobalAudioFeedback(){}
     function updateChannelSelectionSummary(){}
     function renderChannelElement(channel,muted,wrapperClass){
@@ -319,6 +322,49 @@ test('bookmark menu and channel menu close one another, Escape returns focus, an
     await f.page.locator('#more-channels-btn').click();
     assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), false);
     assert.equal(await f.page.locator('#channel-selection').isVisible(), true);
+    await assertContinuity(f, before);
+});
+
+test('bookmark menu dismisses on repeated foreign player clicks without consuming input or changing playback', browserCase, async t => {
+    const f = await fixture(t, { viewport: { width: 1800, height: 1000 } }), before = await remember(f);
+    const navigations = [...f.navigations], trigger = f.page.locator('#layout-bookmarks-btn');
+    for (const frame of f.frames) await frame.evaluate(() => {
+        window.fixturePlayerClicks = [];
+        document.addEventListener('pointerdown', event => fixturePlayerClicks.push({ type: event.type, trusted: event.isTrusted }));
+        document.addEventListener('click', event => fixturePlayerClicks.push({ type: event.type, trusted: event.isTrusted }));
+    });
+    for (const index of [0, 0, 1]) {
+        await trigger.focus(); await f.page.keyboard.press('Enter');
+        assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true);
+        await f.frames[index].locator('#media').click({ position: { x: 24, y: 24 } });
+        await f.page.waitForFunction(() => !layoutBookmarkMenu.isOpen());
+        assert.equal(await f.page.evaluate(() => document.activeElement?.tagName), 'IFRAME');
+        await assertContinuity(f, before);
+    }
+    assert.deepEqual(await f.frames[0].evaluate(() => fixturePlayerClicks), Array.from({ length: 2 }, () => [
+        { type: 'pointerdown', trusted: true }, { type: 'click', trusted: true }
+    ]).flat());
+    assert.deepEqual(await f.frames[1].evaluate(() => fixturePlayerClicks), [
+        { type: 'pointerdown', trusted: true }, { type: 'click', trusted: true }
+    ]);
+    await trigger.focus(); await f.page.keyboard.press('Enter');
+    await f.page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await f.page.waitForTimeout(40);
+    assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true, 'blur without a focused player must not close the menu');
+    await f.page.locator('#outside').click();
+    assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), false);
+    await f.page.evaluate(() => {
+        const hasFocus = document.hasFocus.bind(document); window.fixtureFocusChecks = 0;
+        document.hasFocus = () => { fixtureFocusChecks++; return hasFocus(); };
+    });
+    await trigger.click(); await f.page.waitForTimeout(450);
+    const checks = await f.page.evaluate(() => fixtureFocusChecks);
+    assert.ok(checks >= 2 && checks < 8, 'only a few whole-document focus checks run while the menu is open');
+    await f.page.locator('.layout-bookmarks-close').click(); await f.page.waitForTimeout(30);
+    const stopped = await f.page.evaluate(() => fixtureFocusChecks);
+    await f.page.waitForTimeout(450);
+    assert.equal(await f.page.evaluate(() => fixtureFocusChecks), stopped, 'focus sampling stops when the bookmark menu closes');
+    assert.deepEqual(f.navigations, navigations);
     await assertContinuity(f, before);
 });
 

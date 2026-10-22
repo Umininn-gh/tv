@@ -1139,7 +1139,11 @@
             doc.body.appendChild(panelHost);
             panel.addEventListener('scroll', updateHighlights, true);
             panel.addEventListener('scroll', scheduleHighlights, true);
-            let idleTimer = null;
+            let idleTimer = null, frameFocusTimer = null;
+            function clearFrameFocusTimer() {
+                if (frameFocusTimer !== null) win.clearTimeout(frameFocusTimer);
+                frameFocusTimer = null;
+            }
             const activityEvents = ['pointerdown', 'pointermove', 'pointerup', 'click', 'keydown', 'keyup', 'input', 'change', 'wheel', 'touchstart', 'touchmove', 'touchend'];
             function clearIdleTimer() {
                 if (idleTimer !== null) win.clearTimeout(idleTimer);
@@ -1173,17 +1177,41 @@
                 if (path.includes(toggle) || path.includes(panelHost) || toggle.contains(event.target) || panelHost.contains(event.target)) return;
                 setOpen(false);
             }
+            function onPlayerFrameFocus(delay = 200) {
+                clearFrameFocusTimer();
+                if (disposed || panel.hidden) return;
+                // A foreign iframe receives its own pointer events. Its focus
+                // transition is visible here without reading or covering it.
+                frameFocusTimer = win.setTimeout(() => {
+                    frameFocusTimer = null;
+                    const frame = doc.activeElement;
+                    if (!disposed && !panel.hidden && !doc.hidden && doc.hasFocus() && frame?.tagName === 'IFRAME' &&
+                        doc.getElementById('multi-stream-container')?.contains(frame)) setOpen(false);
+                    else onPlayerFrameFocus();
+                }, delay);
+            }
+            const onFrameBlur = () => onPlayerFrameFocus(0);
+            function onPlayerInteraction(event) {
+                if (!disposed && !panel.hidden && event.target?.tagName === 'IFRAME' &&
+                    doc.getElementById('multi-stream-container')?.contains(event.target)) setOpen(false);
+            }
             for (const type of activityEvents) panel.addEventListener(type, onPanelActivity, { capture: true, passive: true });
             win.addEventListener('pagehide', onPanelPageHide);
             doc.addEventListener('pointerdown', onOutsidePointer, { capture: true, passive: true });
+            win.addEventListener('blur', onFrameBlur, true);
+            doc.addEventListener('umininn-player-interaction', onPlayerInteraction);
             panelIdleCleanup = () => {
                 clearIdleTimer();
+                clearFrameFocusTimer();
                 for (const type of activityEvents) panel.removeEventListener(type, onPanelActivity, true);
                 win.removeEventListener('pagehide', onPanelPageHide);
                 doc.removeEventListener('pointerdown', onOutsidePointer, true);
+                win.removeEventListener('blur', onFrameBlur, true);
+                doc.removeEventListener('umininn-player-interaction', onPlayerInteraction);
             };
             function setOpen(open) {
                 clearIdleTimer();
+                clearFrameFocusTimer();
                 panel.hidden = !open;
                 doc.documentElement.toggleAttribute('data-umininn-player-controls-open', open);
                 toggle.setAttribute('aria-expanded', String(open));
@@ -1194,6 +1222,7 @@
                     scan();
                     for (const entry of entries.values()) if (!entry.target) probe(entry);
                     close.focus({ preventScroll: true });
+                    onPlayerFrameFocus();
                     armIdleTimer();
                 }
             }

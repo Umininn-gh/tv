@@ -411,10 +411,27 @@
             beforeOpen(); returnFocus = doc.activeElement; opened = true;
             panel.hidden = false; button.setAttribute('aria-expanded', 'true'); status('');
             if (localStore) { try { localStore.reload(); } catch (_) {} }
-            render(); resetIdle(); panel.focus({ preventScroll: true }); refresh();
+            render(); resetIdle(); panel.focus({ preventScroll: true }); watchPlayerFrameFocus(); refresh();
             if (sharedMode) refreshTimer = view.setInterval(() => refresh(), 15000);
         }
+        let frameFocusTimer = null;
+        function clearFrameFocusTimer() {
+            if (frameFocusTimer !== null) view.clearTimeout(frameFocusTimer);
+            frameFocusTimer = null;
+        }
+        function watchPlayerFrameFocus(delay = 200) {
+            clearFrameFocusTimer();
+            if (!opened || destroyed) return;
+            frameFocusTimer = view.setTimeout(() => {
+                frameFocusTimer = null;
+                const frame = doc.activeElement;
+                if (!doc.hidden && doc.hasFocus() && frame?.tagName === 'IFRAME' &&
+                    doc.getElementById('multi-stream-container')?.contains(frame)) close(false);
+                else watchPlayerFrameFocus();
+            }, delay);
+        }
         function close(restoreFocus = true) {
+            clearFrameFocusTimer();
             if (!opened) return;
             const shouldRestore = restoreFocus && panel.contains(doc.activeElement);
             opened = false; panel.hidden = true; button.setAttribute('aria-expanded', 'false');
@@ -466,7 +483,12 @@
         on(panel, 'keydown', event => { if (opened && [' ', 'Enter'].includes(event.key) && event.target.tagName === 'BUTTON') keyboardActive = true; }, true);
         on(view, 'keyup', event => { if ([' ', 'Enter'].includes(event.key)) { keyboardActive = false; scheduleRender(); } });
         on(view, 'blur', () => { pointerActive = keyboardActive = false; scheduleRender(); });
+        on(view, 'blur', () => watchPlayerFrameFocus(0), true);
         on(doc, 'pointerdown', event => { if (opened && !panel.contains(event.target) && !button.contains(event.target)) close(false); }, true);
+        on(doc, 'umininn-player-interaction', event => {
+            if (opened && event.target?.tagName === 'IFRAME' &&
+                doc.getElementById('multi-stream-container')?.contains(event.target)) close(false);
+        });
         on(doc, 'keydown', event => { if (opened && event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); close(); } });
         function subscribe() {
             if (unsubscribe || !sharedMode || typeof store.subscribe !== 'function') return;

@@ -1084,7 +1084,23 @@ function watchSelectedChannels() {
 const channelSelectionIdleTimer = (() => {
     const panel = document.getElementById('channel-selection');
     let timer = null;
+    let frameFocusTimer = null;
     let visible = false;
+    function clearFrameFocusTimer() {
+        if (frameFocusTimer !== null) clearTimeout(frameFocusTimer);
+        frameFocusTimer = null;
+    }
+    function watchPlayerFrameFocus(delay = 200) {
+        clearFrameFocusTimer();
+        if (!visible) return;
+        frameFocusTimer = setTimeout(() => {
+            frameFocusTimer = null;
+            const frame = document.activeElement;
+            if (!document.hidden && document.hasFocus() && frame?.tagName === 'IFRAME' &&
+                document.getElementById('multi-stream-container')?.contains(frame)) setChannelSelectionVisible(false);
+            else watchPlayerFrameFocus();
+        }, delay);
+    }
     function reset() {
         if (timer !== null) clearTimeout(timer);
         timer = visible ? setTimeout(() => setChannelSelectionVisible(false), PLAYER_OVERLAY_TIMEOUT_SECONDS * 1000) : null;
@@ -1106,12 +1122,27 @@ const channelSelectionIdleTimer = (() => {
         if (path.includes(panel) || path.includes(button) || panel?.contains(event.target) || button?.contains(event.target)) return;
         setChannelSelectionVisible(false);
     }, { capture: true, passive: true });
+    document.addEventListener('umininn-player-interaction', event => {
+        if (visible && event.target?.tagName === 'IFRAME' &&
+            document.getElementById('multi-stream-container')?.contains(event.target)) setChannelSelectionVisible(false);
+    });
+    // Foreign player documents do not bubble pointer events into this page.
+    // Firefox may omit the focus event entirely for a foreign document. A
+    // single activeElement check while this menu is open covers that case.
+    // Tab/app switches and frames outside the playback pane are excluded.
+    window.addEventListener('blur', () => watchPlayerFrameFocus(0), true);
     window.addEventListener('pagehide', () => setChannelSelectionVisible(false));
     return {
         setVisible(next) {
             next = Boolean(panel && next);
             if (next === visible) return;
             visible = next;
+            clearFrameFocusTimer();
+            // Some browsers do not focus pointer-activated buttons. Keep focus
+            // in this page so even another click in the same foreign player
+            // creates a detectable focus transition after each opening.
+            if (visible) document.getElementById('more-channels-btn')?.focus({ preventScroll: true });
+            watchPlayerFrameFocus();
             reset();
         }
     };

@@ -13,17 +13,20 @@ const snapshot = () => ({ ok: true, code: 'OK', message: '', state: { available:
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 function eventTarget() {
-    const listeners = new Map();
-    return { listeners,
-        addEventListener(type, callback) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(callback); },
+    const listeners = new Map(), listenerOptions = new Map();
+    const target = { listeners, listenerOptions,
+        addEventListener(type, callback, options) { if (!listeners.has(type)) listeners.set(type, new Set()); listeners.get(type).add(callback); listenerOptions.set(callback, options); },
         removeEventListener(type, callback) { listeners.get(type)?.delete(callback); },
-        emit(type, event) { for (const callback of [...(listeners.get(type) || [])]) callback(event); }
+        emit(type, event) { for (const callback of [...(listeners.get(type) || [])]) callback(event); },
+        dispatchEvent(event) { event.target = this; this.emit(event.type, event); return !event.defaultPrevented; }
     };
+    return target;
 }
 let randomSeed = 0;
 function fakeWindow(href) {
     let now = 0, nextTimer = 0;
     const timers = new Map(), sent = [], win = { ...eventTarget(), location: { href }, sent, timers,
+        CustomEvent: class { constructor(type, options = {}) { this.type = type; this.bubbles = options.bubbles === true; this.detail = options.detail ?? null; this.isTrusted = false; } },
         crypto: { getRandomValues(values) { const seed = ++randomSeed; for (let i = 0; i < values.length; i++) values[i] = (seed * 17 + i) % (values.BYTES_PER_ELEMENT === 1 ? 256 : 4294967296); return values; } },
         setTimeout(callback, delay) { const id = ++nextTimer; timers.set(id, { due: now + delay, callback }); return id; },
         clearTimeout(id) { timers.delete(id); },
@@ -100,6 +103,64 @@ test('site transport routes all four controls through the configured channel and
         f.result(); assert.deepEqual(await response, snapshot());
     }
     assert.equal(f.win.timers.size, 0); f.transport.dispose();
+});
+
+test('site relays authenticated player interactions as a bubbling signal without issuing controls', () => {
+    const f = siteFixture(), received = [];
+    f.frame.addEventListener('umininn-player-interaction', event => received.push(event));
+    const interaction = (fields = {}, origin = PLAYER_ORIGIN, source = f.frameWindow) =>
+        f.win.emit('message', { source, origin, data: envelope('frame:interaction', { frameId: 7, token: TOKEN, documentId: DOCUMENT, ...fields }) });
+    interaction(); assert.equal(received.length, 0, 'unregistered frame cannot relay input');
+    f.ready(); interaction(); interaction();
+    assert.equal(received.length, 2, 'repeated clicks in the same focused player are independently relayed');
+    for (const event of received) {
+        assert.ok(event instanceof f.win.CustomEvent); assert.equal(event.bubbles, true);
+        assert.equal(event.target, f.frame); assert.equal(event.isTrusted, false); assert.equal(event.detail, null);
+    }
+    assert.equal(f.frameWindow.sent.length, 0, 'interaction notifications issue no playback or sound commands');
+    assert.equal(f.win.timers.size, 0); f.transport.dispose();
+});
+
+test('site rejects forged player interaction origins, sources, capabilities, malformed identities and channels', () => {
+    const f = siteFixture(); f.ready(); let received = 0;
+    f.frame.addEventListener('umininn-player-interaction', () => received++);
+    const interaction = (fields = {}, origin = PLAYER_ORIGIN, source = f.frameWindow) =>
+        f.win.emit('message', { source, origin, data: envelope('frame:interaction', { frameId: 7, token: TOKEN, documentId: DOCUMENT, ...fields }) });
+    for (const [fields, origin, source] of [
+        [{}, 'https://evil.example'], [{}, PLAYER_ORIGIN, {}],
+        [{ frameId: 8 }], [{ frameId: 0 }], [{ frameId: 7.5 }], [{ frameId: '7' }],
+        [{ token: 'x'.repeat(48) }], [{ token: null }], [{ token: 'short' }],
+        [{ documentId: 'x'.repeat(48) }], [{ documentId: null }],
+        [{ channel: originalConfig.CHANNEL }], [{ version: 999 }], [{ type: 'frame:click' }]
+    ]) { interaction(fields, origin, source); assert.equal(received, 0); }
+    interaction(); assert.equal(received, 1); assert.equal(f.frameWindow.sent.length, 0); f.transport.dispose();
+});
+
+test('site refuses stale player interactions after navigation, replacement, load, removal or fresh identity', () => {
+    for (const change of [
+        f => { f.frame.src = 'https://player.kick.com/sample'; },
+        f => { f.frame.contentWindow = fakeWindow(PLAYER); },
+        f => { f.container.children = []; }, f => { f.frame.isConnected = false; },
+        f => { f.frame.emit('load', {}); },
+        f => { f.ready({ token: 'e'.repeat(48), documentId: 'f'.repeat(48) }); }
+    ]) {
+        const f = siteFixture(); f.ready(); let received = 0;
+        f.frame.addEventListener('umininn-player-interaction', () => received++);
+        change(f);
+        f.win.emit('message', { source: f.frameWindow, origin: PLAYER_ORIGIN, data: envelope('frame:interaction', { frameId: 7, token: TOKEN, documentId: DOCUMENT }) });
+        assert.equal(received, 0); assert.equal(f.frameWindow.sent.length, 0); f.transport.dispose();
+    }
+});
+
+test('site interaction relay suspends in bfcache, requires a fresh handshake and stops on disposal', () => {
+    const f = siteFixture(); f.ready(); let received = 0;
+    f.frame.addEventListener('umininn-player-interaction', () => received++);
+    const interaction = () => f.win.emit('message', { source: f.frameWindow, origin: PLAYER_ORIGIN, data: envelope('frame:interaction', { frameId: 7, token: TOKEN, documentId: DOCUMENT }) });
+    f.win.emit('pagehide', { persisted: true }); interaction(); assert.equal(received, 0);
+    f.win.emit('pageshow', { persisted: true }); interaction(); assert.equal(received, 0);
+    f.ready(); interaction(); assert.equal(received, 1);
+    f.transport.dispose(); interaction(); assert.equal(received, 1);
+    assert.equal(f.win.listeners.get('message').size, 0); assert.equal(f.win.timers.size, 0);
 });
 
 test('focus mute guard is narrowly typed and reaches the approved frame unchanged', async () => {
@@ -214,6 +275,48 @@ test('frame creates no controller and sends no state until an approved direct pa
     const ready = f.parent.sent.at(-1); assert.equal(ready.origin, SITE_ORIGIN); assert.equal(ready.message.type, 'frame:ready');
     assert.ok(Number.isInteger(ready.message.frameId) && ready.message.frameId > 0); assert.match(ready.message.token, /^[0-9a-f]{48}$/); assert.match(ready.message.documentId, /^[0-9a-f]{48}$/); assert.notEqual(ready.message.token, ready.message.documentId);
     assert.deepEqual(ready.message.result, snapshot()); f.client.dispose(); assert.equal(f.disposed, 1);
+});
+
+test('frame relays trusted pointer input only after approval and preserves prevented input without playback commands', () => {
+    const f = frameFixture();
+    const interactions = () => f.parent.sent.filter(item => item.message.type === 'frame:interaction');
+    const trusted = { isTrusted: true, defaultPrevented: true,
+        preventDefault() { assert.fail('relay must not cancel input'); },
+        stopPropagation() { assert.fail('relay must not stop input propagation'); } };
+    const callback = [...f.win.listeners.get('pointerdown')][0];
+    assert.deepEqual(f.win.listenerOptions.get(callback), { capture: true, passive: true });
+    f.win.emit('pointerdown', trusted); f.probe('https://evil.example'); f.win.emit('pointerdown', trusted);
+    assert.equal(interactions().length, 0); assert.equal(f.created, 0);
+    f.probe(); const ready = f.parent.sent.at(-1).message;
+    for (const event of [{ isTrusted: false }, {}, { isTrusted: 1 }]) f.win.emit('pointerdown', event);
+    assert.equal(interactions().length, 0, 'scripted pointer dispatches cannot relay input');
+    f.win.emit('pointerdown', trusted); f.win.emit('pointerdown', trusted);
+    assert.equal(interactions().length, 2);
+    for (const item of interactions()) {
+        assert.equal(item.origin, SITE_ORIGIN);
+        assert.deepEqual(item.message, envelope('frame:interaction', { frameId: ready.frameId, token: ready.token, documentId: ready.documentId }));
+    }
+    assert.deepEqual(f.calls, [], 'pointer relay does not execute recovery, sound or state commands');
+    const originalParent = f.win.parent; f.win.parent = {};
+    f.win.emit('pointerdown', trusted); assert.equal(interactions().length, 2);
+    f.win.parent = originalParent; f.client.dispose();
+    assert.equal(f.win.listeners.get('pointerdown').size, 0);
+    f.win.emit('pointerdown', trusted); assert.equal(interactions().length, 2);
+});
+
+test('frame pointer relay suspends across bfcache and resumes only after a fresh approved handshake', () => {
+    const f = frameFixture(); f.probe();
+    const first = f.parent.sent.at(-1).message;
+    const interactions = () => f.parent.sent.filter(item => item.message.type === 'frame:interaction');
+    const pointer = () => f.win.emit('pointerdown', { isTrusted: true });
+    pointer(); assert.equal(interactions().length, 1);
+    f.win.emit('pagehide', { persisted: true }); pointer(); assert.equal(interactions().length, 1);
+    f.win.emit('pageshow', { persisted: true }); pointer(); assert.equal(interactions().length, 1);
+    f.probe(); const fresh = f.parent.sent.at(-1).message;
+    assert.notEqual(fresh.token, first.token); assert.notEqual(fresh.documentId, first.documentId);
+    pointer(); assert.equal(interactions().length, 2); assert.equal(interactions()[1].message.token, fresh.token);
+    f.win.emit('pagehide', { persisted: false }); pointer(); assert.equal(interactions().length, 2);
+    assert.equal(f.win.listeners.get('pointerdown').size, 0); assert.deepEqual(f.calls, []);
 });
 
 test('top-level, unapproved and non-HTTPS player documents stay inert', () => {

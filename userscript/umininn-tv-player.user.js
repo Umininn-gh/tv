@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.19
+// @version      1.0.20
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -29,7 +29,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.19",
+        userscriptVersion: "1.0.20",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -2646,7 +2646,11 @@
             doc.body.appendChild(panelHost);
             panel.addEventListener('scroll', updateHighlights, true);
             panel.addEventListener('scroll', scheduleHighlights, true);
-            let idleTimer = null;
+            let idleTimer = null, frameFocusTimer = null;
+            function clearFrameFocusTimer() {
+                if (frameFocusTimer !== null) win.clearTimeout(frameFocusTimer);
+                frameFocusTimer = null;
+            }
             const activityEvents = ['pointerdown', 'pointermove', 'pointerup', 'click', 'keydown', 'keyup', 'input', 'change', 'wheel', 'touchstart', 'touchmove', 'touchend'];
             function clearIdleTimer() {
                 if (idleTimer !== null) win.clearTimeout(idleTimer);
@@ -2680,17 +2684,41 @@
                 if (path.includes(toggle) || path.includes(panelHost) || toggle.contains(event.target) || panelHost.contains(event.target)) return;
                 setOpen(false);
             }
+            function onPlayerFrameFocus(delay = 200) {
+                clearFrameFocusTimer();
+                if (disposed || panel.hidden) return;
+                // A foreign iframe receives its own pointer events. Its focus
+                // transition is visible here without reading or covering it.
+                frameFocusTimer = win.setTimeout(() => {
+                    frameFocusTimer = null;
+                    const frame = doc.activeElement;
+                    if (!disposed && !panel.hidden && !doc.hidden && doc.hasFocus() && frame?.tagName === 'IFRAME' &&
+                        doc.getElementById('multi-stream-container')?.contains(frame)) setOpen(false);
+                    else onPlayerFrameFocus();
+                }, delay);
+            }
+            const onFrameBlur = () => onPlayerFrameFocus(0);
+            function onPlayerInteraction(event) {
+                if (!disposed && !panel.hidden && event.target?.tagName === 'IFRAME' &&
+                    doc.getElementById('multi-stream-container')?.contains(event.target)) setOpen(false);
+            }
             for (const type of activityEvents) panel.addEventListener(type, onPanelActivity, { capture: true, passive: true });
             win.addEventListener('pagehide', onPanelPageHide);
             doc.addEventListener('pointerdown', onOutsidePointer, { capture: true, passive: true });
+            win.addEventListener('blur', onFrameBlur, true);
+            doc.addEventListener('umininn-player-interaction', onPlayerInteraction);
             panelIdleCleanup = () => {
                 clearIdleTimer();
+                clearFrameFocusTimer();
                 for (const type of activityEvents) panel.removeEventListener(type, onPanelActivity, true);
                 win.removeEventListener('pagehide', onPanelPageHide);
                 doc.removeEventListener('pointerdown', onOutsidePointer, true);
+                win.removeEventListener('blur', onFrameBlur, true);
+                doc.removeEventListener('umininn-player-interaction', onPlayerInteraction);
             };
             function setOpen(open) {
                 clearIdleTimer();
+                clearFrameFocusTimer();
                 panel.hidden = !open;
                 doc.documentElement.toggleAttribute('data-umininn-player-controls-open', open);
                 toggle.setAttribute('aria-expanded', String(open));
@@ -2701,6 +2729,7 @@
                     scan();
                     for (const entry of entries.values()) if (!entry.target) probe(entry);
                     close.focus({ preventScroll: true });
+                    onPlayerFrameFocus();
                     armIdleTimer();
                 }
             }
@@ -2978,6 +3007,19 @@
                 registry.set(record.frameId, record);
                 return;
             }
+            if (isEnvelope(config, message, 'frame:interaction')) {
+                if (!validFrame(message.frameId) || !validToken(message.token) || !validToken(message.documentId)) return;
+                const record = registry.get(message.frameId);
+                if (!record) return;
+                if (!current(record)) { forget(record); return; }
+                if (event.source !== record.source || event.origin !== record.origin || message.token !== record.token || message.documentId !== record.documentId) return;
+                // Relay only an authenticated interaction signal. The original
+                // foreign-frame input continues untouched, even if it prevents
+                // the browser's default focus transition.
+                if (typeof win.CustomEvent === 'function' && typeof record.frame.dispatchEvent === 'function')
+                    record.frame.dispatchEvent(new win.CustomEvent('umininn-player-interaction', { bubbles: true }));
+                return;
+            }
             if (!isEnvelope(config, message, 'userscript:result') || !validToken(message.requestId)) return;
             const request = pending.get(message.requestId);
             if (!request) return;
@@ -3075,6 +3117,10 @@
             if (disposed || suspended || reportTimer !== null) return;
             reportTimer = win.setTimeout(() => { reportTimer = null; announce(); }, 100);
         }
+        function onPlayerPointer(event) {
+            if (event.isTrusted !== true || !controller || !identity) return;
+            send('frame:interaction', {});
+        }
         function start(origin) {
             if (controller) return;
             parentOrigin = origin;
@@ -3141,10 +3187,12 @@
             win.removeEventListener('message', onMessage);
             win.removeEventListener('pagehide', onHide);
             win.removeEventListener('pageshow', onShow);
+            win.removeEventListener('pointerdown', onPlayerPointer, true);
         }
         win.addEventListener('message', onMessage);
         win.addEventListener('pagehide', onHide);
         win.addEventListener('pageshow', onShow);
+        win.addEventListener('pointerdown', onPlayerPointer, { capture: true, passive: true });
         return { dispose };
     }
     const api = { createSiteTransport, createFrameClient };

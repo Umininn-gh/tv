@@ -105,6 +105,19 @@
                 registry.set(record.frameId, record);
                 return;
             }
+            if (isEnvelope(config, message, 'frame:interaction')) {
+                if (!validFrame(message.frameId) || !validToken(message.token) || !validToken(message.documentId)) return;
+                const record = registry.get(message.frameId);
+                if (!record) return;
+                if (!current(record)) { forget(record); return; }
+                if (event.source !== record.source || event.origin !== record.origin || message.token !== record.token || message.documentId !== record.documentId) return;
+                // Relay only an authenticated interaction signal. The original
+                // foreign-frame input continues untouched, even if it prevents
+                // the browser's default focus transition.
+                if (typeof win.CustomEvent === 'function' && typeof record.frame.dispatchEvent === 'function')
+                    record.frame.dispatchEvent(new win.CustomEvent('umininn-player-interaction', { bubbles: true }));
+                return;
+            }
             if (!isEnvelope(config, message, 'userscript:result') || !validToken(message.requestId)) return;
             const request = pending.get(message.requestId);
             if (!request) return;
@@ -202,6 +215,10 @@
             if (disposed || suspended || reportTimer !== null) return;
             reportTimer = win.setTimeout(() => { reportTimer = null; announce(); }, 100);
         }
+        function onPlayerPointer(event) {
+            if (event.isTrusted !== true || !controller || !identity) return;
+            send('frame:interaction', {});
+        }
         function start(origin) {
             if (controller) return;
             parentOrigin = origin;
@@ -268,10 +285,12 @@
             win.removeEventListener('message', onMessage);
             win.removeEventListener('pagehide', onHide);
             win.removeEventListener('pageshow', onShow);
+            win.removeEventListener('pointerdown', onPlayerPointer, true);
         }
         win.addEventListener('message', onMessage);
         win.addEventListener('pagehide', onHide);
         win.addEventListener('pageshow', onShow);
+        win.addEventListener('pointerdown', onPlayerPointer, { capture: true, passive: true });
         return { dispose };
     }
     const api = { createSiteTransport, createFrameClient };
