@@ -32,7 +32,7 @@ test.before(async () => {
     const html = read('index.html'), source = read('tv-app.js');
     css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match => match[1]).join('\n') + '\n' + read('layout-bookmarks.css');
     modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'layout-bookmarks', 'shared-bookmarks']
-        .map(name => ['/tv/' + name + '.js', read(name + '.js')]));
+        .map(name => ['/tv/' + name + '.js', read('' + name + '.js')]));
     appScript = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'updatePlayerLayout',
         'playerGridArea', 'getCurrentPlayerGeometry', 'savePlayerEnlargement', 'getPlayerPositionKeys', 'syncActivePlayers',
         'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible']
@@ -129,26 +129,26 @@ test('two independent browser contexts share save, rename, enlarged update, reor
     const beforeA = await a.page.evaluate(() => fixture.remember()), beforeB = await b.page.evaluate(() => fixture.remember());
     await open(a.page); await a.page.locator('.layout-bookmarks-save').click(); await settled(a.page, 1);
     await a.page.locator('.layout-bookmarks-save').click(); await settled(a.page, 2);
-    assert.deepEqual(await names(a.page), ['佈局 1', '佈局 2']);
+    assert.deepEqual(await names(a.page), ['佈局 2', '佈局 1'], 'each newly saved layout appears above the existing bookmarks');
     await a.page.locator('.layout-bookmark-rename').first().click();
     await a.page.locator('.layout-bookmark-name-input').fill('夜更共用'); await a.page.locator('.layout-bookmark-name-input').press('Enter');
     await a.page.waitForFunction(() => sharedQaStore.list()[0]?.name === '夜更共用');
-    await open(b.page); assert.deepEqual(await names(b.page), ['夜更共用', '佈局 2']);
+    await open(b.page); assert.deepEqual(await names(b.page), ['夜更共用', '佈局 1']);
     await b.page.locator('.layout-bookmark-move-up').nth(1).click();
-    await b.page.waitForFunction(() => sharedQaStore.list()[0]?.name === '佈局 2');
-    assert.deepEqual(await names(b.page), ['佈局 2', '夜更共用']);
+    await b.page.waitForFunction(() => sharedQaStore.list()[0]?.name === '佈局 1');
+    assert.deepEqual(await names(b.page), ['佈局 1', '夜更共用']);
     assert.equal(await b.page.locator('.layout-bookmark-move-up').first().isDisabled(), true);
     assert.equal(await b.page.locator('.layout-bookmark-move-down').last().isDisabled(), true);
-    assert.equal(await b.page.evaluate(() => document.activeElement?.closest('.layout-bookmark-card')?.querySelector('.layout-bookmark-name')?.textContent), '佈局 2', 'focus follows the moved bookmark when the original direction reaches a boundary');
+    assert.equal(await b.page.evaluate(() => document.activeElement?.closest('.layout-bookmark-card')?.querySelector('.layout-bookmark-name')?.textContent), '佈局 1', 'focus follows the moved bookmark when the original direction reaches a boundary');
     await a.page.locator('.layout-bookmarks-close').click(); await open(a.page);
-    assert.deepEqual(await names(a.page), ['佈局 2', '夜更共用']);
+    assert.deepEqual(await names(a.page), ['佈局 1', '夜更共用']);
     await a.page.evaluate(() => fixture.setFocus());
     await a.page.locator('.layout-bookmark-update').first().click(); await settled(a.page, 2);
     await a.page.waitForFunction(() => Boolean(sharedQaStore.list()[0]?.snapshot.focus));
     await a.page.locator('.layout-bookmark-delete').last().click(); await settled(a.page, 1);
     await a.page.getByRole('button', { name: '復原刪除', exact: true }).click(); await settled(a.page, 2);
     await b.page.locator('.layout-bookmarks-close').click(); await open(b.page);
-    assert.deepEqual(await names(b.page), ['佈局 2', '夜更共用']);
+    assert.deepEqual(await names(b.page), ['佈局 1', '夜更共用']);
     assert.ok(await b.page.evaluate(() => sharedQaStore.list()[0].snapshot.focus));
     await continuity(a.page, beforeA); await continuity(b.page, beforeB);
     await b.page.screenshot({ path: path.join(root, 'outputs/shared-bookmarks-' + channel + '-preview.png') });

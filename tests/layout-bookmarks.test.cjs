@@ -82,19 +82,20 @@ test('snapshot normalization bounds preview aspect ratio and names while preserv
     assert.equal(value.channels[0].color, 0, 'zero hue is a real saved colour');
 });
 
-test('bookmarks save, rename and update through a new store instance without changing order or preview colours', () => {
+test('new bookmarks prepend while rename, update and reload preserve the saved order and preview colours', () => {
     const storage = memoryStorage();
     const store = createStore(storage);
     assert.deepEqual(store.list(), []);
     const first = store.add('  夜更  ', snapshot());
     const second = store.add('夜更', snapshot({ focus: null }));
+    assert.deepEqual(store.list().map(value => value.id), [second.id, first.id]);
     assert.equal(first.name, '夜更');
     assert.notEqual(first.id, second.id, 'same visible names still refer to independent bookmarks');
     assert.equal(store.rename(first.id, '  劇集  ').name, '劇集');
     const changed = snapshot({ columns: 2, focus: null, aspectRatio: .7 });
     assert.deepEqual(store.update(first.id, changed).snapshot, changed);
     const saved = store.list();
-    assert.deepEqual(saved.map(value => value.id), [first.id, second.id]);
+    assert.deepEqual(saved.map(value => value.id), [second.id, first.id]);
     assert.deepEqual(createStore(storage).list(), saved);
     assert.equal(JSON.parse(storage.getItem(STORAGE_KEY)).version, 1);
 });
@@ -118,12 +119,12 @@ test('delete has a single undo which restores its original position and survives
     const first = store.add('One', snapshot()), middle = store.add('Two', snapshot()), last = store.add('Three', snapshot());
     assert.equal(store.canUndo(), false);
     assert.equal(store.remove(middle.id).id, middle.id);
-    assert.deepEqual(store.list().map(value => value.id), [first.id, last.id]);
+    assert.deepEqual(store.list().map(value => value.id), [last.id, first.id]);
     assert.equal(store.canUndo(), true);
     assert.equal(store.undo().id, middle.id);
     assert.equal(store.canUndo(), false);
     assert.equal(store.undo(), null);
-    assert.deepEqual(createStore(storage).list().map(value => value.id), [first.id, middle.id, last.id]);
+    assert.deepEqual(createStore(storage).list().map(value => value.id), [last.id, middle.id, first.id]);
 });
 
 test('empty names, missing IDs and full capacity leave the existing bookmarks intact', () => {
@@ -190,8 +191,8 @@ test('independent open tabs merge each mutation with the latest storage rather t
     const second = tabB.add('Second tab', snapshot());
     assert.equal(tabA.rename(first.id, 'Updated in first tab').name, 'Updated in first tab');
     tabB.reload();
-    assert.deepEqual(tabB.list().map(value => value.id), [first.id, second.id]);
-    assert.equal(tabB.list()[0].name, 'Updated in first tab');
+    assert.deepEqual(tabB.list().map(value => value.id), [second.id, first.id]);
+    assert.equal(tabB.list().find(value => value.id === first.id).name, 'Updated in first tab');
     tabB.remove(first.id);
     tabA.reload();
     assert.deepEqual(tabA.list().map(value => value.id), [second.id]);

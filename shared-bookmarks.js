@@ -180,7 +180,7 @@
                         if (!entry || latest.some(item => item.id === entry.id)) {
                             const stamp = now(); entry = { id: uniqueId(latest), name: normalizedName, snapshot: normalized, createdAt: stamp, updatedAt: stamp };
                         }
-                        return { bookmarks: latest.concat(entry), result: entry };
+                        return { bookmarks: [entry, ...latest], result: entry };
                     });
                 });
             },

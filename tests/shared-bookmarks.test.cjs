@@ -64,13 +64,19 @@ test('independent clients share CRUD, stable colours and order without sharing t
     assert.equal(a.list()[0].name, '共用夜更');
 });
 
-test('concurrent creates preserve both additions through a CAS retry', async () => {
-    const server = backend(), a = client(server, { makeId: () => 'from-a' }), b = client(server, { makeId: () => 'from-b' });
+test('concurrent creates prepend both additions through a CAS retry and retain the existing manual order', async () => {
+    const existing = [entry('old-z'), entry('old-a')];
+    const server = backend(existing), a = client(server, { makeId: () => 'from-a' }), b = client(server, { makeId: () => 'from-b' });
     await Promise.all([a.reload(), b.reload()]);
     const ready = deferred(), both = deferred(); let readers = 0;
     server.readHook = async value => { if (++readers === 2) { server.readHook = null; both.resolve(); } ready.resolve(); await both.promise; return value; };
     await Promise.all([a.add('A', snapshot()), b.add('B', snapshot())]);
-    assert.deepEqual(server.current().document.bookmarks.map(item => item.id).sort(), ['from-a', 'from-b']);
+    const saved = server.current().document.bookmarks;
+    assert.deepEqual(saved.slice(0, 2).map(item => item.id).sort(), ['from-a', 'from-b']);
+    assert.deepEqual(saved.slice(2), existing);
+    await Promise.all([a.reload(), b.reload()]);
+    assert.deepEqual(a.list(), saved);
+    assert.deepEqual(b.list(), saved);
     assert.equal(server.commits, 2);
     assert.equal(server.writes, 3, 'only the losing CAS is retried');
 });
@@ -111,7 +117,7 @@ test('undo restores a deleted entry among current records and never duplicates a
     await Promise.all([a.reload(), b.reload()]);
     await a.remove('b'); await b.add('Added elsewhere', snapshot());
     await a.undo();
-    assert.deepEqual(ids(a), ['a', 'b', 'c', 'new']);
+    assert.deepEqual(ids(a), ['new', 'a', 'b', 'c']);
     await a.remove('b');
     const existing = server.current().document;
     existing.bookmarks.push(entry('b', 'Restored elsewhere')); server.replace(existing);
@@ -268,12 +274,16 @@ test('REST rejects missing versions, timestamps and payload corruption without s
 test('the local adapter persists up/down order, retains boundaries, and imports atomically without duplicate IDs', () => {
     const localStorage = storage(), local = createLocalStore(localStorage);
     const a = local.add('A', snapshot()), b = local.add('B', snapshot()), c = local.add('C', snapshot());
-    local.move(c.id, 'up');
-    assert.deepEqual(ids(local), [a.id, c.id, b.id]);
-    local.move(a.id, 'up'); local.move(b.id, 'down');
-    assert.deepEqual(ids(createLocalStore(localStorage)), [a.id, c.id, b.id]);
+    assert.deepEqual(ids(local), [c.id, b.id, a.id]);
+    local.move(b.id, 'up');
+    assert.deepEqual(ids(local), [b.id, c.id, a.id]);
+    local.move(c.id, 'down');
+    assert.deepEqual(ids(local), [b.id, a.id, c.id]);
+    local.move(b.id, 'up'); local.move(c.id, 'down');
+    assert.deepEqual(ids(createLocalStore(localStorage)), [b.id, a.id, c.id]);
     local.importLocal([entry('imported', 'Import')]);
     local.importLocal([entry('imported', 'Import')]);
+    assert.deepEqual(ids(local), [b.id, a.id, c.id, 'imported']);
     assert.equal(local.list().filter(item => item.id === 'imported').length, 1);
     const before = local.list(), raw = [...localStorage.values];
     assert.throws(() => local.importLocal([entry('first-good'), { ...entry('second-bad'), snapshot: {} }]));

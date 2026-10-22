@@ -107,7 +107,7 @@
                 do { id = 'layout-' + stamp.toString(36) + '-' + (++idSequence).toString(36) + '-' + Math.random().toString(36).slice(2, 10); }
                 while (latest.some(entry => entry.id === id));
                 const entry = { id, name: bookmarkName(name), snapshot: normalizeSnapshot(snapshot), createdAt: stamp, updatedAt: stamp };
-                write(latest.concat(entry));
+                write([entry, ...latest]);
                 return copy(entry);
             },
             rename(id, name) {
