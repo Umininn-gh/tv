@@ -1097,7 +1097,8 @@ const channelSelectionIdleTimer = (() => {
             frameFocusTimer = null;
             const frame = document.activeElement;
             if (!document.hidden && document.hasFocus() && frame?.matches?.('iframe,video,audio') &&
-                document.getElementById('multi-stream-container')?.contains(frame)) setChannelSelectionVisible(false);
+                (document.getElementById('multi-stream-container')?.contains(frame) ||
+                    frame === document.getElementById('chat_embed'))) setChannelSelectionVisible(false);
             else watchPlayerFrameFocus();
         }, delay);
     }
@@ -1129,7 +1130,7 @@ const channelSelectionIdleTimer = (() => {
     // Foreign documents and native media controls can consume pointer events.
     // Firefox may omit the focus event entirely for a foreign document. A
     // single activeElement check while this menu is open covers that case.
-    // Tab/app switches and frames outside the playback pane are excluded.
+    // Chat input also dismisses the menu; tab/app switches and unrelated frames do not.
     window.addEventListener('blur', () => watchPlayerFrameFocus(0), true);
     window.addEventListener('pagehide', () => setChannelSelectionVisible(false));
     return {

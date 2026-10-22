@@ -3005,6 +3005,105 @@ test('playback-controls menu dismisses for trusted cross-origin player clicks in
     await assertContinuity(f,before);
 });
 
+async function installChatDismissFixture(f,foreign){
+    const url=(foreign?'https://layout-chat.invalid':'https://umininn-gh.github.io')+'/menu-chat-fixture';
+    let loads=0;
+    await f.page.route(url,route=>{
+        loads++;
+        return route.fulfill({contentType:'text/html',body:`<!doctype html><html><head><meta charset="utf-8"><style>
+            body{margin:12px;font:16px sans-serif}form{display:flex;gap:8px}input{width:180px}#chat-message{padding:15px;background:#ddd}
+            </style></head><body><form id="chat-form"><input id="chat-draft" aria-label="聊天草稿" value="尚未傳送的草稿"><button type="button" id="chat-options">聊天選項</button><button id="chat-send">傳送</button></form>
+            <p id="chat-message">這是已顯示的聊天訊息</p><div style="height:900px">較早的聊天訊息</div><script>
+            window.chatFixtureId=crypto.randomUUID();window.chatFixtureClicks=[];window.chatFixtureSends=0;window.chatFixtureInputFocusOuts=0;
+            document.addEventListener('click',event=>chatFixtureClicks.push({target:event.target.id,trusted:event.isTrusted}),true);
+            document.getElementById('chat-draft').addEventListener('focusout',()=>chatFixtureInputFocusOuts++);
+            document.getElementById('chat-form').addEventListener('submit',event=>{event.preventDefault();chatFixtureSends++});
+            </script></body></html>`});
+    });
+    await f.page.evaluate(url=>{
+        window.fixtureParentChatPointers=0;
+        const panel=document.createElement('div');panel.id='chat-panel';panel.style.cssText='position:fixed;left:20px;top:780px;width:540px;height:250px;z-index:2';
+        const frame=document.createElement('iframe');frame.id='chat_embed';frame.title='本地測試聊天室';frame.src=url;frame.style.cssText='width:100%;height:100%;border:0';
+        panel.appendChild(frame);document.body.appendChild(panel);
+        document.addEventListener('pointerdown',event=>{if(event.target===frame)fixtureParentChatPointers++},true);
+    },url);
+    const chat=f.page.frameLocator('#chat_embed');await chat.locator('#chat-draft').waitFor();
+    const frame=f.page.frames().find(frame=>frame.url()===url);assert.ok(frame);
+    await frame.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    await f.page.waitForTimeout(100); // Allow Chromium's new OOPIF hit-test surface to reach its parent compositor.
+    return {frame,chat,loads:()=>loads};
+}
+
+test('chat iframe input dismisses real menus without sending the draft, stealing focus or changing playback',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    for(const foreign of [false,true])for(const menu of ['selection','playback'])await t.test(`${foreign?'cross-origin':'same-origin'} ${menu}`,async()=>{
+        const playback=menu==='playback',f=await fixture(t,{width:1200,height:700,viewport:{width:1800,height:1100},audioUserscript:playback}),before=await snapshot(f);
+        const {frame,chat,loads}=await installChatDismissFixture(f,foreign),identity=await frame.evaluate(()=>chatFixtureId);
+        await chat.locator('#chat-draft').click();
+        // Chromium OOPIFs can also need a first native click to claim their
+        // document before the baseline input receives editing focus.
+        if(await frame.evaluate(()=>document.activeElement?.id)!=='chat-draft')await chat.locator('#chat-draft').click();
+        assert.equal(await frame.evaluate(()=>document.activeElement?.id),'chat-draft','closed-menu baseline chat input focus');
+        await f.page.keyboard.type('x');assert.equal(await chat.locator('#chat-draft').inputValue(),'尚未傳送的草稿x');
+        await f.page.keyboard.press('Backspace');assert.equal(await chat.locator('#chat-draft').inputValue(),'尚未傳送的草稿');
+        await f.page.evaluate(()=>{
+            const button=document.createElement('button');button.id='fixture-chat-baseline';button.textContent='聊天焦點基準';document.getElementById('more-channels-btn').parentElement.appendChild(button);
+        });
+        await f.page.locator('#fixture-chat-baseline').click();await chat.locator('#chat-draft').click();
+        // Firefox's trusted Playwright handoff can focus the iframe body after
+        // any parent button, even with every menu closed and dismissal disabled.
+        // Compare the unchanged native editing policy against that exact baseline.
+        const nativeInputFocus=await frame.evaluate(()=>document.activeElement?.id);
+        if(engine==='chromium')assert.equal(nativeInputFocus,'chat-draft');
+        await frame.evaluate(()=>{chatFixtureClicks=[]});
+        await f.page.evaluate(()=>{fixtureParentChatPointers=0});
+        const trigger=f.page.locator(playback?'#umininn-player-control-host #toggle':'#more-channels-btn');
+        const isOpen=open=>playback?controlsMenuOpen(f,open):selectionMenuOpen(f,open);
+        const clicked=[];
+        for(const id of ['chat-draft','chat-draft','chat-message','chat-options']){
+            // The second interaction returns to the same already-loaded chat;
+            // reopening must rearm dismissal rather than consume one blur only.
+            await trigger.click();await isOpen(true);await waitNames(f);
+            await frame.evaluate(()=>{chatFixtureInputFocusOuts=0});
+            await chat.locator('#'+id).click();clicked.push({target:id,trusted:true});
+            await f.page.waitForFunction(()=>!document.documentElement.hasAttribute('data-umininn-player-controls-open')&&getComputedStyle(document.getElementById('channel-selection')).display==='none');
+            await isOpen(false);assert.equal((await nameGeometry(f)).hidden,true);
+            assert.equal(await f.page.evaluate(()=>document.activeElement?.id),'chat_embed','dismissal leaves keyboard focus in the actual chat frame');
+            if(id==='chat-draft'){
+                assert.equal(await frame.evaluate(()=>document.activeElement?.id),nativeInputFocus,'closing the menu retains the same native input focus policy as the closed-menu baseline');
+                assert.equal(await frame.evaluate(()=>chatFixtureInputFocusOuts),0,'dismissal does not blur the input after the click');
+                if(engine==='chromium'){
+                    await f.page.keyboard.type('x');assert.equal(await chat.locator('#chat-draft').inputValue(),'尚未傳送的草稿x','native typing remains in the clicked chat input');
+                    await f.page.keyboard.press('Backspace');
+                }
+            }
+            assert.deepEqual(await frame.evaluate(()=>chatFixtureClicks),clicked,'one trusted click reaches the intended chat control without replay');
+            assert.equal(await frame.evaluate(()=>chatFixtureSends),0,'closing a menu never submits or sends the chat draft');
+            assert.equal(await chat.locator('#chat-draft').inputValue(),'尚未傳送的草稿');
+            assert.equal(await frame.evaluate(()=>chatFixtureId),identity,'the chat document is not reloaded');
+        }
+        // Parent-document chat chrome is still handled by the existing outside
+        // pointer listener, including the original clicked button action.
+        await f.page.evaluate(()=>{
+            const button=document.createElement('button');button.id='fixture-chat-chrome';button.textContent='聊天設定';button.style.cssText='position:fixed;left:580px;top:800px';
+            window.fixtureChatChromeClicks=[];button.addEventListener('click',event=>fixtureChatChromeClicks.push(event.isTrusted));document.body.appendChild(button);
+        });
+        await trigger.click();await isOpen(true);await f.page.locator('#fixture-chat-chrome').click();await isOpen(false);
+        assert.deepEqual(await f.page.evaluate(()=>fixtureChatChromeClicks),[true]);
+        assert.equal(await f.page.evaluate(()=>document.activeElement?.id),'fixture-chat-chrome');
+        assert.equal(await f.page.evaluate(()=>fixtureParentChatPointers),0,'iframe content input is genuinely isolated from the parent pointer listener');
+        const scrollbarWidth=await frame.evaluate(()=>innerWidth-document.documentElement.clientWidth);
+        if(scrollbarWidth>0){
+            await trigger.click();await isOpen(true);
+            const box=await f.page.locator('#chat_embed').boundingBox();
+            await f.page.mouse.click(box.x+box.width-scrollbarWidth/2,box.y+box.height-25);await f.page.waitForTimeout(250);
+            t.diagnostic(JSON.stringify({menu,foreign,nativeScrollbar:scrollbarWidth,scrollTop:await frame.evaluate(()=>document.scrollingElement.scrollTop),dismissed:!await f.page.locator(playback?audioPanel+' #panel':'#channel-selection').isVisible()}));
+            if(await f.page.locator(playback?audioPanel+' #panel':'#channel-selection').isVisible())await trigger.click();
+        }
+        assert.equal(loads(),1);await assertContinuity(f,before);
+    });
+});
+
 test('player interaction relay dismisses real menus when the foreign player prevents pointer focus',{skip:!enabled,timeout:60000},async t=>{
     if(!optional(t))return;
     for(const menu of ['selection','playback'])await t.test(menu,async()=>{

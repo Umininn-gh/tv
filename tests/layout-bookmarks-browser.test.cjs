@@ -164,12 +164,14 @@ async function fixture(t, options = {}) {
     if (options.storage) await context.addInitScript(({ storage, origin }) => { if (location.origin === origin) for (const [key, value] of Object.entries(storage)) localStorage.setItem(key, value); }, { storage: options.storage, origin });
     const requests = [], errors = [], navigations = [];
     const child = `<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0"><video id="media" muted playsinline loop src="/silent.wav" style="width:100%;height:100%"></video><script>${instrument}window.fixtureDocumentId=crypto.randomUUID();instrument(document.getElementById('media'));</script></body></html>`;
+    const chat = `<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:8px;font:16px sans-serif"><form id="chat-form"><input id="chat-input" aria-label="聊天訊息" value="保留草稿"><button type="submit">傳送</button></form><p id="chat-message">聊天室訊息，點選時不應攔截原有操作。</p><div style="height:800px"></div><script>window.fixtureChatClicks=0;window.fixtureChatSubmits=0;document.getElementById('chat-message').addEventListener('click',()=>fixtureChatClicks++);document.getElementById('chat-form').addEventListener('submit',event=>{event.preventDefault();fixtureChatSubmits++});</script></body></html>`;
     await context.route('**/*', route => {
         const request = route.request(), url = new URL(request.url());
         if (request.isNavigationRequest()) {
             navigations.push(request.url());
             if (request.url() === siteUrl) return route.fulfill({ contentType: 'text/html', body: fixtureDocument(options) });
             if (url.origin === frameOrigin && url.pathname === '/player') return route.fulfill({ contentType: 'text/html', body: child });
+            if ([origin, frameOrigin].includes(url.origin) && url.pathname === '/chat-fixture') return route.fulfill({ contentType: 'text/html', body: chat });
         }
         if (url.origin === origin && modules[url.pathname]) return route.fulfill({ contentType: 'application/javascript', body: modules[url.pathname] });
         if ([origin, frameOrigin].includes(url.origin) && url.pathname === '/silent.wav') {
@@ -329,6 +331,11 @@ test('bookmark menu dismisses on repeated foreign player clicks without consumin
     const f = await fixture(t, { viewport: { width: 1800, height: 1000 } }), before = await remember(f);
     const navigations = [...f.navigations], trigger = f.page.locator('#layout-bookmarks-btn');
     for (const frame of f.frames) await frame.evaluate(() => {
+        // Browser-native media hit targets can consume DOM pointer events; a
+        // separate test below covers those controls. Use a real document button
+        // here to measure delivery of an ordinary foreign-player gesture.
+        const surface = document.createElement('button'); surface.id = 'fixture-player-surface'; surface.type = 'button';
+        surface.textContent = '播放器範圍'; surface.style.cssText = 'position:absolute;left:8px;top:8px;'; document.body.appendChild(surface);
         window.fixturePlayerClicks = [];
         document.addEventListener('pointerdown', event => fixturePlayerClicks.push({ type: event.type, trusted: event.isTrusted }));
         document.addEventListener('click', event => fixturePlayerClicks.push({ type: event.type, trusted: event.isTrusted }));
@@ -336,7 +343,7 @@ test('bookmark menu dismisses on repeated foreign player clicks without consumin
     for (const index of [0, 0, 1]) {
         await trigger.focus(); await f.page.keyboard.press('Enter');
         assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true);
-        await f.frames[index].locator('#media').click({ position: { x: 24, y: 24 } });
+        await f.frames[index].locator('#fixture-player-surface').click();
         await f.page.waitForFunction(() => !layoutBookmarkMenu.isOpen());
         assert.equal(await f.page.evaluate(() => document.activeElement?.tagName), 'IFRAME');
         await assertContinuity(f, before);
@@ -366,6 +373,49 @@ test('bookmark menu dismisses on repeated foreign player clicks without consumin
     assert.equal(await f.page.evaluate(() => fixtureFocusChecks), stopped, 'focus sampling stops when the bookmark menu closes');
     assert.deepEqual(f.navigations, navigations);
     await assertContinuity(f, before);
+});
+
+for (const chatOrigin of [origin, frameOrigin]) test('bookmark menu dismisses on ' + (chatOrigin === origin ? 'same-origin custom' : 'foreign official') + ' chat input and message clicks without stealing focus or sending a message', browserCase, async t => {
+    const f = await fixture(t), before = await remember(f);
+    await f.page.evaluate(src => {
+        const chat = document.createElement('iframe'); chat.id = 'chat_embed'; chat.title = '聊天室測試';
+        chat.style.cssText = 'position:fixed;left:8px;bottom:8px;width:340px;height:170px;z-index:2;background:white;';
+        chat.src = src; document.body.appendChild(chat);
+    }, chatOrigin + '/chat-fixture');
+    const chat = f.page.frameLocator('#chat_embed'), input = chat.locator('#chat-input');
+    await input.waitFor({ state: 'visible' });
+    const navigations = [...f.navigations], trigger = f.page.locator('#layout-bookmarks-btn');
+    // Compare the real driver focus handoff with an unrelated parent button
+    // first. Firefox's headless driver can leave the child's body focused on
+    // iframe re-entry even with every menu closed; dismissal must preserve the
+    // same result. Chromium browsers also require actual input focus/typing.
+    await f.page.locator('#outside').click();
+    await input.click();
+    const baselineFocus = await input.evaluate(element => element.ownerDocument.activeElement === element);
+    await f.page.keyboard.press('End'); await f.page.keyboard.type('測');
+    const baselineText = await input.inputValue();
+    if (engine !== 'firefox') {
+        assert.equal(baselineFocus, true, 'driver baseline must focus the chat input');
+        assert.equal(baselineText, '保留草稿測', 'keyboard input reaches the chat draft');
+    }
+    await input.evaluate(element => { element.value = '保留草稿'; });
+    for (const target of [input, chat.locator('#chat-message'), input]) {
+        await trigger.click();
+        assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true);
+        await target.click();
+        await f.page.waitForFunction(() => !layoutBookmarkMenu.isOpen());
+        assert.equal(await f.page.evaluate(() => document.activeElement?.id), 'chat_embed', 'closing must leave the clicked chat frame focused');
+        if (target === input) {
+            assert.equal(await input.evaluate(element => element.ownerDocument.activeElement === element), baselineFocus, 'menu dismissal preserves the browser input-focus policy');
+            await f.page.keyboard.press('End'); await f.page.keyboard.type('測');
+            assert.equal(await input.inputValue(), baselineText, 'typing after dismissal matches ordinary parent-to-chat interaction');
+            await input.evaluate(element => { element.value = '保留草稿'; });
+        }
+        assert.equal(await input.inputValue(), '保留草稿', 'a menu close must not erase or submit a draft');
+        await assertContinuity(f, before);
+    }
+    assert.deepEqual(await chat.locator('body').evaluate(() => ({ clicks: fixtureChatClicks, submits: fixtureChatSubmits })), { clicks: 1, submits: 0 });
+    assert.deepEqual(f.navigations, navigations, 'chat interaction and menu dismissal must not navigate or reload any frame');
 });
 
 test('bookmark menu dismisses when native media controls consume pointer events while scripted playback leaves it open', browserCase, async t => {

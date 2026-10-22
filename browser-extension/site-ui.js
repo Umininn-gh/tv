@@ -1186,7 +1186,8 @@
                     frameFocusTimer = null;
                     const frame = doc.activeElement;
                     if (!disposed && !panel.hidden && !doc.hidden && doc.hasFocus() && frame?.matches?.('iframe,video,audio') &&
-                        doc.getElementById('multi-stream-container')?.contains(frame)) setOpen(false);
+                        (doc.getElementById('multi-stream-container')?.contains(frame) ||
+                            frame === doc.getElementById('chat_embed'))) setOpen(false);
                     else onPlayerFrameFocus();
                 }, delay);
             }
