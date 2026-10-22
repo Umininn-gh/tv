@@ -296,6 +296,9 @@
         let host, shadow, panelHost, panelShadow, toggle, quickDetect, panel, list, summary, observer, lateObserver, masterVolume, masterReadout, detectButton, recoveryStatus, recoveryFlow, audioFocusStatus, audioFocusFlow;
         let sequence = 0, scanTimer = null, disposed = false, globalMuted = null;
         let audioFocusIntent = null, audioReconcileTimer = null, audioControlGeneration = 0;
+        let layoutAudioFlow = null, layoutTicket = null, layoutUserEpoch = 0;
+        let layoutCompletion = Promise.resolve(), finishLayoutCompletion = null;
+        let automaticRecoveryReason = null;
         let preparation = null, preparedCohort = new Set(), watchStartTimer = null, unreadyWrappers = 0;
         let recoveryStartGeneration = 0;
         let preparationWaiting = '', lastRecoveryStatus = null;
@@ -532,6 +535,11 @@
         }
         function applyResult(entry, result) {
             if (disposed || !entries.has(entry.element) || !validResult(result)) return;
+            const revision = result.state?.audioUserRevision;
+            if (Number.isInteger(revision)) {
+                if (entry.audioUserRevision !== undefined && revision > entry.audioUserRevision) invalidateLayoutAudio();
+                entry.audioUserRevision = revision;
+            }
             entry.result = result;
             entry.notice = '';
             renderEntry(entry);
@@ -543,6 +551,7 @@
                 guardedEntries.get(entry) === entry.generation && result.state?.muteGuardActive === false) {
                 void afterAudioFocus(() => {});
             } else queueAudioFocusReconcile();
+            layoutAudioFlow?.notify();
         }
         async function execute(entry, command, settings = {}) {
             const readable = entry.kind === 'native' || entry.kind === 'frame' && Boolean(entry.target);
@@ -599,14 +608,15 @@
             summary.textContent = failed.length ? `${failed.length} 台未能套用：${failed.map(item => item.entry.name.textContent).join('、')}` : `${all.length} 台已套用。`;
         }
 
-        function afterAudioFocus(action) {
+        function afterAudioFocus(action, preserveLayout = false) {
+            if (!preserveLayout) invalidateLayoutAudio();
             const ticket = ++audioControlGeneration;
             audioFocusIntent = null;
             if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
             audioReconcileTimer = null;
             showAudioFocusStatus({ phase: 'cancelled' });
             const settled = audioFocusFlow?.cancel() || Promise.resolve();
-            return Promise.all([settled, ...urgentAudioTasks]).then(async () => {
+            return Promise.all([settled, layoutAudioFlow?.settle(), ...urgentAudioTasks]).then(async () => {
                 if (disposed || ticket !== audioControlGeneration) return;
                 const guarded = [...guardedEntries].filter(([entry, generation]) => isCurrent(entry, generation));
                 let cursor = 0;
@@ -756,12 +766,19 @@
             toggle.title = text;
             quickDetect.title = text;
         }
-        function runRecovery(reason, generation = ++recoveryStartGeneration) {
+        async function runRecovery(reason, generation = ++recoveryStartGeneration) {
             if (disposed || !recoveryFlow || generation !== recoveryStartGeneration) return Promise.resolve();
-            return afterAudioFocus(() => {
+            const automatic = reason !== 'manual';
+            if (automatic) await layoutCompletion;
+            if (disposed || generation !== recoveryStartGeneration) return;
+            const ticket = layoutTicket, epoch = layoutUserEpoch;
+            await afterAudioFocus(() => {
                 if (disposed || generation !== recoveryStartGeneration) return;
                 return recoveryFlow.run({ reason });
-            });
+            }, automatic);
+            if (automatic && !disposed && ticket !== null && ticket === layoutTicket && epoch === layoutUserEpoch)
+                await layoutAudioFlow?.restore(ticket);
+            if (!disposed && generation === recoveryStartGeneration) automaticRecoveryReason = null;
         }
         function cancelPendingRecovery() {
             recoveryStartGeneration++;
@@ -770,10 +787,11 @@
         }
         function scheduleRecoveryAfterLayout(reason) {
             if (disposed) return;
+            automaticRecoveryReason = reason;
             cancelPendingRecovery();
             const generation = recoveryStartGeneration;
             showAudioFocusStatus({ phase: 'cancelled' });
-            void afterAudioFocus(() => {});
+            void afterAudioFocus(() => {}, true);
             recoveryFlow?.cancel();
             clearPreparation();
             // A new task observes the completed selection/layout, including
@@ -805,7 +823,7 @@
             row.append(entry.name, controls, entry.status);
             list.appendChild(row);
             observeEntryHover(entry);
-            entry.volume.addEventListener('input', () => { entry.level.textContent = `${entry.volume.value}%`; });
+            entry.volume.addEventListener('input', () => { invalidateLayoutAudio(); entry.level.textContent = `${entry.volume.value}%`; });
             entry.volume.addEventListener('change', () => { const value = Number(entry.volume.value) / 100; void afterAudioFocus(() => execute(entry, { action: 'setVolume', value })); });
             entry.mute.addEventListener('click', () => { const value = !entry.result?.state?.muted; void afterAudioFocus(() => execute(entry, { action: 'setMuted', value })); });
             entry.recover.addEventListener('click', () => { void afterAudioFocus(() => execute(entry, { action: 'recover' })); });
@@ -868,7 +886,7 @@
                         entry.controller = factory.createMediaController({ document: doc, scope: element });
                         entry.unsubscribe = entry.controller.subscribe(result => applyResult(entry, result));
                         applyResult(entry, entry.controller.getState());
-                        if (globalMuted !== null && !audioFocusIntent) void execute(entry, { action: 'setMuted', value: globalMuted });
+                        if (globalMuted !== null && !audioFocusIntent && layoutTicket === null) void execute(entry, { action: 'setMuted', value: globalMuted });
                     } else if (entry.kind === 'frame') {
                         entry.onLoad = () => scheduleProbe(entry);
                         frame.addEventListener('load', entry.onLoad);
@@ -889,6 +907,7 @@
             updateHighlights();
             scheduleHighlights();
             queueAudioFocusReconcile();
+            layoutAudioFlow?.notify();
         }
         function queueScan() { if (scanTimer === null) scanTimer = win.setTimeout(scan, 80); }
         function onFrameMessage(event) {
@@ -909,9 +928,91 @@
                 entry.target = { frameId: data.frameId, token: data.token, documentId: typeof data.documentId === 'string' ? data.documentId : null };
                 clearProbeTimers(entry);
                 if (first || !entry.busy) applyResult(entry, data.result);
-                if (first && globalMuted !== null && !audioFocusIntent) void execute(entry, { action: 'setMuted', value: globalMuted });
+                if (first && globalMuted !== null && !audioFocusIntent && layoutTicket === null) void execute(entry, { action: 'setMuted', value: globalMuted });
                 return;
             }
+        }
+        function invalidateLayoutAudio() {
+            layoutUserEpoch++;
+            automaticRecoveryReason = null;
+            layoutTicket = null;
+            layoutAudioFlow?.cancel();
+        }
+        function layoutAudioEntries() {
+            const pane = doc.getElementById('multi-stream-container');
+            return Array.from(pane?.children || []).map(element => {
+                const entry = entries.get(element);
+                return { key: element.getAttribute('data-channel-key') || '', identity: entry || element, element, entry,
+                    version: entry ? layoutAudioVersion(entry) : 'pending',
+                    ready: Boolean(entry && !entry.busy && (can(entry, 'setMuted') || can(entry, 'setVolume'))),
+                    state: entry?.result?.state };
+            });
+        }
+        function layoutAudioVersion(entry) {
+            return `${entry.generation}:${entry.target?.token || ''}:${entry.source}:${entry.kind === 'native' ? entry.result?.state?.mediaId ?? '' : ''}`;
+        }
+        function layoutAudioCurrent(item) {
+            return item.element.isConnected && item.element.parentElement === doc.getElementById('multi-stream-container') &&
+                (item.entry ? entries.get(item.element) === item.entry &&
+                    item.version === layoutAudioVersion(item.entry) : !entries.has(item.element));
+        }
+        function layoutEvent(event) {
+            const pane = doc.getElementById('multi-stream-container');
+            const ticket = pane?.getAttribute('data-umininn-layout-audio-ticket');
+            return !disposed && layoutAudioFlow && event.target === pane && /^\d{1,16}$/.test(ticket || '') ? { pane, ticket } : null;
+        }
+        function acknowledgeLayout(pane, ticket, name) {
+            if (disposed || pane !== doc.getElementById('multi-stream-container') ||
+                pane.getAttribute('data-umininn-layout-audio-ticket') !== ticket) return;
+            pane.setAttribute('data-umininn-layout-audio-ack', ticket);
+            pane.dispatchEvent(new win.Event(name, { bubbles: true }));
+        }
+        async function onLayoutBefore(event) {
+            const request = layoutEvent(event);
+            if (!request) return;
+            const { pane, ticket } = request;
+            finishLayoutCompletion?.();
+            layoutCompletion = new Promise(resolve => { finishLayoutCompletion = resolve; });
+            layoutTicket = ticket;
+            const epoch = layoutUserEpoch;
+            // Recovery and solo writes must settle before the fresh snapshot.
+            cancelPendingRecovery();
+            recoveryFlow?.cancel(); clearPreparation();
+            try {
+                await afterAudioFocus(() => {}, true);
+                if (!disposed && layoutTicket === ticket && epoch === layoutUserEpoch) {
+                    scan();
+                    await layoutAudioFlow.prepare(ticket);
+                }
+            } finally { acknowledgeLayout(pane, ticket, 'umininn-player-layout-ready'); }
+        }
+        function onLayoutAfter(event) {
+            const request = layoutEvent(event);
+            if (!request) return;
+            const { pane, ticket } = request;
+            const complete = finishLayoutCompletion;
+            // Let the page finish its mutation, including synchronous platform events.
+            win.setTimeout(async () => {
+                try {
+                    scan();
+                    if (layoutTicket === ticket) await layoutAudioFlow.restore(ticket);
+                } finally {
+                    acknowledgeLayout(pane, ticket, 'umininn-player-layout-restored');
+                    complete?.();
+                    if (finishLayoutCompletion === complete) finishLayoutCompletion = null;
+                    if (!disposed && layoutTicket === ticket && automaticRecoveryReason)
+                        scheduleRecoveryAfterLayout(automaticRecoveryReason);
+                }
+            }, 0);
+        }
+        function onLayoutAbort(event) {
+            if (event.target !== doc.getElementById('multi-stream-container')) return;
+            invalidateLayoutAudio(); layoutTicket = null;
+            finishLayoutCompletion?.(); finishLayoutCompletion = null;
+        }
+        function onLayoutPageHide() {
+            invalidateLayoutAudio(); layoutTicket = null;
+            finishLayoutCompletion?.(); finishLayoutCompletion = null;
         }
         function audioFocusSnapshot() {
             const container = doc.getElementById('multi-stream-container');
@@ -957,6 +1058,7 @@
             // A plain bubbling event works across Firefox userscript sandboxes;
             // only a current pane itself may request focus, never its inner DOM.
             if (disposed || !audioFocusFlow || !container || event.target?.parentElement !== container) return;
+            invalidateLayoutAudio();
             cancelPendingRecovery();
             recoveryFlow?.cancel();
             clearPreparation();
@@ -1102,11 +1204,11 @@
             mute.addEventListener('click', () => { setGlobalMuted(true); });
             quickMute.addEventListener('click', () => { setGlobalMuted(true); });
             unmute.addEventListener('click', () => { setGlobalMuted(false); });
-            volume.addEventListener('input', () => { masterLevel.textContent = `${volume.value}%`; });
+            volume.addEventListener('input', () => { invalidateLayoutAudio(); masterLevel.textContent = `${volume.value}%`; });
             volume.addEventListener('change', () => { const value = Number(volume.value) / 100; void afterAudioFocus(() => applyAll({ action: 'setVolume', value })); });
             audioFocusFlow = createAudioFocusFlow({
                 clock: win, snapshot: audioFocusSnapshot, refresh: refreshAudioFocus,
-                settle: () => Promise.all([...urgentAudioTasks]),
+                settle: () => Promise.all([layoutAudioFlow?.settle(), ...urgentAudioTasks]),
                 readiness(item) {
                     const entry = item.entry;
                     if (entry?.kind === 'unsupported') return 'unsupported';
@@ -1155,6 +1257,23 @@
             doc.addEventListener('umininn-player-audio-focus', onAudioFocus, true);
             if (doc.documentElement.hasAttribute('data-umininn-player-userscript')) {
                 doc.documentElement.setAttribute('data-umininn-player-audio-focus-ready', '');
+                if (options.layoutAudio?.createLayoutAudioFlow) {
+                    layoutAudioFlow = options.layoutAudio.createLayoutAudioFlow({
+                        clock: win, getEntries: layoutAudioEntries, isCurrent: layoutAudioCurrent,
+                        read: item => execute(item.entry, { action: 'getState' }),
+                        write: (item, command) => execute(item.entry, command),
+                        onStatus: value => {
+                            if (!disposed) container.setAttribute('data-umininn-layout-audio-status',
+                                value.phase === 'preparing' ? 'capturing' : value.phase === 'restoring' ? 'restoring' :
+                                    value.code === 'COMPLETE' ? 'complete' : 'partial');
+                        }
+                    });
+                    doc.addEventListener('umininn-player-layout-before', onLayoutBefore, true);
+                    doc.addEventListener('umininn-player-layout-after', onLayoutAfter, true);
+                    doc.addEventListener('umininn-player-layout-abort', onLayoutAbort, true);
+                    win.addEventListener('pagehide', onLayoutPageHide);
+                    doc.documentElement.setAttribute('data-umininn-player-layout-audio-ready', '');
+                }
             }
             doc.addEventListener('pointerover', windowControlsPointer, true);
             doc.addEventListener('pointerout', windowControlsPointer, true);
@@ -1176,6 +1295,12 @@
             if (disposed) return;
             disposed = true;
             doc.documentElement.removeAttribute('data-umininn-player-audio-focus-ready');
+            doc.documentElement.removeAttribute('data-umininn-player-layout-audio-ready');
+            onLayoutPageHide();
+            doc.removeEventListener('umininn-player-layout-before', onLayoutBefore, true);
+            doc.removeEventListener('umininn-player-layout-after', onLayoutAfter, true);
+            doc.removeEventListener('umininn-player-layout-abort', onLayoutAbort, true);
+            win.removeEventListener('pagehide', onLayoutPageHide);
             audioFocusIntent = null;
             if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
             audioReconcileTimer = null;

@@ -748,6 +748,7 @@ function updatePlayerLayout({ force = false } = {}) {
     const pane = document.getElementById('multi-stream-container');
     if (!pane) return;
     if (!playerGrid) playerGrid = PlayerLayout.observe(pane, {
+        runUpdate: action => withPlayerAudioLayout(action),
         stabilizeResize: true,
         getResizeStability: () => activePlayers.size > 1 && activePlayers.has(enlargedPlayerFocus?.key),
         getCount: () => activePlayers.size,
@@ -992,6 +993,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     }
     const count = selected.length;
     const muted = getGlobalMuted(count);
+    const preserveAudio = playerLayoutAudioAvailable();
     currentDisplayChannel = count === 1 ? selected[0] : null;
     updateGlobalAudioButton();
     if (!count) {
@@ -1008,24 +1010,25 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
         const nativePlayer = entry && entry.resource;
         const element = entry && (nativePlayer ? nativePlayer.element : entry.element);
         const hasUrlAudioControl = ['twitch', 'kick', 'ok', 'youtube'].includes(channel.platform);
-        const reusable = entry && element.isConnected && !entry.failed && !(nativePlayer && nativePlayer.failed) && (nativePlayer || entry.muted === muted || !hasUrlAudioControl);
+        const reusable = entry && element.isConnected && !entry.failed && !(nativePlayer && nativePlayer.failed) && (preserveAudio || nativePlayer || entry.muted === muted || !hasUrlAudioControl);
         if (!reusable) {
             if (entry) disposePlayer(entry);
-            const rendered = renderChannelElement(channel, muted, count === 1 ? 'full-screen-video' : 'video');
+            const initialMuted = preserveAudio ? true : muted;
+            const rendered = renderChannelElement(channel, initialMuted, count === 1 ? 'full-screen-video' : 'video');
             const resource = playerResources.get(rendered);
             const type = getPlatform(channel.platform)?.type;
-            entry = { channel, element: rendered, resource, muted, failed: !resource && (type === 'hls' || type === 'flv') };
+            entry = { channel, element: rendered, resource, muted: initialMuted, failed: !resource && (type === 'hls' || type === 'flv') };
             activePlayers.set(key, entry);
             container.appendChild(rendered);
             if (globalMutedPreference !== null && !resource && !entry.failed && !['twitch', 'kick', 'ok'].includes(channel.platform)) unsyncedAudio.push(channel.name);
         } else {
             // Preserve manual mute, volume and pause changes within the same mode.
-            if (entry.resource && entry.muted !== muted) {
+            if (!preserveAudio && entry.resource && entry.muted !== muted) {
                 if (entry.resource.video) entry.resource.video.muted = muted;
                 else entry.resource.twitch?.setMuted(muted);
                 if (entry.resource.youtube) entry.resource.youtube.setMuted(muted);
             }
-            entry.muted = muted;
+            if (!preserveAudio) entry.muted = muted;
             entry.channel = channel;
         }
         const visible = entry.resource ? entry.resource.element : entry.element;
@@ -1114,6 +1117,98 @@ function setChannelSelectionVisible(visible) {
     playerNameOverlay?.setVisible(visible);
     channelSelectionIdleTimer.setVisible(visible);
 }
+
+// Layout mutations share one preparation/commit/restore transaction. The
+// userscript reads foreign players before this page changes their layout;
+// callbacks stay synchronous inside the transaction, including nested calls.
+let playerAudioLayoutDepth = 0, playerAudioLayoutSequence = 0;
+let playerAudioLayoutBatch = null;
+const playerAudioLayoutQueue = [];
+function playerLayoutAudioAvailable() {
+    return document.documentElement.hasAttribute('data-umininn-player-userscript') &&
+        document.documentElement.hasAttribute('data-umininn-player-layout-audio-ready');
+}
+function withPlayerAudioLayout(action) {
+    if (playerAudioLayoutDepth || !playerLayoutAudioAvailable()) return action();
+    return new Promise((resolve, reject) => {
+        playerAudioLayoutQueue.push({ action, resolve, reject });
+        startPlayerAudioLayout();
+    });
+}
+function startPlayerAudioLayout() {
+    if (playerAudioLayoutBatch || !playerAudioLayoutQueue.length) return;
+    const pane = document.getElementById('multi-stream-container');
+    const batch = playerAudioLayoutBatch = { pane, ticket: String(++playerAudioLayoutSequence), phase: 'prepare', results: [] };
+    if (!pane || !playerLayoutAudioAvailable()) { commitPlayerAudioLayout(batch, false); return; }
+    pane.setAttribute('data-umininn-layout-audio-ticket', batch.ticket);
+    batch.timer = setTimeout(() => commitPlayerAudioLayout(batch, false), 6500);
+    pane.dispatchEvent(new Event('umininn-player-layout-before', { bubbles: true }));
+}
+function commitPlayerAudioLayout(batch, restore) {
+    if (playerAudioLayoutBatch !== batch || batch.phase !== 'prepare') return;
+    clearTimeout(batch.timer);
+    batch.phase = 'commit';
+    if (!restore) batch.pane?.dispatchEvent(new Event('umininn-player-layout-abort', { bubbles: true }));
+    playerAudioLayoutDepth++;
+    try {
+        for (const request of playerAudioLayoutQueue.splice(0)) {
+            try { batch.results.push({ request, value: request.action() }); }
+            catch (error) { batch.results.push({ request, error }); }
+        }
+    } finally { playerAudioLayoutDepth--; }
+    batch.phase = 'restore';
+    if (!restore) { finishPlayerAudioLayout(batch); return; }
+    batch.timer = setTimeout(() => {
+        batch.pane.dispatchEvent(new Event('umininn-player-layout-abort', { bubbles: true }));
+        finishPlayerAudioLayout(batch);
+    }, 10000);
+    batch.pane.dispatchEvent(new Event('umininn-player-layout-after', { bubbles: true }));
+}
+function finishPlayerAudioLayout(batch) {
+    if (playerAudioLayoutBatch !== batch) return;
+    clearTimeout(batch.timer);
+    if (batch.pane?.getAttribute('data-umininn-layout-audio-ticket') === batch.ticket) {
+        batch.pane.removeAttribute('data-umininn-layout-audio-ticket');
+        batch.pane.removeAttribute('data-umininn-layout-audio-ack');
+    }
+    playerAudioLayoutBatch = null;
+    for (const { request, value, error } of batch.results) {
+        if (error) request.reject(error); else request.resolve(value);
+    }
+    if (playerAudioLayoutQueue.length) queueMicrotask(startPlayerAudioLayout);
+}
+document.addEventListener('umininn-player-layout-ready', event => {
+    const batch = playerAudioLayoutBatch;
+    if (batch && event.target === batch.pane && batch.pane.getAttribute('data-umininn-layout-audio-ack') === batch.ticket)
+        commitPlayerAudioLayout(batch, true);
+});
+document.addEventListener('umininn-player-layout-restored', event => {
+    const batch = playerAudioLayoutBatch;
+    if (batch?.phase === 'restore' && event.target === batch.pane && batch.pane.getAttribute('data-umininn-layout-audio-ack') === batch.ticket)
+        finishPlayerAudioLayout(batch);
+});
+window.addEventListener('pagehide', () => {
+    const batch = playerAudioLayoutBatch;
+    if (batch) {
+        batch.pane?.dispatchEvent(new Event('umininn-player-layout-abort', { bubbles: true }));
+        for (const { request } of batch.results) request.resolve(false);
+        batch.results = [];
+        finishPlayerAudioLayout(batch);
+    }
+    for (const request of playerAudioLayoutQueue.splice(0)) request.resolve(false);
+});
+function guardPlayerAudioLayout(action) {
+    return function (...args) { return withPlayerAudioLayout(() => action.apply(this, args)); };
+}
+updatePlayerLayout = guardPlayerAudioLayout(updatePlayerLayout);
+applyPlayerSize = guardPlayerAudioLayout(applyPlayerSize);
+enlargePlayer = guardPlayerAudioLayout(enlargePlayer);
+shrinkPlayer = guardPlayerAudioLayout(shrinkPlayer);
+closePlayer = guardPlayerAudioLayout(closePlayer);
+swapPlayerPositions = guardPlayerAudioLayout(swapPlayerPositions);
+movePlayerDirection = guardPlayerAudioLayout(movePlayerDirection);
+resetPlayerPositions = guardPlayerAudioLayout(resetPlayerPositions);
+syncActivePlayers = guardPlayerAudioLayout(syncActivePlayers);
 
 /* =============== 頻道儲存 / 載入 =============== */
 function saveChannelsToStorage() {
@@ -1547,6 +1642,8 @@ function applyPlayerBookmark(value) {
     return { applied: selected.length, missing };
 }
 
+applyPlayerBookmark = guardPlayerAudioLayout(applyPlayerBookmark);
+
 (function initLayoutBookmarks() {
     const button = document.getElementById('layout-bookmarks-btn');
     const panel = document.getElementById('layout-bookmarks');
@@ -1815,32 +1912,35 @@ function applyPlayerBookmark(value) {
     }
 
     function exchange(source, target, direction = null) {
-        const sourceName = activePlayers.get(source)?.channel.name;
-        const targetName = activePlayers.get(target)?.channel.name;
-        const geometry = getCurrentPlayerGeometry();
-        const sourceItem = geometry.items.find(item => item.key === source);
-        const targetItem = geometry.items.find(item => item.key === target);
-        if (sourceItem && targetItem && (sourceItem.span > 1 || targetItem.span > 1)) {
-            const edgeDirection = ['up', 'down', 'left', 'right'].find(value =>
-                PlayerGeometry.neighbors(geometry, source, value).some(item => item.key === target));
-            // Keyboard arrows only step across a touching edge. Explicit
-            // pointer destinations may also request a bounded remote placement.
-            if (direction && direction !== edgeDirection) return;
-            if (edgeDirection) {
-                const reverse = { up: 'down', down: 'up', left: 'right', right: 'left' };
-                const labels = { up: '上', down: '下', left: '左', right: '右' };
-                const focusDirection = sourceItem.span > 1 ? edgeDirection : reverse[edgeDirection];
-                if (movePlayerDirection(source, edgeDirection, target))
-                    announcement.textContent = `${sourceItem.span > 1 ? sourceName : targetName} 已向${labels[focusDirection]}平移一格`;
+        return withPlayerAudioLayout(() => {
+            if (!activePlayers.has(source) || !activePlayers.has(target)) return false;
+            const sourceName = activePlayers.get(source)?.channel.name;
+            const targetName = activePlayers.get(target)?.channel.name;
+            const geometry = getCurrentPlayerGeometry();
+            const sourceItem = geometry.items.find(item => item.key === source);
+            const targetItem = geometry.items.find(item => item.key === target);
+            if (sourceItem && targetItem && (sourceItem.span > 1 || targetItem.span > 1)) {
+                const edgeDirection = ['up', 'down', 'left', 'right'].find(value =>
+                    PlayerGeometry.neighbors(geometry, source, value).some(item => item.key === target));
+                // Keyboard arrows only step across a touching edge. Explicit
+                // pointer destinations may also request a bounded remote placement.
+                if (direction && direction !== edgeDirection) return;
+                if (edgeDirection) {
+                    const reverse = { up: 'down', down: 'up', left: 'right', right: 'left' };
+                    const labels = { up: '上', down: '下', left: '左', right: '右' };
+                    const focusDirection = sourceItem.span > 1 ? edgeDirection : reverse[edgeDirection];
+                    if (movePlayerDirection(source, edgeDirection, target))
+                        announcement.textContent = `${sourceItem.span > 1 ? sourceName : targetName} 已向${labels[focusDirection]}平移一格`;
+                    return;
+                }
+                const next = PlayerGeometry.relocate(geometry, source, target);
+                if (next !== geometry && applyPlayerSize(next, { optimize: false }))
+                    announcement.textContent = `${sourceItem.span > 1 ? sourceName : targetName} 已搬到指定區域`;
+                else announcement.textContent = '大格已在可容納的目標位置';
                 return;
             }
-            const next = PlayerGeometry.relocate(geometry, source, target);
-            if (next !== geometry && applyPlayerSize(next, { optimize: false }))
-                announcement.textContent = `${sourceItem.span > 1 ? sourceName : targetName} 已搬到指定區域`;
-            else announcement.textContent = '大格已在可容納的目標位置';
-            return;
-        }
-        if (swapPlayerPositions(source, target)) announcement.textContent = `${sourceName} 與 ${targetName} 已交換位置`;
+            if (swapPlayerPositions(source, target)) announcement.textContent = `${sourceName} 與 ${targetName} 已交換位置`;
+        });
     }
 
     function open(nextMode) {
@@ -1887,17 +1987,21 @@ function applyPlayerBookmark(value) {
     startButton.addEventListener('click', () => open('move'));
     enlargeButton?.addEventListener('click', () => open('enlarge'));
     function resetPositions() {
-        resetPlayerPositions();
-        announcement.textContent = '已還原播放器大小及頻道列表的預設次序';
+        return withPlayerAudioLayout(() => {
+            resetPlayerPositions();
+            announcement.textContent = '已還原播放器大小及頻道列表的預設次序';
+        });
     }
     resetButton?.addEventListener('click', resetPositions);
     editorResetButton.addEventListener('click', resetPositions);
     shrinkButton.addEventListener('click', () => {
-        if (!opened || mode !== 'enlarge') return;
-        const focus = playerGeometry?.items.find(item => item.span > 1);
-        if (!focus) return;
-        const name = activePlayers.get(focus.key).channel.name;
-        if (shrinkPlayer(focus.key)) announcement.textContent = `${name} 已縮小至 ${focus.span - 1}×${focus.span - 1}${focus.span === 2 ? '，已達最小單位，保留目前排列' : ''}`;
+        void withPlayerAudioLayout(() => {
+            if (!opened || mode !== 'enlarge') return;
+            const focus = playerGeometry?.items.find(item => item.span > 1);
+            if (!focus) return;
+            const name = activePlayers.get(focus.key).channel.name;
+            if (shrinkPlayer(focus.key)) announcement.textContent = `${name} 已縮小至 ${focus.span - 1}×${focus.span - 1}${focus.span === 2 ? '，已達最小單位，保留目前排列' : ''}`;
+        });
     });
     doneButton.addEventListener('click', () => close());
     toolbarToggle.addEventListener('click', () => {
@@ -1925,8 +2029,11 @@ function applyPlayerBookmark(value) {
         }
         const key = button.dataset.playerKey;
         if (mode === 'enlarge') {
-            if (enlargePlayer(key)) announcement.textContent = `${activePlayers.get(key).channel.name} 已放大至 ${enlargedPlayerFocus.span}×${enlargedPlayerFocus.span}`;
-            else announcement.textContent = '已達放大上限';
+            void withPlayerAudioLayout(() => {
+                if (!opened || mode !== 'enlarge' || !activePlayers.has(key)) return;
+                if (enlargePlayer(key)) announcement.textContent = `${activePlayers.get(key).channel.name} 已放大至 ${enlargedPlayerFocus.span}×${enlargedPlayerFocus.span}`;
+                else announcement.textContent = '已達放大上限';
+            });
             return;
         }
         if (pickedKey && pickedKey !== key) exchange(pickedKey, key);
@@ -2108,8 +2215,15 @@ function applyPlayerBookmark(value) {
             const next = gesture.moved && gesture.span !== gesture.item.span ? gesture.next : null;
             cancelPointer();
             if (next && activePlayers.size > 1 && activePlayers.has(gesture.key)) {
-                applyPlayerSize(next, { optimize: false });
-                announcement.textContent = `${activePlayers.get(gesture.key).channel.name} 已調整至 ${gesture.span}×${gesture.span}`;
+                void withPlayerAudioLayout(() => {
+                    const current = getCurrentPlayerGeometry(), bounds = pane.getBoundingClientRect();
+                    if (!opened || mode !== 'enlarge' || !activePlayers.has(gesture.key) ||
+                        pane.clientWidth !== gesture.measure.width || pane.clientHeight !== gesture.measure.height ||
+                        bounds.left !== gesture.bounds.left || bounds.top !== gesture.bounds.top ||
+                        current.columns !== gesture.base.columns || JSON.stringify(current.items) !== JSON.stringify(gesture.base.items)) return;
+                    applyPlayerSize(next, { optimize: false });
+                    announcement.textContent = `${activePlayers.get(gesture.key).channel.name} 已調整至 ${gesture.span}×${gesture.span}`;
+                });
             }
             event.preventDefault();
             return;
@@ -2630,7 +2744,7 @@ function applyPlayerBookmark(value) {
         if (suspended || frame !== null) return;
         frame = requestAnimationFrame(() => { frame = null; render(); });
     }
-    layer.addEventListener('click', event => {
+    layer.addEventListener('click', async event => {
         const button = event.target.closest('button[data-player-action]');
         if (!button || blocked() || button.disabled) return;
         event.preventDefault(); event.stopPropagation();
@@ -2638,20 +2752,16 @@ function applyPlayerBookmark(value) {
         if (button.dataset.playerAction === 'close') {
             // Reflow can move another close button under a double-click.
             if (event.detail > 1) return;
-            closePlayer(key);
+            await closePlayer(key);
         } else if (button.dataset.playerAction === 'enlarge') {
-            if (enlargePlayer(key)) {
-                // A plain event keeps the player identity usable in isolated userscript worlds.
-                getPlayerElement(activePlayers.get(key))?.dispatchEvent(
-                    new Event('umininn-player-audio-focus', { bubbles: true }));
-            }
+            await enlargePlayer(key);
         }
         else if (button.dataset.playerAction === 'audio-focus') {
             if (!audioFocusAvailable() || !activePlayers.has(key)) return;
             getPlayerElement(activePlayers.get(key))?.dispatchEvent(
                 new Event('umininn-player-audio-focus', { bubbles: true }));
         }
-        else if (button.dataset.playerAction === 'shrink') shrinkPlayer(key);
+        else if (button.dataset.playerAction === 'shrink') await shrinkPlayer(key);
         else if (button.dataset.playerAction === 'move') playerPositionEditor?.openMove(key, button);
         else if (button.dataset.playerAction.startsWith('swap-')) {
             if (event.detail > 1) return;
@@ -2659,7 +2769,7 @@ function applyPlayerBookmark(value) {
             const neighbor = PlayerGeometry.neighbors(getCurrentPlayerGeometry(), key, direction)
                 .find(item => item.key === button.dataset.targetKey);
             if (!neighbor || !activePlayers.has(neighbor.key)) { render(); return; }
-            movePlayerDirection(key, direction, neighbor.key);
+            await movePlayerDirection(key, direction, neighbor.key);
             render();
             // Follow the moved player without reparenting its media element.
             const next = cells.get(key)?.directionButtons.get(`${direction}:${neighbor.key}`);

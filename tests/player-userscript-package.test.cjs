@@ -84,7 +84,7 @@ test('bundle is deterministic, self-contained and keeps module exports private',
     });
     const sandbox = { window, document: {}, location: { href: 'https://umininn-gh.github.io/tv/' }, URL };
     vm.runInNewContext(rendered, sandbox);
-    assert.deepEqual(Array.from(window.started), ['UmininnConfig', 'UmininnMedia', 'UmininnRecovery', 'UmininnTwitch', 'UmininnAngelThump', 'UmininnSite', 'UmininnUserscript']);
+    assert.deepEqual(Array.from(window.started), ['UmininnConfig', 'UmininnMedia', 'UmininnRecovery', 'UmininnLayoutAudio', 'UmininnTwitch', 'UmininnAngelThump', 'UmininnSite', 'UmininnUserscript']);
     for (const property of window.started) {
         assert.equal(Object.hasOwn(sandbox, property), false, property);
         assert.equal(Object.hasOwn(window, property), false, property);

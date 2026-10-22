@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.17
+// @version      1.0.18
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -29,7 +29,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.17",
+        userscriptVersion: "1.0.18",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -119,6 +119,7 @@
         const listeners = new Set();
         const ids = new WeakMap();
         let nextId = 0;
+        let audioUserRevision = 0;
         let media = null;
         let disposed = false;
         let scanning = false;
@@ -210,7 +211,7 @@
             return { available, mediaId: available ? ids.get(media) : null, mediaType: available ? String(media.tagName).toLowerCase() : null,
                 volume, muted, paused, ended, readyState, playbackStatus, errorCode, recovering: Boolean(pending),
                 recoverSupported: available && typeof media.play === 'function', volumeSupported: available && volume !== null,
-                muteSupported: (available || guarded.length > 0) && muted !== null, muteGuardActive: !disposed && muteGuard, disposed };
+                muteSupported: (available || guarded.length > 0) && muted !== null, muteGuardActive: !disposed && muteGuard, audioUserRevision, disposed };
         }
         function result(ok = true, code = 'OK', message = '') { return { ok, code, message, state: state() }; }
         function currentResult() { return disposed ? result(false, 'DISPOSED', '控制器已關閉') : muteGuard && guardFailure ?
@@ -226,11 +227,13 @@
             guardMedia.clear();
         }
         function onNativeIntent(event) {
-            if (!muteGuard || event.isTrusted !== true) return;
-            clearMuteGuard();
+            if (event.isTrusted !== true) return;
+            audioUserRevision++;
+            if (muteGuard) clearMuteGuard();
             // A native player interaction supersedes the focus preference,
             // including its carry-over setting for a future media replacement.
             requestedMuted = null;
+            requestedVolume = null;
             notify();
         }
         function observeGuard(candidates) {
@@ -774,6 +777,389 @@
     }
     const api = { createRecoveryFlow };
     root.UmininnRecovery = api;
+    if (typeof module === 'object' && module.exports) module.exports = api;
+})(globalThis);
+        return module.exports;
+    })(scope);
+
+    // Source: browser-extension/shared/layout-audio.js
+    scope.UmininnLayoutAudio = (function (globalThis) {
+        const module = { exports: {} };
+/* Preserve each channel's sound across one layout transaction. No source changes. */
+(function (root) {
+    'use strict';
+    const CAPTURE_MS = 2500, RESTORE_MS = 30000, POLL_MS = 1000, LIMIT = 4;
+    const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+    const finiteVolume = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
+    function sound(state) {
+        const value = {};
+        if (state && state.muteSupported !== false && typeof state.muted === 'boolean') value.muted = state.muted;
+        if (state && state.volumeSupported !== false && finiteVolume(state.volume)) value.volume = state.volume;
+        return value;
+    }
+    function createLayoutAudioFlow(options = {}) {
+        for (const name of ['getEntries', 'isCurrent', 'read', 'write']) {
+            if (typeof options[name] !== 'function') throw new TypeError(`${name} is required`);
+        }
+        const clock = options.clock || root;
+        const later = (clock.setTimeout || root.setTimeout).bind(clock);
+        const clear = (clock.clearTimeout || root.clearTimeout).bind(clock);
+        const now = () => typeof clock.now === 'function' ? clock.now() :
+            typeof clock.now === 'number' ? clock.now : Date.now();
+        let active = null, writeTail = Promise.resolve(), reads = 0;
+        const readWaiters = new Set();
+        function entries() {
+            const result = new Map(), duplicates = new Set();
+            let list;
+            try { list = options.getEntries() || []; } catch (_) { return result; }
+            if (typeof list[Symbol.iterator] !== 'function') return result;
+            for (const item of list) {
+                if (!item || typeof item.key !== 'string' || !item.key.trim() || duplicates.has(item.key)) continue;
+                if (result.has(item.key)) { result.delete(item.key); duplicates.add(item.key); }
+                else result.set(item.key, item);
+            }
+            return result;
+        }
+        function same(left, right) {
+            return Boolean(left && right && left.key === right.key && left.identity === right.identity && left.version === right.version);
+        }
+        function current(item) {
+            try { return options.isCurrent(item) === true && same(item, entries().get(item.key)); }
+            catch (_) { return false; }
+        }
+        function alive(ctx) { return active === ctx && !ctx.cancelled; }
+        function live(ctx, stage) { return alive(ctx) && ctx.stage === stage && !stage.stopped; }
+        function summary(ctx, code) {
+            const records = [...ctx.records.values()];
+            const failed = records.filter(item => ['failed', 'stale', 'timeout'].includes(item.status)).length + ctx.captureFailures;
+            const pending = records.filter(item => !item.finished).length;
+            const value = code || (pending ? 'PENDING' : failed || records.some(item => item.status === 'skipped') ? 'PARTIAL' : 'COMPLETE');
+            return { ok: ['PREPARED', 'COMPLETE'].includes(value), code: value, ticket: ctx.ticket,
+                total: records.length, captured: records.length, restored: records.filter(item => item.status === 'restored').length,
+                pending, failed, skipped: ctx.captureSkipped + records.filter(item => ['removed', 'skipped'].includes(item.status)).length,
+                results: records.map(item => ({ key: item.key, status: item.status, reason: item.reason || '' })) };
+        }
+        function emit(ctx, phase, code) {
+            if (!alive(ctx) || typeof options.onStatus !== 'function') return;
+            try { options.onStatus({ ...summary(ctx, code), phase }); } catch (_) {}
+        }
+        function clearPoll(ctx) {
+            if (ctx.poll !== null) clear(ctx.poll);
+            ctx.poll = null;
+        }
+        function closeStage(ctx) {
+            clearPoll(ctx);
+            ctx.stage?.close();
+            ctx.stage = null;
+        }
+        function stop(ctx) {
+            if (!ctx || ctx.cancelled) return;
+            ctx.cancelled = true;
+            closeStage(ctx);
+            ctx.resolveCancel({ kind: 'cancelled' });
+            ctx.phase = 'cancelled';
+        }
+        function createStage(ctx, duration, onExpiry) {
+            closeStage(ctx);
+            let resolve;
+            const stage = { stopped: false, expired: false, end: new Promise(done => { resolve = done; }), close() {
+                if (stage.stopped) return;
+                stage.stopped = true;
+                clear(stage.timer);
+                resolve({ kind: 'stopped' });
+            } };
+            stage.timer = later(() => {
+                if (stage.stopped) return;
+                stage.stopped = true; stage.expired = true;
+                resolve({ kind: 'timeout' });
+                if (alive(ctx) && ctx.stage === stage) onExpiry?.();
+            }, Math.max(0, duration));
+            ctx.stage = stage;
+            return stage;
+        }
+        function boundary(ctx, stage, request) {
+            if (!live(ctx, stage)) return Promise.resolve({ kind: ctx.cancelled ? 'cancelled' : 'stopped' });
+            return Promise.race([Promise.resolve(request), ctx.cancelledPromise, stage.end]);
+        }
+        function notifyReaders() { for (const wake of [...readWaiters]) wake(); }
+        async function read(ctx, stage, item) {
+            while (reads >= LIMIT && live(ctx, stage)) {
+                let wake;
+                const promise = new Promise(done => { wake = () => done({ kind: 'capacity' }); });
+                readWaiters.add(wake);
+                const result = await boundary(ctx, stage, promise);
+                readWaiters.delete(wake);
+                if (result.kind !== 'capacity') return result;
+            }
+            if (!live(ctx, stage)) return { kind: 'stopped' };
+            if (!current(item)) return { kind: 'stale' };
+            reads++;
+            let request;
+            try { request = options.read(item); } catch (_) { request = Promise.reject(new Error('Read failed')); }
+            const completed = Promise.resolve(request).then(value => ({ kind: 'result', value }), () => ({ kind: 'error' }))
+                .then(value => { reads--; notifyReaders(); return value; });
+            const outcome = await boundary(ctx, stage, completed);
+            if (outcome.kind === 'result' && !current(item)) return { kind: 'stale' };
+            return outcome;
+        }
+        function write(ctx, stage, record, command) {
+            // The tail retains an issued operation after logical cancellation.
+            // Its successor checks its lease only after that operation settles.
+            const completed = writeTail.then(async () => {
+                if (!live(ctx, stage)) return { kind: 'stopped' };
+                if (!current(record.lease)) return { kind: 'stale' };
+                let result;
+                try { result = await options.write(record.lease, command); }
+                catch (_) { return { kind: 'error' }; }
+                if (!live(ctx, stage)) return { kind: 'stopped' };
+                if (!current(record.lease)) return { kind: 'stale' };
+                return { kind: 'result', value: result };
+            });
+            writeTail = completed.then(() => {}, () => {});
+            return boundary(ctx, stage, completed);
+        }
+        async function each(items, callback) {
+            let cursor = 0;
+            await Promise.all(Array.from({ length: Math.min(LIMIT, items.length) }, async () => {
+                while (cursor < items.length) await callback(items[cursor++]);
+            }));
+        }
+        function makeRecord(key, desired) {
+            return { key, desired: { ...desired }, lease: null, state: null, finished: false, status: 'captured',
+                reason: '', failed: false, partial: false, muteSatisfied: false, volumeSatisfied: false };
+        }
+        function finish(record, status, reason) {
+            record.finished = true; record.status = status; record.reason = reason || '';
+        }
+        async function prepare(ticket) {
+            const previous = active, before = entries(), carry = new Map();
+            if (previous) for (const record of previous.records.values()) {
+                if (before.has(record.key) && !['restored', 'removed', 'stale'].includes(record.status)) {
+                    carry.set(record.key, makeRecord(record.key, record.desired));
+                }
+            }
+            stop(previous);
+            let resolveCancel;
+            const ctx = { ticket, records: carry, cancelled: false, cancelledPromise: new Promise(done => { resolveCancel = done; }),
+                resolveCancel, stage: null, poll: null, phase: 'preparing', captureFailures: 0, captureSkipped: 0,
+                restoreDeadline: null, initialDone: false, running: false, initialPromise: null };
+            active = ctx;
+            const stage = createStage(ctx, CAPTURE_MS);
+            emit(ctx, 'preparing', 'RUNNING');
+            // Reading before an old write ACK would save an intermediate sound
+            // setting. The same capture deadline also bounds this drain wait.
+            const drained = await boundary(ctx, stage, writeTail.then(() => ({ kind: 'settled' })));
+            if (drained.kind === 'settled' && live(ctx, stage)) {
+                await each([...before.values()], async item => {
+                    if (!live(ctx, stage)) return;
+                    const outcome = await read(ctx, stage, item);
+                    if (!live(ctx, stage)) return;
+                    if (outcome.kind !== 'result') { ctx.captureFailures++; return; }
+                    const desired = sound(outcome.value?.state);
+                    const record = ctx.records.get(item.key);
+                    if (record) {
+                        for (const key of ['muted', 'volume']) if (!own(record.desired, key) && own(desired, key)) record.desired[key] = desired[key];
+                    } else if (Object.keys(desired).length) ctx.records.set(item.key, makeRecord(item.key, desired));
+                    else ctx.captureSkipped++;
+                });
+            }
+            if (!alive(ctx)) return summary(ctx, 'CANCELLED');
+            const expired = stage.expired;
+            closeStage(ctx);
+            ctx.phase = 'prepared';
+            const code = expired || drained.kind !== 'settled' || ctx.captureFailures ? 'PARTIAL' : 'PREPARED';
+            emit(ctx, 'prepared', code);
+            return summary(ctx, code);
+        }
+        function timeout(ctx) {
+            clearPoll(ctx);
+            for (const record of ctx.records.values()) if (!record.finished) finish(record, 'timeout', 'deadline');
+            ctx.phase = 'timeout';
+            emit(ctx, 'timeout', 'TIMEOUT');
+        }
+        function completed(ctx, stage) {
+            if (!live(ctx, stage)) return;
+            if ([...ctx.records.values()].some(record => !record.finished)) { emit(ctx, 'waiting', 'PENDING'); return; }
+            closeStage(ctx);
+            ctx.phase = 'complete';
+            emit(ctx, 'complete');
+        }
+        function leaseRecords(ctx, stage) {
+            const found = entries(), batch = [];
+            for (const record of ctx.records.values()) {
+                if (record.finished) continue;
+                const item = found.get(record.key);
+                if (!item) { finish(record, 'removed', 'removed'); continue; }
+                if (record.lease && !same(record.lease, item)) { finish(record, 'stale', 'lease-changed'); continue; }
+                if (item.ready !== true || !current(item)) continue;
+                // A loading SDK/frame may change its document before readiness.
+                // Bind once, at its first ready version, then never retarget it.
+                if (!record.lease) record.lease = { ...item };
+                if (live(ctx, stage)) batch.push(record);
+            }
+            return batch;
+        }
+        function markOutcome(record, outcome, property, desired) {
+            if (outcome.kind === 'stale') { finish(record, 'stale', 'lease-changed'); return false; }
+            if (outcome.kind !== 'result') {
+                record.failed = true; record.reason = `${property}-unconfirmed`; return false;
+            }
+            const actual = sound(outcome.value.state);
+            record.state = { ...record.state, ...actual };
+            if (own(record.desired, 'muted') && own(actual, 'muted')) {
+                record.muteSatisfied = actual.muted === record.desired.muted;
+                if (record.desired.muted === true && record.muteSatisfied) record.muteWasConfirmed = true;
+            }
+            if (own(record.desired, 'volume') && own(actual, 'volume')) {
+                record.volumeSatisfied = Math.abs(actual.volume - record.desired.volume) < 0.001;
+            }
+            if (outcome.value?.ok !== true || !own(actual, property) ||
+                (property === 'volume' ? Math.abs(actual[property] - desired) >= 0.001 : actual[property] !== desired)) {
+                record.failed = true; record.reason = `${property}-unconfirmed`; return false;
+            }
+            return true;
+        }
+        function muteBarrier(ctx) {
+            const present = entries();
+            let pending = false, failed = false;
+            for (const record of ctx.records.values()) {
+                if (record.desired.muted !== true || record.status === 'removed') continue;
+                const item = present.get(record.key);
+                if (!item) continue;
+                if (!record.muteSatisfied || !record.lease || !same(record.lease, item) || !current(record.lease)) {
+                    if (record.finished || record.failed || record.partial) failed = true;
+                    else pending = true;
+                }
+            }
+            return { pending, failed, ok: !pending && !failed };
+        }
+        async function process(ctx, stage, batch) {
+            await each(batch, async record => {
+                const outcome = await read(ctx, stage, record.lease);
+                if (!live(ctx, stage)) return;
+                if (outcome.kind !== 'result') { finish(record, outcome.kind === 'stale' ? 'stale' : 'failed', 'read-unconfirmed'); return; }
+                record.state = sound(outcome.value?.state);
+                record.status = 'restoring';
+                record.failed = false; record.partial = false;
+                record.muteSatisfied = !own(record.desired, 'muted') || record.state.muted === record.desired.muted;
+                record.muteWasConfirmed = record.desired.muted === true && record.muteSatisfied;
+                record.volumeSatisfied = !own(record.desired, 'volume') || own(record.state, 'volume') &&
+                    Math.abs(record.state.volume - record.desired.volume) < 0.001;
+                if (own(record.desired, 'muted') && !own(record.state, 'muted')) { record.partial = true; record.muteSatisfied = false; }
+                if (own(record.desired, 'volume') && !own(record.state, 'volume')) record.partial = true;
+            });
+            if (!live(ctx, stage)) return;
+            // Mute the complete ready cohort before raising any volume or
+            // issuing an unmute. An unknown/unready peer is never guessed safe.
+            await each(batch, async record => {
+                if (record.finished || record.desired.muted !== true || record.muteSatisfied || !own(record.state, 'muted')) return;
+                const outcome = await write(ctx, stage, record, { action: 'setMuted', value: true });
+                if (live(ctx, stage)) record.muteSatisfied = markOutcome(record, outcome, 'muted', true);
+            });
+            if (!live(ctx, stage)) return;
+            await each(batch, async record => {
+                if (record.finished || !own(record.desired, 'volume') || record.volumeSatisfied || !own(record.state, 'volume')) return;
+                if (record.desired.muted === true && !record.muteSatisfied) {
+                    record.partial = true; record.reason ||= 'mute-unconfirmed'; return;
+                }
+                const outcome = await write(ctx, stage, record, { action: 'setVolume', value: record.desired.volume });
+                if (live(ctx, stage)) record.volumeSatisfied = markOutcome(record, outcome, 'volume', record.desired.volume);
+            });
+            if (!live(ctx, stage)) return;
+            // Some platform volume controls also clear their mute setting.
+            // Repair that once before considering any requested unmute.
+            await each(batch, async record => {
+                if (record.finished || record.desired.muted !== true || record.muteSatisfied || !record.muteWasConfirmed) return;
+                const outcome = await write(ctx, stage, record, { action: 'setMuted', value: true });
+                if (live(ctx, stage)) record.muteSatisfied = markOutcome(record, outcome, 'muted', true);
+            });
+            if (!live(ctx, stage)) return;
+            await each(batch, async record => {
+                if (record.finished || record.desired.muted !== false || record.muteSatisfied || !own(record.state, 'muted')) return;
+                const barrier = muteBarrier(ctx);
+                if (record.failed || !record.volumeSatisfied && own(record.desired, 'volume') || barrier.failed) {
+                    record.partial = true; record.reason ||= 'unmute-withheld'; return;
+                }
+                if (!barrier.ok) { record.status = 'waiting'; return; }
+                const outcome = await write(ctx, stage, record, { action: 'setMuted', value: false });
+                if (live(ctx, stage)) record.muteSatisfied = markOutcome(record, outcome, 'muted', false);
+            });
+            if (!live(ctx, stage)) return;
+            for (const record of batch) {
+                if (record.finished) continue;
+                if (record.desired.muted === false && !record.muteSatisfied && record.status === 'waiting') continue;
+                if (!record.partial && (!record.muteSatisfied || !record.volumeSatisfied)) {
+                    record.failed = true; record.reason ||= 'audio-changed';
+                }
+                finish(record, record.failed ? 'failed' : record.partial ? 'skipped' : 'restored', record.reason);
+            }
+        }
+        function schedule(ctx, stage) {
+            if (!live(ctx, stage) || ctx.poll !== null || ![...ctx.records.values()].some(record => !record.finished)) return;
+            if (now() >= ctx.restoreDeadline) { timeout(ctx); closeStage(ctx); return; }
+            ctx.poll = later(() => { ctx.poll = null; void pump(ctx, stage); }, Math.min(POLL_MS, ctx.restoreDeadline - now()));
+        }
+        async function pump(ctx, stage) {
+            if (!live(ctx, stage) || ctx.running || !ctx.initialDone) return;
+            if (now() >= ctx.restoreDeadline) { timeout(ctx); closeStage(ctx); return; }
+            clearPoll(ctx);
+            ctx.running = true;
+            try { await process(ctx, stage, leaseRecords(ctx, stage)); }
+            finally { ctx.running = false; }
+            if (!live(ctx, stage)) return;
+            completed(ctx, stage);
+            schedule(ctx, stage);
+        }
+        function restore(ticket) {
+            const ctx = active;
+            if (!ctx || ctx.cancelled || ctx.ticket !== ticket || ctx.phase === 'preparing') return Promise.resolve({ ok: false, code: 'CANCELLED', ticket });
+            if (ctx.phase === 'restoring' && !ctx.initialDone) return ctx.initialPromise;
+            closeStage(ctx);
+            if (ctx.restoreDeadline === null) ctx.restoreDeadline = now() + RESTORE_MS;
+            // Reuse after playback recovery checks the original snapshot again;
+            // it does not extend the first round's deadline for loading players.
+            for (const record of ctx.records.values()) if (!['removed', 'stale'].includes(record.status)) {
+                record.finished = false; record.status = 'captured'; record.reason = ''; record.failed = false; record.partial = false;
+                record.muteSatisfied = false; record.volumeSatisfied = false;
+            }
+            ctx.phase = 'restoring'; ctx.initialDone = false; ctx.running = true;
+            const remaining = Math.max(CAPTURE_MS, ctx.restoreDeadline - now());
+            const stage = createStage(ctx, remaining, () => timeout(ctx));
+            emit(ctx, 'restoring', 'RUNNING');
+            ctx.initialPromise = (async () => {
+                const drained = await boundary(ctx, stage, writeTail.then(() => ({ kind: 'settled' })));
+                if (drained.kind === 'settled' && live(ctx, stage)) await process(ctx, stage, leaseRecords(ctx, stage));
+                ctx.running = false; ctx.initialDone = true;
+                if (!alive(ctx)) return summary(ctx, 'CANCELLED');
+                if (stage.expired || ctx.phase === 'timeout') return summary(ctx, 'TIMEOUT');
+                if (live(ctx, stage)) {
+                    if (now() >= ctx.restoreDeadline && [...ctx.records.values()].some(record => !record.finished)) {
+                        timeout(ctx); closeStage(ctx); return summary(ctx, 'TIMEOUT');
+                    }
+                    completed(ctx, stage);
+                    schedule(ctx, stage);
+                }
+                return summary(ctx, ctx.phase === 'timeout' ? 'TIMEOUT' : undefined);
+            })();
+            return ctx.initialPromise;
+        }
+        function cancel() {
+            const ctx = active;
+            if (!ctx) return null;
+            stop(ctx);
+            active = null;
+            return summary(ctx, 'CANCELLED');
+        }
+        function notify() {
+            const ctx = active;
+            // read()/write() may synchronously publish new state and call us.
+            // Those notifications cannot recursively restart their own pass.
+            if (ctx?.phase === 'restoring' && ctx.initialDone && !ctx.running && ctx.stage && !ctx.stage.stopped) void pump(ctx, ctx.stage);
+        }
+        return { prepare, restore, notify, cancel, settle: () => writeTail };
+    }
+    const api = { createLayoutAudioFlow };
+    root.UmininnLayoutAudio = api;
     if (typeof module === 'object' && module.exports) module.exports = api;
 })(globalThis);
         return module.exports;
@@ -1417,6 +1803,9 @@
         let host, shadow, panelHost, panelShadow, toggle, quickDetect, panel, list, summary, observer, lateObserver, masterVolume, masterReadout, detectButton, recoveryStatus, recoveryFlow, audioFocusStatus, audioFocusFlow;
         let sequence = 0, scanTimer = null, disposed = false, globalMuted = null;
         let audioFocusIntent = null, audioReconcileTimer = null, audioControlGeneration = 0;
+        let layoutAudioFlow = null, layoutTicket = null, layoutUserEpoch = 0;
+        let layoutCompletion = Promise.resolve(), finishLayoutCompletion = null;
+        let automaticRecoveryReason = null;
         let preparation = null, preparedCohort = new Set(), watchStartTimer = null, unreadyWrappers = 0;
         let recoveryStartGeneration = 0;
         let preparationWaiting = '', lastRecoveryStatus = null;
@@ -1653,6 +2042,11 @@
         }
         function applyResult(entry, result) {
             if (disposed || !entries.has(entry.element) || !validResult(result)) return;
+            const revision = result.state?.audioUserRevision;
+            if (Number.isInteger(revision)) {
+                if (entry.audioUserRevision !== undefined && revision > entry.audioUserRevision) invalidateLayoutAudio();
+                entry.audioUserRevision = revision;
+            }
             entry.result = result;
             entry.notice = '';
             renderEntry(entry);
@@ -1664,6 +2058,7 @@
                 guardedEntries.get(entry) === entry.generation && result.state?.muteGuardActive === false) {
                 void afterAudioFocus(() => {});
             } else queueAudioFocusReconcile();
+            layoutAudioFlow?.notify();
         }
         async function execute(entry, command, settings = {}) {
             const readable = entry.kind === 'native' || entry.kind === 'frame' && Boolean(entry.target);
@@ -1720,14 +2115,15 @@
             summary.textContent = failed.length ? `${failed.length} 台未能套用：${failed.map(item => item.entry.name.textContent).join('、')}` : `${all.length} 台已套用。`;
         }
 
-        function afterAudioFocus(action) {
+        function afterAudioFocus(action, preserveLayout = false) {
+            if (!preserveLayout) invalidateLayoutAudio();
             const ticket = ++audioControlGeneration;
             audioFocusIntent = null;
             if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
             audioReconcileTimer = null;
             showAudioFocusStatus({ phase: 'cancelled' });
             const settled = audioFocusFlow?.cancel() || Promise.resolve();
-            return Promise.all([settled, ...urgentAudioTasks]).then(async () => {
+            return Promise.all([settled, layoutAudioFlow?.settle(), ...urgentAudioTasks]).then(async () => {
                 if (disposed || ticket !== audioControlGeneration) return;
                 const guarded = [...guardedEntries].filter(([entry, generation]) => isCurrent(entry, generation));
                 let cursor = 0;
@@ -1877,12 +2273,19 @@
             toggle.title = text;
             quickDetect.title = text;
         }
-        function runRecovery(reason, generation = ++recoveryStartGeneration) {
+        async function runRecovery(reason, generation = ++recoveryStartGeneration) {
             if (disposed || !recoveryFlow || generation !== recoveryStartGeneration) return Promise.resolve();
-            return afterAudioFocus(() => {
+            const automatic = reason !== 'manual';
+            if (automatic) await layoutCompletion;
+            if (disposed || generation !== recoveryStartGeneration) return;
+            const ticket = layoutTicket, epoch = layoutUserEpoch;
+            await afterAudioFocus(() => {
                 if (disposed || generation !== recoveryStartGeneration) return;
                 return recoveryFlow.run({ reason });
-            });
+            }, automatic);
+            if (automatic && !disposed && ticket !== null && ticket === layoutTicket && epoch === layoutUserEpoch)
+                await layoutAudioFlow?.restore(ticket);
+            if (!disposed && generation === recoveryStartGeneration) automaticRecoveryReason = null;
         }
         function cancelPendingRecovery() {
             recoveryStartGeneration++;
@@ -1891,10 +2294,11 @@
         }
         function scheduleRecoveryAfterLayout(reason) {
             if (disposed) return;
+            automaticRecoveryReason = reason;
             cancelPendingRecovery();
             const generation = recoveryStartGeneration;
             showAudioFocusStatus({ phase: 'cancelled' });
-            void afterAudioFocus(() => {});
+            void afterAudioFocus(() => {}, true);
             recoveryFlow?.cancel();
             clearPreparation();
             // A new task observes the completed selection/layout, including
@@ -1926,7 +2330,7 @@
             row.append(entry.name, controls, entry.status);
             list.appendChild(row);
             observeEntryHover(entry);
-            entry.volume.addEventListener('input', () => { entry.level.textContent = `${entry.volume.value}%`; });
+            entry.volume.addEventListener('input', () => { invalidateLayoutAudio(); entry.level.textContent = `${entry.volume.value}%`; });
             entry.volume.addEventListener('change', () => { const value = Number(entry.volume.value) / 100; void afterAudioFocus(() => execute(entry, { action: 'setVolume', value })); });
             entry.mute.addEventListener('click', () => { const value = !entry.result?.state?.muted; void afterAudioFocus(() => execute(entry, { action: 'setMuted', value })); });
             entry.recover.addEventListener('click', () => { void afterAudioFocus(() => execute(entry, { action: 'recover' })); });
@@ -1989,7 +2393,7 @@
                         entry.controller = factory.createMediaController({ document: doc, scope: element });
                         entry.unsubscribe = entry.controller.subscribe(result => applyResult(entry, result));
                         applyResult(entry, entry.controller.getState());
-                        if (globalMuted !== null && !audioFocusIntent) void execute(entry, { action: 'setMuted', value: globalMuted });
+                        if (globalMuted !== null && !audioFocusIntent && layoutTicket === null) void execute(entry, { action: 'setMuted', value: globalMuted });
                     } else if (entry.kind === 'frame') {
                         entry.onLoad = () => scheduleProbe(entry);
                         frame.addEventListener('load', entry.onLoad);
@@ -2010,6 +2414,7 @@
             updateHighlights();
             scheduleHighlights();
             queueAudioFocusReconcile();
+            layoutAudioFlow?.notify();
         }
         function queueScan() { if (scanTimer === null) scanTimer = win.setTimeout(scan, 80); }
         function onFrameMessage(event) {
@@ -2030,9 +2435,91 @@
                 entry.target = { frameId: data.frameId, token: data.token, documentId: typeof data.documentId === 'string' ? data.documentId : null };
                 clearProbeTimers(entry);
                 if (first || !entry.busy) applyResult(entry, data.result);
-                if (first && globalMuted !== null && !audioFocusIntent) void execute(entry, { action: 'setMuted', value: globalMuted });
+                if (first && globalMuted !== null && !audioFocusIntent && layoutTicket === null) void execute(entry, { action: 'setMuted', value: globalMuted });
                 return;
             }
+        }
+        function invalidateLayoutAudio() {
+            layoutUserEpoch++;
+            automaticRecoveryReason = null;
+            layoutTicket = null;
+            layoutAudioFlow?.cancel();
+        }
+        function layoutAudioEntries() {
+            const pane = doc.getElementById('multi-stream-container');
+            return Array.from(pane?.children || []).map(element => {
+                const entry = entries.get(element);
+                return { key: element.getAttribute('data-channel-key') || '', identity: entry || element, element, entry,
+                    version: entry ? layoutAudioVersion(entry) : 'pending',
+                    ready: Boolean(entry && !entry.busy && (can(entry, 'setMuted') || can(entry, 'setVolume'))),
+                    state: entry?.result?.state };
+            });
+        }
+        function layoutAudioVersion(entry) {
+            return `${entry.generation}:${entry.target?.token || ''}:${entry.source}:${entry.kind === 'native' ? entry.result?.state?.mediaId ?? '' : ''}`;
+        }
+        function layoutAudioCurrent(item) {
+            return item.element.isConnected && item.element.parentElement === doc.getElementById('multi-stream-container') &&
+                (item.entry ? entries.get(item.element) === item.entry &&
+                    item.version === layoutAudioVersion(item.entry) : !entries.has(item.element));
+        }
+        function layoutEvent(event) {
+            const pane = doc.getElementById('multi-stream-container');
+            const ticket = pane?.getAttribute('data-umininn-layout-audio-ticket');
+            return !disposed && layoutAudioFlow && event.target === pane && /^\d{1,16}$/.test(ticket || '') ? { pane, ticket } : null;
+        }
+        function acknowledgeLayout(pane, ticket, name) {
+            if (disposed || pane !== doc.getElementById('multi-stream-container') ||
+                pane.getAttribute('data-umininn-layout-audio-ticket') !== ticket) return;
+            pane.setAttribute('data-umininn-layout-audio-ack', ticket);
+            pane.dispatchEvent(new win.Event(name, { bubbles: true }));
+        }
+        async function onLayoutBefore(event) {
+            const request = layoutEvent(event);
+            if (!request) return;
+            const { pane, ticket } = request;
+            finishLayoutCompletion?.();
+            layoutCompletion = new Promise(resolve => { finishLayoutCompletion = resolve; });
+            layoutTicket = ticket;
+            const epoch = layoutUserEpoch;
+            // Recovery and solo writes must settle before the fresh snapshot.
+            cancelPendingRecovery();
+            recoveryFlow?.cancel(); clearPreparation();
+            try {
+                await afterAudioFocus(() => {}, true);
+                if (!disposed && layoutTicket === ticket && epoch === layoutUserEpoch) {
+                    scan();
+                    await layoutAudioFlow.prepare(ticket);
+                }
+            } finally { acknowledgeLayout(pane, ticket, 'umininn-player-layout-ready'); }
+        }
+        function onLayoutAfter(event) {
+            const request = layoutEvent(event);
+            if (!request) return;
+            const { pane, ticket } = request;
+            const complete = finishLayoutCompletion;
+            // Let the page finish its mutation, including synchronous platform events.
+            win.setTimeout(async () => {
+                try {
+                    scan();
+                    if (layoutTicket === ticket) await layoutAudioFlow.restore(ticket);
+                } finally {
+                    acknowledgeLayout(pane, ticket, 'umininn-player-layout-restored');
+                    complete?.();
+                    if (finishLayoutCompletion === complete) finishLayoutCompletion = null;
+                    if (!disposed && layoutTicket === ticket && automaticRecoveryReason)
+                        scheduleRecoveryAfterLayout(automaticRecoveryReason);
+                }
+            }, 0);
+        }
+        function onLayoutAbort(event) {
+            if (event.target !== doc.getElementById('multi-stream-container')) return;
+            invalidateLayoutAudio(); layoutTicket = null;
+            finishLayoutCompletion?.(); finishLayoutCompletion = null;
+        }
+        function onLayoutPageHide() {
+            invalidateLayoutAudio(); layoutTicket = null;
+            finishLayoutCompletion?.(); finishLayoutCompletion = null;
         }
         function audioFocusSnapshot() {
             const container = doc.getElementById('multi-stream-container');
@@ -2078,6 +2565,7 @@
             // A plain bubbling event works across Firefox userscript sandboxes;
             // only a current pane itself may request focus, never its inner DOM.
             if (disposed || !audioFocusFlow || !container || event.target?.parentElement !== container) return;
+            invalidateLayoutAudio();
             cancelPendingRecovery();
             recoveryFlow?.cancel();
             clearPreparation();
@@ -2223,11 +2711,11 @@
             mute.addEventListener('click', () => { setGlobalMuted(true); });
             quickMute.addEventListener('click', () => { setGlobalMuted(true); });
             unmute.addEventListener('click', () => { setGlobalMuted(false); });
-            volume.addEventListener('input', () => { masterLevel.textContent = `${volume.value}%`; });
+            volume.addEventListener('input', () => { invalidateLayoutAudio(); masterLevel.textContent = `${volume.value}%`; });
             volume.addEventListener('change', () => { const value = Number(volume.value) / 100; void afterAudioFocus(() => applyAll({ action: 'setVolume', value })); });
             audioFocusFlow = createAudioFocusFlow({
                 clock: win, snapshot: audioFocusSnapshot, refresh: refreshAudioFocus,
-                settle: () => Promise.all([...urgentAudioTasks]),
+                settle: () => Promise.all([layoutAudioFlow?.settle(), ...urgentAudioTasks]),
                 readiness(item) {
                     const entry = item.entry;
                     if (entry?.kind === 'unsupported') return 'unsupported';
@@ -2276,6 +2764,23 @@
             doc.addEventListener('umininn-player-audio-focus', onAudioFocus, true);
             if (doc.documentElement.hasAttribute('data-umininn-player-userscript')) {
                 doc.documentElement.setAttribute('data-umininn-player-audio-focus-ready', '');
+                if (options.layoutAudio?.createLayoutAudioFlow) {
+                    layoutAudioFlow = options.layoutAudio.createLayoutAudioFlow({
+                        clock: win, getEntries: layoutAudioEntries, isCurrent: layoutAudioCurrent,
+                        read: item => execute(item.entry, { action: 'getState' }),
+                        write: (item, command) => execute(item.entry, command),
+                        onStatus: value => {
+                            if (!disposed) container.setAttribute('data-umininn-layout-audio-status',
+                                value.phase === 'preparing' ? 'capturing' : value.phase === 'restoring' ? 'restoring' :
+                                    value.code === 'COMPLETE' ? 'complete' : 'partial');
+                        }
+                    });
+                    doc.addEventListener('umininn-player-layout-before', onLayoutBefore, true);
+                    doc.addEventListener('umininn-player-layout-after', onLayoutAfter, true);
+                    doc.addEventListener('umininn-player-layout-abort', onLayoutAbort, true);
+                    win.addEventListener('pagehide', onLayoutPageHide);
+                    doc.documentElement.setAttribute('data-umininn-player-layout-audio-ready', '');
+                }
             }
             doc.addEventListener('pointerover', windowControlsPointer, true);
             doc.addEventListener('pointerout', windowControlsPointer, true);
@@ -2297,6 +2802,12 @@
             if (disposed) return;
             disposed = true;
             doc.documentElement.removeAttribute('data-umininn-player-audio-focus-ready');
+            doc.documentElement.removeAttribute('data-umininn-player-layout-audio-ready');
+            onLayoutPageHide();
+            doc.removeEventListener('umininn-player-layout-before', onLayoutBefore, true);
+            doc.removeEventListener('umininn-player-layout-after', onLayoutAfter, true);
+            doc.removeEventListener('umininn-player-layout-abort', onLayoutAbort, true);
+            win.removeEventListener('pagehide', onLayoutPageHide);
             audioFocusIntent = null;
             if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
             audioReconcileTimer = null;
@@ -2680,7 +3191,7 @@
     if (site) {
         client = scope.UmininnUserscript.createSiteTransport({ window: win, config });
         controller = scope.UmininnSite.createSiteController({ window: win, document: doc,
-            config, runtime: client, media: scope.UmininnMedia, recovery: scope.UmininnRecovery });
+            config, runtime: client, media: scope.UmininnMedia, recovery: scope.UmininnRecovery, layoutAudio: scope.UmininnLayoutAudio });
         controller.start();
     } else {
         client = scope.UmininnUserscript.createFrameClient({ window: win, config,

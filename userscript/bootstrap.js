@@ -43,7 +43,7 @@
     if (site) {
         client = scope.UmininnUserscript.createSiteTransport({ window: win, config });
         controller = scope.UmininnSite.createSiteController({ window: win, document: doc,
-            config, runtime: client, media: scope.UmininnMedia, recovery: scope.UmininnRecovery });
+            config, runtime: client, media: scope.UmininnMedia, recovery: scope.UmininnRecovery, layoutAudio: scope.UmininnLayoutAudio });
         controller.start();
     } else {
         client = scope.UmininnUserscript.createFrameClient({ window: win, config,

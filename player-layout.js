@@ -41,7 +41,7 @@
     }
 
     function observe(pane, { getCount, getTrackCount = getCount, calculate = choose,
-        stabilizeResize = false, getResizeStability = () => false, onChange = () => {} }) {
+        stabilizeResize = false, getResizeStability = () => false, onChange = () => {}, runUpdate: optionsRunUpdate }) {
         const view = pane.ownerDocument?.defaultView;
         let current = null;
         let timer = null;
@@ -58,7 +58,10 @@
             if (timer !== null) view.clearTimeout(timer);
             timer = null;
         }
-        function update({ force = false } = {}) {
+        function update(options = {}) {
+            return typeof optionsRunUpdate === 'function' ? optionsRunUpdate(() => applyUpdate(options)) : applyUpdate(options);
+        }
+        function applyUpdate({ force = false } = {}) {
             if (disposed) return;
             if (suspended) { pendingForce ||= force; return; }
             clearPending();

@@ -17,6 +17,7 @@
         const listeners = new Set();
         const ids = new WeakMap();
         let nextId = 0;
+        let audioUserRevision = 0;
         let media = null;
         let disposed = false;
         let scanning = false;
@@ -108,7 +109,7 @@
             return { available, mediaId: available ? ids.get(media) : null, mediaType: available ? String(media.tagName).toLowerCase() : null,
                 volume, muted, paused, ended, readyState, playbackStatus, errorCode, recovering: Boolean(pending),
                 recoverSupported: available && typeof media.play === 'function', volumeSupported: available && volume !== null,
-                muteSupported: (available || guarded.length > 0) && muted !== null, muteGuardActive: !disposed && muteGuard, disposed };
+                muteSupported: (available || guarded.length > 0) && muted !== null, muteGuardActive: !disposed && muteGuard, audioUserRevision, disposed };
         }
         function result(ok = true, code = 'OK', message = '') { return { ok, code, message, state: state() }; }
         function currentResult() { return disposed ? result(false, 'DISPOSED', '控制器已關閉') : muteGuard && guardFailure ?
@@ -124,11 +125,13 @@
             guardMedia.clear();
         }
         function onNativeIntent(event) {
-            if (!muteGuard || event.isTrusted !== true) return;
-            clearMuteGuard();
+            if (event.isTrusted !== true) return;
+            audioUserRevision++;
+            if (muteGuard) clearMuteGuard();
             // A native player interaction supersedes the focus preference,
             // including its carry-over setting for a future media replacement.
             requestedMuted = null;
+            requestedVolume = null;
             notify();
         }
         function observeGuard(candidates) {

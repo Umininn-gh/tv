@@ -214,6 +214,33 @@ test('trusted native controls revoke focus guard and carry-over while synthetic 
     }
 });
 
+test('trusted native volume intent clears old script volume for future media replacements, with or without a focus guard', async () => {
+    for (const type of ['pointerdown', 'keydown']) for (const guarded of [false, true]) {
+        const f = fixture(), first = f.add(), controller = f.mount();
+        await controller.execute({ action: 'setVolume', value: 0.33 });
+        await controller.execute({ action: 'setMuted', value: true, ...(guarded ? { guard: true } : {}) });
+        const revision = controller.getState().state.audioUserRevision;
+
+        f.doc.emit(type, { isTrusted: false }); first.volume = 0.17;
+        first.remove(); const second = f.add(); f.mutate(); f.tick(80);
+        assert.equal(second.volume, 0.33, `${type}/${guarded}: synthetic activity preserves the explicit script setting`);
+        assert.equal(controller.getState().state.audioUserRevision, revision);
+
+        f.doc.emit(type, { isTrusted: true }); second.volume = 0.61; second.muted = false;
+        assert.equal(controller.getState().state.volume, 0.61);
+        assert.equal(controller.getState().state.audioUserRevision, revision + 1);
+        assert.equal(controller.getState().state.muteGuardActive, false);
+        second.remove(); const third = f.add(); third.volume = 0.74;
+        f.mutate(); f.tick(80);
+        assert.equal(third.volume, 0.74, `${type}/${guarded}: a later platform video cannot inherit the superseded 0.33 script volume`);
+        assert.equal(third.muted, false);
+        assert.equal(third.playCalls, 0); assert.equal(third.pauseCalls, 0); assert.equal(third.loadCalls, 0);
+        assert.equal(first.count(), 0); assert.equal(second.count(), 0);
+        assert.equal(f.clock.timers.size, 0);
+        controller.dispose();
+    }
+});
+
 test('focus guard reports every refused or hidden audible setter without false mute confirmation', async () => {
     const f = fixture(), video = f.add(), hidden = f.add('audio'); hidden.hidden = true;
     Object.defineProperty(hidden, 'muted', { get: () => false, set() { throw new Error('platform refused'); } });

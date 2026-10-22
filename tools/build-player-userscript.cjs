@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const RELEASE_VERSION = '1.0.17';
+const RELEASE_VERSION = '1.0.18';
 const FILENAME = 'umininn-tv-player.user.js';
 const META_FILENAME = 'umininn-tv-player.meta.js';
 const DISTRIBUTION_URL = 'https://umininn-gh.github.io/tv/userscript/';
@@ -19,6 +19,7 @@ const MODULES = Object.freeze([
     ['browser-extension/shared/config.js', 'UmininnConfig'],
     ['browser-extension/shared/media-controller.js', 'UmininnMedia'],
     ['browser-extension/shared/player-recovery.js', 'UmininnRecovery'],
+    ['browser-extension/shared/layout-audio.js', 'UmininnLayoutAudio'],
     ['browser-extension/shared/twitch-controller.js', 'UmininnTwitch'],
     ['userscript/angelthump-logo.js', 'UmininnAngelThump'],
     ['browser-extension/site-ui.js', 'UmininnSite'],
