@@ -940,11 +940,11 @@
                 'volume-unsupported': '未支援音量控制', 'volume-unconfirmed': '未能確認音量已設為 100%',
                 unconfirmed: '未確認靜音', unavailable: '控制未能連接', timeout: '控制逾時' };
             let text = '';
-            if (value.phase === 'preparing') text = '正在將所有播放器靜音，再只開啟放大格的聲音…';
+            if (value.phase === 'preparing') text = '正在將所有播放器靜音，再只開啟目標格的聲音…';
             else if (value.phase === 'focused') text = value.muted === true ? `其他播放器已靜音；「${value.name}」維持目前的靜音設定。` :
                 `已靜音其他播放器，只開啟「${value.name}」的聲音（音量 ${typeof value.volume === 'number' ? Math.round(value.volume * 100) : 100}%）。`;
-            else if (value.phase === 'removed') text = '放大格已移除或更換，已取消開聲。';
-            else if (value.phase === 'partial') text = `未開啟放大格的聲音；${value.failures.map(item => `${item.name}：${reasons[item.code] || item.code}`).join('；')}。請確認後重新按放大。`;
+            else if (value.phase === 'removed') text = '目標格已移除或更換，已取消開聲。';
+            else if (value.phase === 'partial') text = `未開啟目標格的聲音；${value.failures.map(item => `${item.name}：${reasons[item.code] || item.code}`).join('；')}。請確認後重試。`;
             audioFocusStatus.textContent = text;
             audioFocusStatus.hidden = !text;
             if (toggle) {
@@ -1153,6 +1153,9 @@
             doc.addEventListener('click', onWatchStart, true);
             doc.addEventListener('umininn-player-bookmark-restored', onBookmarkRestored, true);
             doc.addEventListener('umininn-player-audio-focus', onAudioFocus, true);
+            if (doc.documentElement.hasAttribute('data-umininn-player-userscript')) {
+                doc.documentElement.setAttribute('data-umininn-player-audio-focus-ready', '');
+            }
             doc.addEventListener('pointerover', windowControlsPointer, true);
             doc.addEventListener('pointerout', windowControlsPointer, true);
             doc.addEventListener('pointermove', windowControlsPointer, true);
@@ -1172,6 +1175,7 @@
         function dispose() {
             if (disposed) return;
             disposed = true;
+            doc.documentElement.removeAttribute('data-umininn-player-audio-focus-ready');
             audioFocusIntent = null;
             if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
             audioReconcileTimer = null;

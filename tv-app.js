@@ -2446,6 +2446,10 @@ function applyPlayerBookmark(value) {
     function blocked() {
         return suspended || Boolean(document.fullscreenElement || document.webkitFullscreenElement) || Boolean(editor && !editor.hidden);
     }
+    function audioFocusAvailable() {
+        return document.documentElement.hasAttribute('data-umininn-player-userscript') &&
+            document.documentElement.hasAttribute('data-umininn-player-audio-focus-ready');
+    }
     function updateHover() {
         for (const cell of cells.values()) {
             cell.node.dataset.hovered = String(!blocked() && (cell.element.matches(':hover') || cell.node.matches(':hover')));
@@ -2527,6 +2531,33 @@ function applyPlayerBookmark(value) {
             cell.buttons.move.disabled = activePlayers.size < 2 || !activePlayers.has(key);
             cell.buttons.move.title = cell.buttons.move.disabled ? '至少觀看兩台才可搬位' : `進入搬位模式：${name}`;
             cell.buttons.move.setAttribute('aria-label', `進入搬位模式：${name}`);
+            if (audioFocusAvailable() && activePlayers.has(key)) {
+                if (!cell.buttons.audio) {
+                    const audio = document.createElement('button');
+                    audio.type = 'button';
+                    audio.className = 'player-window-audio';
+                    audio.dataset.playerAction = 'audio-focus';
+                    audio.textContent = '🔊';
+                    cell.buttons.move.after(audio);
+                    cell.buttons.audio = audio;
+                }
+                const label = `只開此台聲音（100%）：${name}`;
+                cell.buttons.audio.title = label;
+                cell.buttons.audio.setAttribute('aria-label', label);
+            } else if (cell.buttons.audio) {
+                const focused = document.activeElement === cell.buttons.audio;
+                cell.buttons.audio.remove();
+                delete cell.buttons.audio;
+                if (focused) cell.buttons.move.focus({ preventScroll: true });
+            }
+            // Keep the two left shortcuts and the right toolbar distinct even
+            // when a small window leaves very little room in a tile.
+            const toolbarCount = span > 1 ? 3 : 2;
+            const cornerSize = cell.buttons.audio ? Math.max(1, Math.min(18,
+                Math.floor((rect.width - 12) / (toolbarCount + 2)), Math.floor((rect.height - 10) / 2))) : 18;
+            cell.node.style.setProperty('--player-corner-size', `${cornerSize}px`);
+            cell.node.style.setProperty('--player-corner-font', `${Math.min(14, cornerSize)}px`);
+            cell.node.style.setProperty('--player-corner-padding', cornerSize < 18 ? '1px' : '3px');
             const source = geometryItems.get(key);
             const targets = new Set();
             for (const [direction, label] of Object.entries(directions)) {
@@ -2568,13 +2599,17 @@ function applyPlayerBookmark(value) {
                         // Keep the arrow aligned with its target, moving inward
                         // only when its hit area would overlap a corner control.
                         if (direction === 'up') {
-                            const overlapsCorner = center < 28 || center > rect.width - ((span > 1 ? 3 : 2) * 18 + 10);
+                            const overlapsCorner = center < (cell.buttons.audio ? 2 * cornerSize + 13 : 28) || center > rect.width - (toolbarCount * cornerSize + 10);
                             button.style.top = `${inset(rect.height, overlapsCorner)}px`;
                         } else button.style.bottom = `${inset(rect.height, center < 28 || center > rect.width - 28)}px`;
                     } else {
-                        const center = (start + end) / 2 - rect.top;
+                        let center = (start + end) / 2 - rect.top;
+                        const inward = center < 28 || center > rect.height - 28;
+                        if (cell.buttons.audio && center - size / 2 < cornerSize + 4) {
+                            center = Math.min(rect.height - size / 2 - 3, cornerSize + 4 + size / 2);
+                        }
                         button.style.top = `${center}px`;
-                        button.style[direction] = `${inset(rect.width, center < 28 || center > rect.height - 28)}px`;
+                        button.style[direction] = `${inset(rect.width, inward)}px`;
                     }
                 }
             }
@@ -2611,6 +2646,11 @@ function applyPlayerBookmark(value) {
                     new Event('umininn-player-audio-focus', { bubbles: true }));
             }
         }
+        else if (button.dataset.playerAction === 'audio-focus') {
+            if (!audioFocusAvailable() || !activePlayers.has(key)) return;
+            getPlayerElement(activePlayers.get(key))?.dispatchEvent(
+                new Event('umininn-player-audio-focus', { bubbles: true }));
+        }
         else if (button.dataset.playerAction === 'shrink') shrinkPlayer(key);
         else if (button.dataset.playerAction === 'move') playerPositionEditor?.openMove(key, button);
         else if (button.dataset.playerAction.startsWith('swap-')) {
@@ -2631,6 +2671,8 @@ function applyPlayerBookmark(value) {
     });
     function observe() {
         mutations.observe(pane, { childList: true, subtree: true });
+        modeObserver.observe(document.documentElement, { attributes: true,
+            attributeFilter: ['data-umininn-player-userscript', 'data-umininn-player-audio-focus-ready'] });
         if (editor) modeObserver.observe(editor, { attributes: true, attributeFilter: ['hidden'] });
         window.addEventListener('resize', schedule);
         wrapper.addEventListener('scroll', schedule, { passive: true });
