@@ -425,7 +425,7 @@
             frameFocusTimer = view.setTimeout(() => {
                 frameFocusTimer = null;
                 const frame = doc.activeElement;
-                if (!doc.hidden && doc.hasFocus() && frame?.tagName === 'IFRAME' &&
+                if (!doc.hidden && doc.hasFocus() && frame?.matches?.('iframe,video,audio') &&
                     doc.getElementById('multi-stream-container')?.contains(frame)) close(false);
                 else watchPlayerFrameFocus();
             }, delay);

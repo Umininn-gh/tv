@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.20
+// @version      1.0.21
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -29,7 +29,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.20",
+        userscriptVersion: "1.0.21",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -2687,12 +2687,12 @@
             function onPlayerFrameFocus(delay = 200) {
                 clearFrameFocusTimer();
                 if (disposed || panel.hidden) return;
-                // A foreign iframe receives its own pointer events. Its focus
-                // transition is visible here without reading or covering it.
+                // Foreign frames and browser-native media controls can consume
+                // pointer events. Their focused element is still visible here.
                 frameFocusTimer = win.setTimeout(() => {
                     frameFocusTimer = null;
                     const frame = doc.activeElement;
-                    if (!disposed && !panel.hidden && !doc.hidden && doc.hasFocus() && frame?.tagName === 'IFRAME' &&
+                    if (!disposed && !panel.hidden && !doc.hidden && doc.hasFocus() && frame?.matches?.('iframe,video,audio') &&
                         doc.getElementById('multi-stream-container')?.contains(frame)) setOpen(false);
                     else onPlayerFrameFocus();
                 }, delay);

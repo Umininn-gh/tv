@@ -2935,16 +2935,17 @@ async function controlsMenuOpen(f,open){
     assert.equal(await f.page.evaluate(()=>document.documentElement.hasAttribute('data-umininn-player-controls-open')),open);
 }
 
-async function assertCrossOriginPlayerDismissal(f,{trigger,isOpen,suppressPointerFocus=false,openFromCode=false,nativeKeyboardReturn=false}){
+async function assertCrossOriginPlayerDismissal(f,{trigger,isOpen,suppressPointerFocus=false,stopPointerPropagation=false,openFromCode=false,nativeKeyboardReturn=false}){
     await f.page.evaluate(()=>{
         window.fixtureParentFramePointers=0;
         document.getElementById('multi-stream-container').addEventListener('pointerdown',()=>fixtureParentFramePointers++,true);
     });
-    for(const frame of f.frames)await frame.evaluate(suppressPointerFocus=>{
+    for(const frame of f.frames)await frame.evaluate(({suppressPointerFocus,stopPointerPropagation})=>{
         window.fixtureMenuFrameClicks=[];
-        document.addEventListener('click',event=>fixtureMenuFrameClicks.push({trusted:event.isTrusted,target:event.target.id}),true);
+        (stopPointerPropagation?window:document).addEventListener('click',event=>fixtureMenuFrameClicks.push({trusted:event.isTrusted,target:event.target.id}),true);
         if(suppressPointerFocus)for(const type of ['pointerdown','mousedown'])document.addEventListener(type,event=>event.preventDefault(),true);
-    },suppressPointerFocus);
+        if(stopPointerPropagation)for(const type of ['pointerdown','mousedown','click'])window.addEventListener(type,event=>event.stopImmediatePropagation(),true);
+    },{suppressPointerFocus,stopPointerPropagation});
     const counts=[0,0];let previousFrameId=null;
     for(const [iteration,index]of (openFromCode?[0,0,1,1]:[0,0,1]).entries()){
         if(iteration===0)await trigger.click();
@@ -3013,6 +3014,58 @@ test('player interaction relay dismisses real menus when the foreign player prev
             trigger:f.page.locator(selection?'#more-channels-btn':'#umininn-player-control-host #toggle'),
             isOpen:open=>selection?selectionMenuOpen(f,open):controlsMenuOpen(f,open),suppressPointerFocus:true
         });
+        await assertContinuity(f,before);
+    });
+});
+
+test('player focus fallback dismisses menus when a foreign player consumes events at window capture',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    for(const menu of ['selection','playback'])await t.test(menu,async()=>{
+        const playback=menu==='playback',f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},audioUserscript:true}),before=await snapshot(f);
+        await assertCrossOriginPlayerDismissal(f,{
+            trigger:f.page.locator(playback?'#umininn-player-control-host #toggle':'#more-channels-btn'),
+            isOpen:open=>playback?controlsMenuOpen(f,open):selectionMenuOpen(f,open),stopPointerPropagation:true,nativeKeyboardReturn:!playback&&engine==='firefox'
+        });
+        await assertContinuity(f,before);
+    });
+});
+
+test('browser-native play and pause controls dismiss real menus without swallowing or replaying the media action',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;
+    for(const menu of ['selection','playback'])await t.test(menu,async()=>{
+        const playback=menu==='playback',f=await fixture(t,{width:1200,height:800,viewport:{width:1800,height:1000},audioUserscript:playback});
+        const trigger=f.page.locator(playback?'#umininn-player-control-host #toggle':'#more-channels-btn');
+        const isOpen=open=>playback?controlsMenuOpen(f,open):selectionMenuOpen(f,open);
+        await f.page.locator('#native-0').evaluate(video=>{
+            video.controls=true;window.fixtureNativeControlEvents=[];window.fixtureNativeControlPointers=0;
+            for(const type of ['play','pause'])video.addEventListener(type,event=>fixtureNativeControlEvents.push({type:event.type,trusted:event.isTrusted}));
+            document.addEventListener('pointerdown',event=>{if(event.target===video)fixtureNativeControlPointers++},true);
+        });
+        await trigger.click();await isOpen(true);
+        // Platform state changes are not user gestures. They must not dismiss
+        // an open menu while the opening button still owns the page's focus.
+        await f.page.locator('#native-0').evaluate(async video=>{video.pause();await video.play()});
+        await f.page.waitForTimeout(250);await isOpen(true);
+        await f.page.evaluate(()=>{fixtureNativeControlEvents=[];fixtureNativeControlPointers=0});
+        const before=await snapshot(f),video=f.page.locator('#native-0');
+        for(const paused of [true,false]){
+            if(!paused){
+                // Reopen without a pointer event after the same native video
+                // retained focus, so its second UA control click is covered.
+                await trigger.focus();await f.page.keyboard.press('Enter');await isOpen(true);
+                await f.page.waitForTimeout(250);await isOpen(true);
+            }
+            const rect=await video.boundingBox();
+            // This is the browser's own anonymous-shadow play/pause button,
+            // not a page listener which calls video.play()/pause() for us.
+            await f.page.mouse.click(rect.x+25,rect.y+rect.height-20);
+            await f.page.waitForFunction(paused=>document.getElementById('native-0').paused===paused,paused);
+            await f.page.waitForFunction(()=>!document.documentElement.hasAttribute('data-umininn-player-controls-open')&&getComputedStyle(document.getElementById('channel-selection')).display==='none');
+            await isOpen(false);assert.equal((await nameGeometry(f)).hidden,true);
+            assert.equal(await f.page.evaluate(()=>document.activeElement?.id),'native-0','dismissal preserves native player control focus');
+            assert.deepEqual(await f.page.evaluate(()=>fixtureNativeControlEvents),paused?[{type:'pause',trusted:true}]:[{type:'pause',trusted:true},{type:'play',trusted:true}],'each native control click changes playback once');
+        }
+        if(engine==='chromium')assert.equal(await f.page.evaluate(()=>fixtureNativeControlPointers),0,'Chromium native media controls consume the pointer events before the document capture listener');
         await assertContinuity(f,before);
     });
 });

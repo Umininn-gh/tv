@@ -1096,7 +1096,7 @@ const channelSelectionIdleTimer = (() => {
         frameFocusTimer = setTimeout(() => {
             frameFocusTimer = null;
             const frame = document.activeElement;
-            if (!document.hidden && document.hasFocus() && frame?.tagName === 'IFRAME' &&
+            if (!document.hidden && document.hasFocus() && frame?.matches?.('iframe,video,audio') &&
                 document.getElementById('multi-stream-container')?.contains(frame)) setChannelSelectionVisible(false);
             else watchPlayerFrameFocus();
         }, delay);
@@ -1126,7 +1126,7 @@ const channelSelectionIdleTimer = (() => {
         if (visible && event.target?.tagName === 'IFRAME' &&
             document.getElementById('multi-stream-container')?.contains(event.target)) setChannelSelectionVisible(false);
     });
-    // Foreign player documents do not bubble pointer events into this page.
+    // Foreign documents and native media controls can consume pointer events.
     // Firefox may omit the focus event entirely for a foreign document. A
     // single activeElement check while this menu is open covers that case.
     // Tab/app switches and frames outside the playback pane are excluded.

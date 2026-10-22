@@ -1180,12 +1180,12 @@
             function onPlayerFrameFocus(delay = 200) {
                 clearFrameFocusTimer();
                 if (disposed || panel.hidden) return;
-                // A foreign iframe receives its own pointer events. Its focus
-                // transition is visible here without reading or covering it.
+                // Foreign frames and browser-native media controls can consume
+                // pointer events. Their focused element is still visible here.
                 frameFocusTimer = win.setTimeout(() => {
                     frameFocusTimer = null;
                     const frame = doc.activeElement;
-                    if (!disposed && !panel.hidden && !doc.hidden && doc.hasFocus() && frame?.tagName === 'IFRAME' &&
+                    if (!disposed && !panel.hidden && !doc.hidden && doc.hasFocus() && frame?.matches?.('iframe,video,audio') &&
                         doc.getElementById('multi-stream-container')?.contains(frame)) setOpen(false);
                     else onPlayerFrameFocus();
                 }, delay);

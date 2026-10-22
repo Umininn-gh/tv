@@ -368,6 +368,48 @@ test('bookmark menu dismisses on repeated foreign player clicks without consumin
     await assertContinuity(f, before);
 });
 
+test('bookmark menu dismisses when native media controls consume pointer events while scripted playback leaves it open', browserCase, async t => {
+    const f = await fixture(t, { viewport: { width: 1800, height: 1000 } });
+    const keys = await f.page.evaluate(() => fixture.keys()), trigger = f.page.locator('#layout-bookmarks-btn');
+    const video = f.page.locator('#fixture-player-0');
+    await video.evaluate(video => { video.controls = true; });
+    await trigger.click();
+    await video.evaluate(video => video.pause());
+    await f.page.waitForTimeout(250);
+    assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true, 'background pause is not an outside interaction');
+    await video.evaluate(video => video.play());
+    await f.page.waitForTimeout(250);
+    assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true, 'recovery or background playback cannot close the menu');
+    const before = await remember(f, keys.slice(1));
+    const targetBefore = await video.evaluate(video => {
+        window.fixtureNativeControlEvents = [];
+        window.fixtureNativeControlPointers = [];
+        for (const type of ['play', 'pause']) video.addEventListener(type, event => fixtureNativeControlEvents.push({ type, trusted: event.isTrusted }));
+        for (const type of ['pointerdown', 'mousedown', 'click']) document.addEventListener(type, event => {
+            if (event.target === video) fixtureNativeControlPointers.push({ type, trusted: event.isTrusted });
+        }, true);
+        return readVideo(video);
+    });
+    for (const paused of [true, false]) {
+        if (!await f.page.locator('#layout-bookmarks').isVisible()) await trigger.click();
+        const bounds = await video.boundingBox();
+        assert.ok(bounds && bounds.width > 100 && bounds.height > 100);
+        // Trusted input reaches the browser's real media-control shadow tree.
+        // Chromium consumes its pointer events instead of exposing them to this page.
+        await f.page.mouse.click(bounds.x + 25, bounds.y + bounds.height - 25);
+        await f.page.waitForFunction(paused => document.getElementById('fixture-player-0').paused === paused, paused);
+        await f.page.waitForFunction(() => !layoutBookmarkMenu.isOpen());
+        assert.equal(await video.evaluate(video => document.activeElement === video), true, 'the clicked media keeps focus after dismissal');
+        await assertContinuity(f, before);
+    }
+    assert.deepEqual(await f.page.evaluate(() => fixtureNativeControlEvents), [
+        { type: 'pause', trusted: true }, { type: 'play', trusted: true }
+    ], 'each native control click operates playback exactly once');
+    if (engine === 'chromium') assert.deepEqual(await f.page.evaluate(() => fixtureNativeControlPointers), [], 'the regression exercises native controls that hide pointer events from document capture');
+    const targetAfter = await video.evaluate(video => readVideo(video));
+    for (const key of ['connected', 'paused', 'muted', 'volume', 'src', 'actions']) assert.deepEqual(targetAfter[key], targetBefore[key], 'dismissal neither reloads nor scripts an extra media action: ' + key);
+});
+
 test('save, rename, reopen, delete and undo use real controls with stable colours and safe text-only names', browserCase, async t => {
     const f = await fixture(t), before = await remember(f);
     await f.page.locator('#layout-bookmarks-btn').click();
