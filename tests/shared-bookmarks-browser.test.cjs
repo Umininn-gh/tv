@@ -59,7 +59,7 @@ function htmlFixture({ width = 1100, height = 600 } = {}) {
     let preferredPlayerOrder=[],enlargedPlayerFocus=null,playerGeometry=null,pendingPlayerGeometry=null,playerGrid=null;
     let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[],layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null;
     const playerWindowControls={refresh(){}},playerNameOverlay={refresh(){},setVisible(){}},playerPositionEditor={refresh(){},layoutChanged(){},close(){}},channelSelectionIdleTimer={setVisible(){}};
-    window.fixture={renders:0,nextId:0,remembered:new Map()};
+    window.fixture={renders:0,nextId:0,remembered:new Map(),captures:0,applies:0};
     function getPlatform(type){return {type:type==='m3u8'?'hls':'iframe'}}
     function withPlayerAudioLayout(action){return action()}
     function showGlobalAudioFeedback(){} function updateChannelSelectionSummary(){}
@@ -69,7 +69,7 @@ function htmlFixture({ width = 1100, height = 600 } = {}) {
     ${appScript}
     const transport={async read(){const result=await fetch('/qa/library');if(!result.ok)throw Error('network unavailable');return result.json();},async write(document,token){const response=await fetch('/qa/library',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({document,token})});if(response.status===409)throw Object.assign(Error('CAS conflict'),{code:'conflict'});if(!response.ok)throw Error('write failed');return response.json();}};
     const sharedQaStore=SharedBookmarks.createStore({transport,cacheStorage:localStorage});
-    layoutBookmarkMenu=LayoutBookmarks.mount({button:document.getElementById('layout-bookmarks-btn'),panel:document.getElementById('layout-bookmarks'),store:sharedQaStore,capture:capturePlayerBookmark,apply:applyPlayerBookmark,beforeOpen(){setChannelSelectionVisible(false);playerPositionEditor.close(false);}});
+    layoutBookmarkMenu=LayoutBookmarks.mount({button:document.getElementById('layout-bookmarks-btn'),panel:document.getElementById('layout-bookmarks'),store:sharedQaStore,capture:(...args)=>{fixture.captures++;return capturePlayerBookmark(...args)},apply:(...args)=>{fixture.applies++;return applyPlayerBookmark(...args)},beforeOpen(){setChannelSelectionVisible(false);playerPositionEditor.close(false);}});
     fixture.keys=()=>getPlayerPositionKeys();
     fixture.setFocus=function(){const key=fixture.keys()[1],next=PlayerGeometry.build({keys:fixture.keys(),columns:3,focus:{key,span:2,row:0,column:1}});enlargedPlayerFocus=next.items.find(item=>item.span>1);pendingPlayerGeometry={...next,intent:'drag'};updatePlayerLayout({force:true});};
     fixture.remember=function(){fixture.remembered=new Map([...activePlayers].map(([key,entry])=>[key,{entry,element:getPlayerElement(entry),window:getPlayerElement(entry).contentWindow}]));return fixture.state();};
@@ -81,12 +81,14 @@ function htmlFixture({ width = 1100, height = 600 } = {}) {
 function mockServer() {
     let document = { version: 1, bookmarks: [] }, revision = 1;
     return {
-        reads: 0, writes: 0, offline: false, nextReadGate: null,
+        reads: 0, writes: 0, offline: false, nextReadGate: null, nextWriteGate: null,
         current: () => ({ document: copy(document), token: String(revision) }),
         async route(route) {
             if (this.offline) return route.abort('failed');
             if (route.request().method() === 'PUT') {
                 const data = route.request().postDataJSON(); this.writes++;
+                const gate = this.nextWriteGate; this.nextWriteGate = null;
+                if (gate) { gate.started.resolve(); await gate.release.promise; }
                 if (data.token !== String(revision)) return route.fulfill({ status: 409, json: { error: 'conflict' } });
                 document = copy(data.document); revision++;
                 return route.fulfill({ json: this.current() });
@@ -247,4 +249,75 @@ test('offline saves report failure while confirmed layouts remain usable and mob
     const bounds = await f.page.locator('#layout-bookmarks').evaluate(panel => { const rect=panel.getBoundingClientRect();return {left:rect.left,right:rect.right,bottom:rect.bottom,width:innerWidth,height:innerHeight,overflow:panel.scrollWidth-panel.clientWidth}; });
     assert.ok(bounds.left >= 0 && bounds.right <= bounds.width + 1 && bounds.bottom <= bounds.height + 1 && bounds.overflow <= 1, JSON.stringify(bounds));
     await continuity(f.page, before);
+});
+
+async function sharedDeleteConfirmation(page,count){
+    await page.locator('.layout-bookmarks-delete-all').click();
+    const confirmation=page.locator('.layout-bookmarks-delete-confirm');assert.equal(await confirmation.isVisible(),true);
+    assert.match(await confirmation.innerText(),new RegExp(String(count)));assert.match(await confirmation.innerText(),/全站共用/);
+    assert.equal(await page.locator('.layout-bookmarks-delete-cancel').evaluate(node=>node===document.activeElement),true);
+    return confirmation;
+}
+
+test('shared delete-all confirms its global scope and batch undo restores every bookmark to independent contexts without media or capture effects',browserCase,async t=>{
+    const server=mockServer(),a=await fixture(t,server),b=await fixture(t,server);
+    await open(a.page);assert.equal(await a.page.locator('.layout-bookmarks-delete-all').isDisabled(),true);
+    await a.page.locator('.layout-bookmarks-save').click();await settled(a.page,1);await a.page.evaluate(()=>fixture.setFocus());
+    await a.page.locator('.layout-bookmarks-save').click();await settled(a.page,2);await a.page.locator('.layout-bookmarks-save').click();await settled(a.page,3);
+    const library=server.current().document.bookmarks,beforeA=await a.page.evaluate(()=>fixture.remember()),beforeB=await b.page.evaluate(()=>fixture.remember());
+    const calls=await a.page.evaluate(()=>({captures:fixture.captures,applies:fixture.applies}));await open(b.page);
+    await sharedDeleteConfirmation(a.page,3);await a.page.locator('.layout-bookmarks-delete-confirm-button').click();await settled(a.page,0);
+    assert.deepEqual(server.current().document.bookmarks,[]);assert.equal(await a.page.locator('.layout-bookmarks-delete-all').isDisabled(),true);
+    await b.page.evaluate(()=>sharedQaStore.reload());await settled(b.page,0);assert.equal(await b.page.locator('.layout-bookmarks-delete-all').isDisabled(),true);
+    await a.page.locator('.layout-bookmarks-undo button').click();await settled(a.page,3);
+    assert.deepEqual(server.current().document.bookmarks,library,'a single undo restores the complete ordered batch with original contents and identities');
+    await b.page.evaluate(()=>sharedQaStore.reload());await settled(b.page,3);assert.deepEqual(await b.page.evaluate(()=>sharedQaStore.list()),library);
+    assert.deepEqual(await a.page.evaluate(()=>({captures:fixture.captures,applies:fixture.applies})),calls);
+    assert.deepEqual(await b.page.evaluate(()=>({captures:fixture.captures,applies:fixture.applies})),{captures:0,applies:0});
+    await continuity(a.page,beforeA);await continuity(b.page,beforeB);
+});
+
+test('pending shared delete-all disables mutations, can close, and commits only once without reopening',browserCase,async t=>{
+    const server=mockServer(),f=await fixture(t,server);await open(f.page);
+    await f.page.locator('.layout-bookmarks-save').click();await settled(f.page,1);await f.page.locator('.layout-bookmarks-save').click();await settled(f.page,2);
+    const library=server.current().document.bookmarks,before=await f.page.evaluate(()=>fixture.remember()),writes=server.writes;
+    const gate={started:deferred(),release:deferred()};t.after(()=>gate.release.resolve());server.nextWriteGate=gate;
+    await sharedDeleteConfirmation(f.page,2);await f.page.locator('.layout-bookmarks-delete-confirm-button').click();await gate.started.promise;
+    assert.equal(await f.page.locator('#layout-bookmarks').getAttribute('aria-busy'),'true');
+    for(const selector of ['.layout-bookmarks-save','.layout-bookmarks-delete-all','.layout-bookmark-delete','.layout-bookmark-rename'])assert.equal(await f.page.locator(selector).first().isDisabled(),true,selector);
+    assert.equal(await f.page.locator('.layout-bookmarks-close').isEnabled(),true);
+    await f.page.locator('.layout-bookmarks-close').click();gate.release.resolve();
+    await f.page.waitForFunction(()=>sharedQaStore.getSyncState()!=='syncing'&&document.getElementById('layout-bookmarks').getAttribute('aria-busy')==='false');
+    assert.deepEqual(server.current().document.bookmarks,[]);assert.equal(server.writes,writes+1);assert.equal(await f.page.locator('#layout-bookmarks').isVisible(),false);
+    await open(f.page);await f.page.locator('.layout-bookmarks-undo button').click();await settled(f.page,2);assert.deepEqual(server.current().document.bookmarks,library);await continuity(f.page,before);
+});
+
+test('shared delete-all network failure keeps the confirmed library and cannot expose a successful undo',browserCase,async t=>{
+    const server=mockServer(),f=await fixture(t,server,{viewport:{width:375,height:667},width:375,height:330});await open(f.page);
+    await f.page.locator('.layout-bookmarks-save').click();await settled(f.page,1);const library=server.current().document.bookmarks,before=await f.page.evaluate(()=>fixture.remember());
+    await sharedDeleteConfirmation(f.page,1);server.offline=true;await f.page.locator('.layout-bookmarks-delete-confirm-button').click();
+    await f.page.waitForFunction(()=>document.querySelector('.layout-bookmarks-status.is-error')?.textContent&&document.getElementById('layout-bookmarks').getAttribute('aria-busy')==='false');
+    assert.deepEqual(server.current().document.bookmarks,library);assert.equal(await f.page.locator('.layout-bookmark-card').count(),1);assert.equal(await f.page.locator('.layout-bookmarks-undo').isVisible(),false);
+    assert.equal(await f.page.locator('.layout-bookmarks-delete-confirm').isVisible(),false);
+    server.offline=false;await sharedDeleteConfirmation(f.page,1);
+    const bounds=await f.page.locator('.layout-bookmarks-delete-confirm').evaluate(node=>{const r=node.getBoundingClientRect();return {left:r.left,right:r.right,width:innerWidth,overflow:node.scrollWidth-node.clientWidth}});
+    assert.ok(bounds.left>=0&&bounds.right<=bounds.width+1&&bounds.overflow<=1,JSON.stringify(bounds));
+    await f.page.locator('.layout-bookmarks-delete-cancel').click();await continuity(f.page,before);
+});
+
+test('remote add, rename or reorder requires a new shared delete-all confirmation instead of deleting unseen changes',{...browserCase,timeout:60000},async t=>{
+    for(const change of ['add','rename','reorder'])await t.test(change,async st=>{
+        const server=mockServer(),a=await fixture(st,server),b=await fixture(st,server);await open(a.page);
+        await a.page.locator('.layout-bookmarks-save').click();await settled(a.page,1);await a.page.locator('.layout-bookmarks-save').click();await settled(a.page,2);
+        const before=await a.page.evaluate(()=>fixture.remember()),original=server.current().document.bookmarks;await sharedDeleteConfirmation(a.page,2);await open(b.page);
+        if(change==='add'){await b.page.locator('.layout-bookmarks-save').click();await settled(b.page,3)}
+        else if(change==='rename'){await b.page.locator('.layout-bookmark-rename').first().click();await b.page.locator('.layout-bookmark-name-input').fill('遠端已更新名稱');await b.page.locator('.layout-bookmark-name-input').press('Enter');await b.page.waitForFunction(()=>sharedQaStore.list()[0]?.name==='遠端已更新名稱')}
+        else{await b.page.locator('.layout-bookmark-move-down').first().click();await b.page.waitForFunction(id=>sharedQaStore.list()[0]?.id===id,original[1].id)}
+        const latest=server.current().document.bookmarks,writes=server.writes;await a.page.evaluate(()=>sharedQaStore.reload());
+        assert.equal(await a.page.locator('.layout-bookmarks-delete-confirm').isVisible(),true);assert.match(await a.page.locator('.layout-bookmarks-delete-confirm').innerText(),/2/);
+        await a.page.locator('.layout-bookmarks-delete-confirm-button').click();await a.page.waitForFunction(()=>document.querySelector('.layout-bookmarks-status.is-error')?.textContent&&document.getElementById('layout-bookmarks').getAttribute('aria-busy')==='false');
+        assert.equal(server.writes,writes,'stale confirmation does not commit a destructive write');assert.deepEqual(server.current().document.bookmarks,latest);
+        assert.equal(await a.page.locator('.layout-bookmarks-delete-confirm').isVisible(),false);
+        await sharedDeleteConfirmation(a.page,latest.length);await a.page.locator('.layout-bookmarks-delete-cancel').click();await continuity(a.page,before);
+    });
 });

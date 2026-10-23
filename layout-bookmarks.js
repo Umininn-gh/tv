@@ -178,10 +178,36 @@
                 removed = { entry, index };
                 return copy(entry);
             },
+            removeAll(options = {}) {
+                const expected = options.expected === undefined ? bookmarks : options.expected;
+                const latest = read();
+                if (!Array.isArray(expected) || JSON.stringify(latest) !== JSON.stringify(expected)) {
+                    throw Object.assign(new Error('書籤清單已變更，請重新載入後再確認刪除所有。'), { code: 'conflict' });
+                }
+                if (!latest.length) { bookmarks = latest; error = null; return []; }
+                write([]);
+                removed = { entries: copy(latest) };
+                return copy(latest);
+            },
             canUndo: () => Boolean(removed),
             undo() {
                 if (!removed) return null;
                 const latest = read();
+                if (removed.entries) {
+                    const entries = copy(removed.entries), ids = new Set(entries.map(entry => entry.id));
+                    for (const entry of latest) {
+                        const original = entries.find(item => item.id === entry.id);
+                        if (original && JSON.stringify(original) !== JSON.stringify(entry)) {
+                            throw new Error('同一書籤已被修改，未有覆寫；請先處理後再復原。');
+                        }
+                    }
+                    const additions = entries.filter(entry => !latest.some(item => item.id === entry.id));
+                    if (latest.length + additions.length > MAX_BOOKMARKS) throw new Error('書籤已滿，請先空出足夠位置再整批復原。');
+                    if (additions.length) write([...latest.filter(entry => !ids.has(entry.id)), ...entries]);
+                    else { bookmarks = latest; error = null; }
+                    removed = null;
+                    return copy(entries);
+                }
                 if (latest.length >= MAX_BOOKMARKS) throw new Error('書籤已滿，請先空出一個位置再復原。');
                 if (latest.some(entry => entry.id === removed.entry.id)) throw new Error('這個書籤已存在，未有重複加入。');
                 const entry = copy(removed.entry);
@@ -199,7 +225,7 @@
         if (storage === undefined) { try { storage = view.localStorage; } catch (_) {} }
         const sharedMode = Boolean(providedStore), store = providedStore || createStore(storage);
         const localStore = sharedMode ? createStore(storage) : null, cleanups = [];
-        let opened = false, idleTimer = null, refreshTimer = null, returnFocus = null, renameDraft = null;
+        let opened = false, idleTimer = null, refreshTimer = null, returnFocus = null, renameDraft = null, deleteDraft = null;
         let busy = false, applying = false, reloadBusy = false, destroyed = false, undoMessage = '', unsubscribe = null;
         let renderedData = null, pointerActive = false, keyboardActive = false, pointerRenderTimer = null, pendingFocus = null;
         function el(tag, className, text) {
@@ -222,6 +248,13 @@
         const closeButton = action('×', 'layout-bookmarks-close', '關閉書籤選單');
         closeButton.setAttribute('aria-label', '關閉書籤選單'); header.append(title, closeButton);
         const saveButton = action('＋ 儲存目前佈局', 'layout-bookmarks-save');
+        const deleteAllButton = action('刪除所有', 'layout-bookmarks-delete-all');
+        const deleteConfirm = el('div', 'layout-bookmarks-delete-confirm'); deleteConfirm.hidden = true;
+        deleteConfirm.setAttribute('role', 'group'); deleteConfirm.setAttribute('aria-label', '確認刪除所有書籤');
+        const deleteText = el('p'), deleteActions = el('div', 'layout-bookmarks-delete-actions');
+        const deleteCancel = action('取消', 'layout-bookmarks-delete-cancel');
+        const deleteConfirmButton = action('確認刪除所有', 'layout-bookmarks-delete-confirm-button');
+        deleteActions.append(deleteCancel, deleteConfirmButton); deleteConfirm.append(deleteText, deleteActions);
         const help = el('p', 'layout-bookmarks-help', sharedMode ?
             '全站共用，所有使用者都可儲存、修改及排序。點縮圖即可套用台佈局；有 userscript 時亦會儲存及回復有聲台的音量。' :
             '儲存正在觀看的台、排列及放大格；有 userscript 時亦會儲存及回復有聲台的音量。書籤只儲存在此瀏覽器。');
@@ -234,7 +267,7 @@
         const undoBar = el('div', 'layout-bookmarks-undo'); undoBar.hidden = true;
         const undoText = el('span'), undoButton = action('復原刪除'); undoBar.append(undoText, undoButton);
         const list = el('div', 'layout-bookmarks-list');
-        panel.replaceChildren(header, saveButton, help, syncStatus, importButton, importNote, feedback, undoBar, list);
+        panel.replaceChildren(header, saveButton, help, syncStatus, importButton, importNote, deleteAllButton, deleteConfirm, feedback, undoBar, list);
         panel.hidden = true; button.setAttribute('aria-controls', panel.id); button.setAttribute('aria-expanded', 'false');
         button.setAttribute('aria-haspopup', 'dialog');
         function status(message, failed = false) {
@@ -266,10 +299,13 @@
             // disable a button between pointerdown/up or blur a name draft.
             const locked = busy;
             for (const node of panel.querySelectorAll('button,input')) {
-                if (node !== closeButton) node.disabled = locked || node.dataset.atBoundary === 'true';
+                if (node !== closeButton) node.disabled = locked || Boolean(deleteDraft) || node.dataset.atBoundary === 'true';
             }
-            saveButton.disabled = locked || store.list().length >= MAX_BOOKMARKS;
-            undoButton.disabled = locked || !store.canUndo(); panel.setAttribute('aria-busy', String(locked));
+            saveButton.disabled = locked || Boolean(deleteDraft) || store.list().length >= MAX_BOOKMARKS;
+            deleteAllButton.disabled = locked || Boolean(deleteDraft) || Boolean(renameDraft) || !store.list().length || typeof store.removeAll !== 'function';
+            deleteCancel.disabled = locked;
+            deleteConfirmButton.disabled = locked || !deleteDraft;
+            undoButton.disabled = locked || Boolean(deleteDraft) || !store.canUndo(); panel.setAttribute('aria-busy', String(locked));
             undoBar.hidden = !store.canUndo(); undoText.textContent = undoMessage;
             if (sharedMode) {
                 const state = store.getSyncState?.() || 'idle';
@@ -292,6 +328,7 @@
         }
         function canAct(allowRename = false) {
             if (destroyed || busy) return false;
+            if (deleteDraft) { status('請先確認或取消刪除所有書籤。', true); deleteCancel.focus(); return false; }
             if (renameDraft && !allowRename) {
                 status('請先儲存或取消正在修改的名稱。', true); renameDraft.input.focus(); return false;
             }
@@ -350,6 +387,7 @@
             input.setAttribute('aria-label', '書籤名稱，最多 60 個字');
             const save = action('儲存', 'layout-bookmark-name-save'), cancel = action('取消', 'layout-bookmark-name-cancel');
             const draft = { id: entry.id, input }; renameDraft = draft; row.replaceChildren(input, save, cancel);
+            updateControls();
             function cancelRename() {
                 if (busy) return;
                 renameDraft = null; renderedData = null; render(); focusAction(entry.id, 'layout-bookmark-rename');
@@ -462,7 +500,7 @@
             const shouldRestore = restoreFocus && panel.contains(doc.activeElement);
             opened = false; panel.hidden = true; button.setAttribute('aria-expanded', 'false');
             if (renameDraft) renderedData = null;
-            renameDraft = null; resetIdle();
+            renameDraft = null; deleteDraft = null; deleteConfirm.hidden = true; resetIdle();
             if (refreshTimer !== null) view.clearInterval(refreshTimer); refreshTimer = null;
             pointerActive = keyboardActive = false;
             pendingFocus = null;
@@ -470,6 +508,48 @@
             if (shouldRestore) { const target = returnFocus?.isConnected && !panel.contains(returnFocus) ? returnFocus : button; target.focus({ preventScroll: true }); }
         }
         on(button, 'click', () => opened ? close() : open()); on(closeButton, 'click', () => close());
+        function revealInPanel(node) {
+            if (!opened || destroyed || !panel.clientHeight) return;
+            const bounds = panel.getBoundingClientRect(), rect = node.getBoundingClientRect();
+            const top = bounds.top + panel.clientTop, bottom = top + panel.clientHeight;
+            if (rect.top < top) panel.scrollTop += rect.top - top;
+            else if (rect.bottom > bottom) panel.scrollTop += rect.bottom - bottom;
+        }
+        function revealDeleteConfirm() {
+            if (deleteDraft) revealInPanel(deleteConfirm.offsetHeight > panel.clientHeight ? deleteActions : deleteConfirm);
+        }
+        function cancelDeleteAll(restoreFocus = true) {
+            deleteDraft = null; deleteConfirm.hidden = true; updateControls();
+            if (restoreFocus && opened) { deleteAllButton.focus({ preventScroll: true }); revealInPanel(deleteAllButton); }
+        }
+        on(deleteAllButton, 'click', () => {
+            if (!canAct()) return;
+            const entries = store.list(); if (!entries.length) return;
+            deleteDraft = copy(entries);
+            deleteText.textContent = sharedMode ? '刪除全站共用的所有 ' + entries.length + ' 個書籤？其他使用者也會受影響；刪除後可按「復原刪除」整批復原。' :
+                '刪除此瀏覽器的所有 ' + entries.length + ' 個本機書籤？刪除後可按「復原刪除」整批復原。';
+            status(''); deleteConfirm.hidden = false; updateControls(); deleteCancel.focus({ preventScroll: true }); revealDeleteConfirm();
+        });
+        on(view, 'resize', revealDeleteConfirm);
+        on(deleteCancel, 'click', () => { if (!busy) cancelDeleteAll(); });
+        on(deleteConfirmButton, 'click', () => {
+            if (!deleteDraft || busy || destroyed) return;
+            const expected = copy(deleteDraft); cancelDeleteAll(false);
+            let deleted = false;
+            mutation(async () => {
+                try { return await store.removeAll({ expected }); }
+                catch (error) {
+                    if (error?.code === 'conflict') { try { await store.reload(); } catch (_) {} }
+                    throw error;
+                }
+            }, entries => {
+                deleted = true;
+                undoMessage = '已刪除所有 ' + entries.length + ' 個書籤。'; render(); status('');
+                if (opened) undoButton.focus({ preventScroll: true });
+            }).then(() => {
+                if (opened && !deleted) { deleteAllButton.focus({ preventScroll: true }); revealInPanel(deleteAllButton); }
+            });
+        });
         on(saveButton, 'click', () => {
             if (!canAct()) return;
             const current = store.list(); let number = current.length + 1;
@@ -480,7 +560,11 @@
         });
         on(undoButton, 'click', () => {
             if (!canAct()) return;
-            mutation(() => store.undo(), entry => { if (entry) { status('已復原「' + entry.name + '」。'); focusAction(entry.id, 'layout-bookmark-preview'); } });
+            mutation(() => store.undo(), entry => {
+                if (!entry) return;
+                status(Array.isArray(entry) ? '已復原 ' + entry.length + ' 個書籤。' : '已復原「' + entry.name + '」。');
+                focusAction(Array.isArray(entry) ? entry[0]?.id : entry.id, 'layout-bookmark-preview');
+            });
         });
         on(importButton, 'click', () => {
             if (!canAct() || !localStore) return;
@@ -509,7 +593,13 @@
         on(panel, 'keydown', event => { if (opened && [' ', 'Enter'].includes(event.key) && event.target.tagName === 'BUTTON') keyboardActive = true; }, true);
         on(view, 'keyup', event => { if ([' ', 'Enter'].includes(event.key)) { keyboardActive = false; scheduleRender(); } });
         on(view, 'blur', () => { pointerActive = keyboardActive = false; scheduleRender(); });
-        on(doc, 'keydown', event => { if (opened && event.key === 'Escape' && !event.defaultPrevented) { event.preventDefault(); close(); } });
+        on(doc, 'keydown', event => {
+            if (opened && event.key === 'Escape' && !event.defaultPrevented) {
+                event.preventDefault();
+                if (deleteDraft && !busy) cancelDeleteAll();
+                else close();
+            }
+        });
         function subscribe() {
             if (unsubscribe || !sharedMode || typeof store.subscribe !== 'function') return;
             unsubscribe = store.subscribe(() => { if (opened && !destroyed) render(); });

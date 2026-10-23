@@ -13,6 +13,7 @@
     }
     const invalid = message => new SharedBookmarkError('invalid', message);
     const conflict = () => new SharedBookmarkError('conflict', '其他使用者剛修改了這個書籤，請重新載入後再試。');
+    const listConflict = () => new SharedBookmarkError('conflict', '整份共用書籤清單已變動，請重新載入並再次確認「刪除所有」。');
     function nameOf(name) {
         if (typeof name !== 'string' || !name.trim()) throw invalid('請輸入書籤名稱。');
         return Array.from(name.trim()).slice(0, 60).join('');
@@ -146,7 +147,14 @@
                     throw failure;
                 }
                 // Only the server-confirmed document may be used as the new cache.
-                const confirmed = normalizeDocument(saved?.document);
+                let confirmed;
+                try {
+                    confirmed = normalizeDocument(saved?.document);
+                    if (mutation.confirm && !same(confirmed, next)) throw new Error('The acknowledged document differs from the requested batch.');
+                } catch (failure) {
+                    if (mutation.confirm) throw new SharedBookmarkError('invalid-response', '未能確認整批書籤操作是否完成，請先重新載入查看。', { outcomeUnknown: true, cause: failure });
+                    throw failure;
+                }
                 commit(confirmed.bookmarks); mutation.after?.(); return copy(mutation.result);
             }
             throw conflict();
@@ -220,11 +228,42 @@
                     return { bookmarks: latest, result: entry, after() { removed = { entry: copy(entry), index, before, after }; } };
                 }));
             },
+            async removeAll(options = {}) {
+                const captured = options.expected === undefined ? copy(bookmarks) : copy(options.expected);
+                return schedule(() => {
+                    const expected = normalizeDocument({ version: 1, bookmarks: captured }).bookmarks;
+                    return mutate(latest => {
+                        // Recheck the complete confirmation snapshot after every
+                        // CAS retry so a late addition can never join this deletion.
+                        if (!same(latest, expected)) throw listConflict();
+                        if (!latest.length) return { unchanged: true, result: [] };
+                        return { bookmarks: [], result: latest, confirm: true, after() { removed = { entries: copy(latest) }; } };
+                    }).catch(failure => {
+                        if (failure?.code === 'conflict' && !failure.outcomeUnknown) throw listConflict();
+                        throw failure;
+                    });
+                });
+            },
             async undo() {
-                const pending = removed && copy(removed);
+                const undoRecord = removed, pending = undoRecord && copy(undoRecord);
                 return schedule(async () => {
                     if (!pending) return null;
                     return mutate(latest => {
+                        if (Array.isArray(pending.entries)) {
+                            const existing = new Map(latest.map(entry => [entry.id, entry]));
+                            const missing = [];
+                            for (const entry of pending.entries) {
+                                const current = existing.get(entry.id);
+                                if (current && !same(current, entry)) throw conflict();
+                                if (!current) missing.push(entry);
+                            }
+                            const complete = () => { if (removed === undoRecord) removed = null; };
+                            if (!missing.length) return { unchanged: true, result: pending.entries, after: complete };
+                            if (latest.length + missing.length > 50) throw invalid('復原後會超過 50 個書籤，請先空出足夠位置再復原。');
+                            const batchIds = new Set(pending.entries.map(entry => entry.id));
+                            const next = latest.filter(entry => !batchIds.has(entry.id)).concat(pending.entries);
+                            return { bookmarks: next, result: pending.entries, confirm: true, after: complete };
+                        }
                         const existing = latest.find(entry => entry.id === pending.entry.id);
                         if (existing) return { unchanged: true, result: existing, after() { removed = null; } };
                         if (latest.length >= 50) throw invalid('書籤已滿，請先空出一個位置再復原。');

@@ -50,6 +50,12 @@
 .layout-bookmarks-sync.is-error, .layout-bookmarks-import-note { color: #f1ca8b; }
 #layout-bookmarks .layout-bookmarks-import { width: 100%; margin-bottom: 12px; color: #e2d3fc; background: #352b47; border-color: #66517d; }
 .layout-bookmarks-import-note { margin: 0 0 12px; font-size: 12px; line-height: 1.6; }
+#layout-bookmarks .layout-bookmarks-delete-all { display: block; margin: 0 0 12px auto; color: #ffb3ad; background: transparent; }
+.layout-bookmarks-delete-confirm { margin-bottom: 12px; padding: 10px; border: 1px solid #98514b; border-radius: 8px; background: rgba(255, 69, 58, .08); }
+.layout-bookmarks-delete-confirm p { margin: 0 0 10px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.layout-bookmarks-delete-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+#layout-bookmarks .layout-bookmarks-delete-confirm-button { color: #fff; background: #a63530; }
+#layout-bookmarks .layout-bookmarks-delete-confirm-button:hover { background: #ba3f38; }
 .layout-bookmarks-status { padding: 9px 10px; margin: 0 0 12px; background: rgba(48, 209, 88, .12); border-radius: 7px; color: #a9e9bb; font-size: 12px; line-height: 1.55; overflow-wrap: anywhere; }
 .layout-bookmarks-status.is-error { background: rgba(255, 69, 58, .12); color: #ffb5ae; }
 .layout-bookmarks-undo { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 12px; padding: 8px; background: #29292e; border-radius: 7px; font-size: 12px; }

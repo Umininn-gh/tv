@@ -249,3 +249,83 @@ test('malformed audio saves and imports cannot overwrite the existing local audi
     assert.equal(store.importLocal([imported]), 1);
     assert.deepEqual(createStore(storage).list().find(item => item.id === 'import-valid').snapshot.audio, saved.snapshot.audio);
 });
+
+test('bulk delete clears in one write and undo restores every original identity, order and audio setting', () => {
+    const storage = memoryStorage(), store = createStore(storage);
+    store.add('With audio', snapshot({ audio: { version: 1, audible: [{ key: 'at|another', volume: .35 }] } }));
+    store.add('Another layout', snapshot());
+    const before = store.list(), writes = storage.writes;
+    const deleted = store.removeAll({ expected: before });
+    assert.deepEqual(deleted, before); assert.deepEqual(store.list(), []);
+    assert.deepEqual(createStore(storage).list(), []); assert.equal(storage.writes, writes + 1);
+    deleted[0].name = 'External mutation';
+    assert.deepEqual(store.removeAll(), [], 'empty deletion keeps the pending batch undo');
+    assert.equal(storage.writes, writes + 1); assert.equal(store.canUndo(), true);
+    assert.deepEqual(store.undo(), before);
+    assert.deepEqual(createStore(storage).list(), before); assert.equal(storage.writes, writes + 2);
+    assert.equal(store.canUndo(), false);
+});
+
+test('bulk delete rejects a list added, edited, reordered or removed by another local tab after confirmation', () => {
+    const edits = [store => store.add('New', snapshot()), (store, entries) => store.rename(entries[0].id, 'Renamed'),
+        (store, entries) => store.update(entries[0].id, snapshot({ aspectRatio: 2 })),
+        (store, entries) => store.move(entries[0].id, 'down'), (store, entries) => store.remove(entries[1].id)];
+    for (const edit of edits) {
+        const storage = memoryStorage(), store = createStore(storage);
+        store.add('A', snapshot()); store.add('B', snapshot()); const expected = store.list();
+        edit(createStore(storage), expected);
+        const raw = storage.getItem(STORAGE_KEY), writes = storage.writes;
+        assert.throws(() => store.removeAll({ expected }), /清單已變更/);
+        assert.equal(storage.getItem(STORAGE_KEY), raw); assert.equal(storage.writes, writes);
+        store.reload(); const refreshed = store.list();
+        assert.deepEqual(store.removeAll({ expected: refreshed }), refreshed);
+    }
+});
+
+test('bulk delete and restore failures preserve storage, cached entries and the previous undo operation', () => {
+    const storage = memoryStorage(), store = createStore(storage), write = storage.setItem;
+    const first = store.add('First', snapshot()); store.add('Second', snapshot()); store.remove(first.id);
+    const before = store.list(), raw = storage.getItem(STORAGE_KEY);
+    storage.setItem = () => { throw new Error('QuotaExceededError'); };
+    assert.throws(() => store.removeAll(), /Quota/);
+    assert.deepEqual(store.list(), before); assert.equal(storage.getItem(STORAGE_KEY), raw);
+    storage.setItem = write; assert.equal(store.undo().id, first.id, 'failed clear retains the previous single-delete undo');
+    const batch = store.list(); store.removeAll();
+    storage.setItem = () => { throw new Error('SecurityError'); };
+    assert.throws(() => store.undo(), /Security/); assert.deepEqual(store.list(), []); assert.equal(store.canUndo(), true);
+    storage.setItem = write; assert.deepEqual(store.undo(), batch);
+});
+
+test('bulk undo retains new records and groups identical restored IDs in the original batch order', () => {
+    const storage = memoryStorage(), store = createStore(storage);
+    store.add('A', snapshot()); store.add('B', snapshot()); store.add('C', snapshot());
+    const batch = store.list(); store.removeAll();
+    const other = createStore(storage), added = other.add('New after clear', snapshot());
+    other.importLocal([batch[1]]);
+    assert.deepEqual(store.undo(), batch);
+    assert.deepEqual(store.list(), [added, ...batch]);
+});
+
+test('bulk undo refuses conflicting identities or insufficient capacity without partially restoring', () => {
+    for (const mode of ['conflict', 'capacity']) {
+        const storage = memoryStorage(), store = createStore(storage);
+        store.add('A', snapshot()); store.add('B', snapshot()); const batch = store.list(); store.removeAll();
+        const other = createStore(storage);
+        if (mode === 'conflict') other.importLocal([{ ...batch[0], name: 'Changed elsewhere' }]);
+        else for (let index = 0; index < 49; index++) other.add('New ' + index, snapshot());
+        const raw = storage.getItem(STORAGE_KEY), writes = storage.writes;
+        assert.throws(() => store.undo(), mode === 'conflict' ? /已被修改/ : /足夠位置/);
+        assert.equal(storage.getItem(STORAGE_KEY), raw); assert.equal(storage.writes, writes);
+        assert.equal(store.canUndo(), true);
+    }
+});
+
+test('all fifty bookmarks can be removed and restored without clearing unrelated local preferences', () => {
+    const storage = memoryStorage(), store = createStore(storage);
+    storage.setItem('playerPositionOrder', 'keep current playback order');
+    for (let index = 0; index < 50; index++) store.add('Layout ' + index, snapshot());
+    const batch = store.list(), writes = storage.writes;
+    assert.deepEqual(store.removeAll(), batch); assert.equal(storage.writes, writes + 1);
+    assert.deepEqual(store.undo(), batch); assert.equal(storage.writes, writes + 2);
+    assert.equal(storage.getItem('playerPositionOrder'), 'keep current playback order');
+});

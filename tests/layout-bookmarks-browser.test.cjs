@@ -40,7 +40,9 @@ function loadProduction() {
     const names = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'updatePlayerLayout',
         'playerGridArea', 'getCurrentPlayerGeometry', 'savePlayerEnlargement', 'getPlayerPositionKeys', 'syncActivePlayers',
         'playerBookmarkAudioAvailable', 'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible'];
-    appScript = names.map(name => productionFunction(source, name)).join('\n') + '\n' + productionIife(source, 'initLayoutBookmarks');
+    appScript = names.map(name => productionFunction(source, name)).join('\n') + '\n' + productionIife(source, 'initLayoutBookmarks')
+        .replace('capture: capturePlayerBookmark', 'capture: (...args)=>{fixture.captures++;return capturePlayerBookmark(...args)}')
+        .replace('apply: applyPlayerBookmark', 'apply: (...args)=>{fixture.applies++;return applyPlayerBookmark(...args)}');
 }
 
 test.before(async () => {
@@ -96,7 +98,7 @@ function fixtureDocument({ width = 1100, height = 600, framePlatform = 'at' } = 
     const playerWindowControls={refresh(){}},playerNameOverlay={refresh(){},setVisible(){}};
     const playerPositionEditor={refresh(){},layoutChanged(){},close(){fixture.editorCloses++}};
     const channelSelectionIdleTimer={setVisible(){}};
-    window.fixture={rendered:0,editorCloses:0,nextId:0,remembered:new Map()};
+    window.fixture={rendered:0,editorCloses:0,nextId:0,remembered:new Map(),captures:0,applies:0};
     function getPlatform(platform){return {type:platform==='m3u8'?'hls':'iframe'}}
     // This fixture has no userscript; its audio transaction branch is inactive.
     function playerLayoutAudioAvailable(){return false}
@@ -661,4 +663,102 @@ test('mobile panel and preview stay within the viewport with many long channel n
     assert.ok(bounds.overflow <= 1, JSON.stringify(bounds));
     assert.ok(bounds.previewLeft >= bounds.left && bounds.previewRight <= bounds.right, JSON.stringify(bounds));
     assert.equal(await f.page.locator('.layout-bookmark-cell').count(), 4);
+});
+
+async function localDeleteConfirmation(page, count) {
+    await page.locator('.layout-bookmarks-delete-all').click();
+    const confirmation = page.locator('.layout-bookmarks-delete-confirm');
+    assert.equal(await confirmation.isVisible(), true);
+    assert.match(await confirmation.innerText(), new RegExp(String(count)));
+    assert.match(await confirmation.innerText(), /本機/);
+    assert.equal(await page.locator('.layout-bookmarks-delete-cancel').evaluate(node => node === document.activeElement), true, 'cancellation is the safe default focus');
+    return confirmation;
+}
+
+test('delete all local bookmarks requires inline confirmation and one undo restores the whole ordered library without capturing or applying', browserCase, async t => {
+    const f = await fixture(t);await f.page.locator('#layout-bookmarks-btn').click();
+    assert.equal(await f.page.locator('.layout-bookmarks-delete-all').isDisabled(), true, 'the empty-library control stays visible but disabled');
+    await f.page.locator('.layout-bookmarks-save').click();await f.page.evaluate(() => fixture.setFocus(fixture.keys()[1]));
+    await f.page.locator('.layout-bookmarks-save').click();await f.page.locator('.layout-bookmarks-save').click();
+    const library = await f.page.evaluate(() => layoutBookmarkMenu.store.list()), before = await remember(f);
+    const unchanged = await f.page.evaluate(() => ({ captures:fixture.captures, applies:fixture.applies, layout:fixture.geometry() }));
+    await localDeleteConfirmation(f.page, 3);
+    assert.equal(await f.page.locator('.layout-bookmarks-save').isDisabled(), true);
+    assert.equal(await f.page.locator('.layout-bookmark-rename').first().isDisabled(), true);
+    assert.equal(await f.page.locator('.layout-bookmarks-delete-all').isDisabled(), true);
+    await f.page.locator('.layout-bookmarks-delete-confirm-button').click();
+    await f.page.waitForFunction(() => layoutBookmarkMenu.store.list().length === 0 && document.getElementById('layout-bookmarks').getAttribute('aria-busy') === 'false');
+    assert.equal(await f.page.locator('.layout-bookmark-card').count(), 0);assert.equal(await f.page.locator('.layout-bookmarks-delete-all').isDisabled(), true);
+    assert.deepEqual(await f.page.evaluate(() => JSON.parse(localStorage.getItem('umininn.layoutBookmarks.v1')).bookmarks), []);
+    await f.page.locator('.layout-bookmarks-undo button').click();
+    await f.page.waitForFunction(() => layoutBookmarkMenu.store.list().length === 3);
+    assert.deepEqual(await f.page.evaluate(() => layoutBookmarkMenu.store.list()), library, 'batch undo preserves IDs, names, timestamps, colours, snapshots and order');
+    assert.deepEqual(await f.page.evaluate(() => ({ captures:fixture.captures, applies:fixture.applies, layout:fixture.geometry() })), unchanged);
+    await assertContinuity(f, before);
+});
+
+test('local delete-all cancellation, two-stage Escape, close and rename locking never delete a bookmark', browserCase, async t => {
+    const f = await fixture(t);await f.page.locator('#layout-bookmarks-btn').click();await f.page.locator('.layout-bookmarks-save').click();
+    const library = await f.page.evaluate(() => layoutBookmarkMenu.store.list()), before = await remember(f);
+    await localDeleteConfirmation(f.page, 1);await f.page.locator('.layout-bookmarks-delete-cancel').click();
+    assert.equal(await f.page.locator('.layout-bookmarks-delete-confirm').isVisible(), false);
+    await localDeleteConfirmation(f.page, 1);await f.page.keyboard.press('Escape');
+    assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true);assert.equal(await f.page.locator('.layout-bookmarks-delete-confirm').isVisible(), false);
+    await f.page.keyboard.press('Escape');assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), false);
+    await f.page.locator('#layout-bookmarks-btn').click();await localDeleteConfirmation(f.page, 1);await f.page.locator('.layout-bookmarks-close').click();
+    await f.page.locator('#layout-bookmarks-btn').click();assert.equal(await f.page.locator('.layout-bookmarks-delete-confirm').isVisible(), false);
+    await f.page.locator('.layout-bookmark-rename').click();await f.page.locator('.layout-bookmark-name-input').fill('保留中的草稿');
+    assert.equal(await f.page.locator('.layout-bookmarks-delete-all').isDisabled(), true);
+    await f.page.locator('.layout-bookmark-name-input').press('Escape');assert.equal(await f.page.locator('.layout-bookmarks-delete-all').isEnabled(), true);
+    assert.deepEqual(await f.page.evaluate(() => layoutBookmarkMenu.store.list()), library);await assertContinuity(f, before);
+});
+
+test('local delete-all reports a denied write without clearing the library or pretending success', browserCase, async t => {
+    const f = await fixture(t);await f.page.locator('#layout-bookmarks-btn').click();await f.page.locator('.layout-bookmarks-save').click();
+    const library = await f.page.evaluate(() => layoutBookmarkMenu.store.list()), before = await remember(f);
+    await localDeleteConfirmation(f.page, 1);
+    await f.page.evaluate(() => { Storage.prototype.setItem=function(){throw new DOMException('Local deletion denied','QuotaExceededError')}; });
+    await f.page.locator('.layout-bookmarks-delete-confirm-button').click();
+    await f.page.waitForFunction(() => document.querySelector('.layout-bookmarks-status.is-error')?.textContent);
+    assert.deepEqual(await f.page.evaluate(() => layoutBookmarkMenu.store.list()), library);assert.equal(await f.page.locator('.layout-bookmark-card').count(), 1);
+    assert.equal(await f.page.locator('.layout-bookmarks-undo').isVisible(), false);assert.equal(await f.page.locator('.layout-bookmarks-delete-confirm').isVisible(), false);
+    await assertContinuity(f, before);
+});
+
+test('a second real tab changing local bookmarks invalidates the frozen delete-all confirmation', {...browserCase,timeout:60000}, async t => {
+    for (const change of ['add','rename','reorder']) await t.test(change, async st => {
+        const f = await fixture(st);await f.page.locator('#layout-bookmarks-btn').click();
+        await f.page.locator('.layout-bookmarks-save').click();await f.page.locator('.layout-bookmarks-save').click();
+        const before = await remember(f), original = await f.page.evaluate(() => layoutBookmarkMenu.store.list());
+        await localDeleteConfirmation(f.page, 2);
+        const other = await f.page.context().newPage();await other.goto(siteUrl,{waitUntil:'load'});await other.locator('#layout-bookmarks-btn').click();
+        if(change==='add'){await other.locator('.layout-bookmarks-save').click();await other.waitForFunction(()=>layoutBookmarkMenu.store.list().length===3)}
+        else if(change==='rename'){await other.locator('.layout-bookmark-rename').first().click();await other.locator('.layout-bookmark-name-input').fill('其他分頁的新名稱');await other.locator('.layout-bookmark-name-input').press('Enter');await other.waitForFunction(()=>layoutBookmarkMenu.store.list()[0]?.name==='其他分頁的新名稱')}
+        else{await other.locator('.layout-bookmark-move-down').first().click();await other.waitForFunction(id=>layoutBookmarkMenu.store.list()[0]?.id===id,original[1].id)}
+        const latest = await other.evaluate(() => layoutBookmarkMenu.store.list());
+        await f.page.waitForFunction(expected=>JSON.stringify(layoutBookmarkMenu.store.list())===JSON.stringify(expected),latest);
+        assert.equal(await f.page.locator('.layout-bookmarks-delete-confirm').isVisible(), true);assert.match(await f.page.locator('.layout-bookmarks-delete-confirm').innerText(), /2/);
+        await f.page.locator('.layout-bookmarks-delete-confirm-button').click();await f.page.waitForFunction(()=>document.querySelector('.layout-bookmarks-status.is-error')?.textContent);
+        assert.deepEqual(await f.page.evaluate(()=>JSON.parse(localStorage.getItem('umininn.layoutBookmarks.v1')).bookmarks),latest);
+        assert.equal(await f.page.locator('.layout-bookmarks-delete-confirm').isVisible(), false);
+        await localDeleteConfirmation(f.page, latest.length);await f.page.locator('.layout-bookmarks-delete-cancel').click();await assertContinuity(f,before);
+    });
+});
+
+test('delete-all confirmation keeps Cancel and Confirm reachable in narrow and short viewports without scrolling the document',browserCase,async t=>{
+    for(const height of [640,320])await t.test('360×'+height,async st=>{
+        const f=await fixture(st,{viewport:{width:360,height},width:360,height:200});await f.page.locator('#layout-bookmarks-btn').click();await f.page.locator('.layout-bookmarks-save').click();
+        const scroll=await f.page.evaluate(()=>[scrollX,scrollY]);await localDeleteConfirmation(f.page,1);
+        for(const currentHeight of height===640?[640,320]:[320]){
+            if(currentHeight!==height)await f.page.setViewportSize({width:360,height:currentHeight});
+            fs.mkdirSync(path.join(root,'work'),{recursive:true});await f.page.screenshot({path:path.join(root,'work/bookmark-delete-confirm-'+engine+'-360x'+height+(currentHeight!==height?'-resized':'')+'.png')});
+            const controls=await f.page.locator('.layout-bookmarks-delete-actions button').evaluateAll(buttons=>{
+                const panel=document.getElementById('layout-bookmarks'),p=panel.getBoundingClientRect(),top=p.top+panel.clientTop,bottom=top+panel.clientHeight;
+                return buttons.map(button=>{const r=button.getBoundingClientRect();return {text:button.textContent,inside:r.top>=top&&r.bottom<=bottom&&r.left>=p.left&&r.right<=p.right,
+                    hit:document.elementFromPoint(r.left+r.width/2,r.top+r.height/2)===button}});
+            });
+            assert.ok(controls.length===2&&controls.every(control=>control.inside&&control.hit),JSON.stringify(controls));
+        }
+        assert.deepEqual(await f.page.evaluate(()=>[scrollX,scrollY]),scroll);await f.page.locator('.layout-bookmarks-delete-cancel').click();
+    });
 });

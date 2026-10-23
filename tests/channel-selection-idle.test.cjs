@@ -30,7 +30,10 @@ function fixture(source) {
     };
     const context = vm.createContext({
         document: { getElementById(id) { return id === 'channel-selection' ? panel : null; } },
-        window: { addEventListener(type, callback) { windowListeners.set(type, callback); } },
+        window: {
+            addEventListener(type, callback) { windowListeners.set(type, callback); },
+            UmininnMenuDismiss: { observe() { return { dispose() {} }; } }
+        },
         playerNameOverlay: { setVisible(value) { overlayVisible = value; } },
         layoutBookmarkMenu: null,
         setTimeout(callback, delay) { const id = ++nextId; timers.set(id, { at: now + delay, callback }); return id; },

@@ -378,3 +378,278 @@ test('queued shared writes freeze captured audio before awaiting other operation
     gate.resolve(); await Promise.all([reload, updating]);
     assert.equal(server.current().document.bookmarks[0].snapshot.audio.audible[0].volume, .4);
 });
+
+test('removeAll clears the confirmed complete list in one atomic write and bulk undo returns its original ordered entries', async () => {
+    const original = [entry('z'), entry('a'), entry('m')], server = backend(original), a = client(server);
+    await a.reload();
+    const deleted = await a.removeAll();
+    assert.deepEqual(deleted, original); assert.deepEqual(a.list(), []);
+    assert.deepEqual(server.current().document.bookmarks, []);
+    assert.equal(server.writes, 1); assert.equal(server.commits, 1); assert.equal(a.canUndo(), true);
+    deleted[0].name = 'Caller mutation';
+    const restored = await a.undo();
+    assert.deepEqual(restored, original); assert.deepEqual(a.list(), original);
+    assert.equal(server.writes, 2); assert.equal(a.canUndo(), false);
+    assert.equal(await a.undo(), null); assert.equal(server.writes, 2);
+});
+
+test('removeAll compares every canonical field and list order rather than only IDs or a count', async () => {
+    const changes = {
+        addition: list => list.push(entry('new')), deletion: list => list.pop(), order: list => list.reverse(),
+        name: list => list[0].name = 'Changed', createdAt: list => list[0].createdAt++, updatedAt: list => list[0].updatedAt++,
+        channelName: list => list[0].snapshot.channels[0].name = 'Changed channel',
+        channelColor: list => list[0].snapshot.channels[0].color = 20,
+        channelKey: list => list[0].snapshot.channels[0].key = 'at|changed',
+        columns: list => list[0].snapshot.columns = 3, aspectRatio: list => list[0].snapshot.aspectRatio = 1,
+        focus: list => list[0].snapshot.focus = { key: 'at|one', row: 0, column: 0, span: 2 },
+        channelOrder: list => list[0].snapshot.channels.reverse(),
+        audio: list => list[0].snapshot.audio = { version: 1, audible: [] },
+        audible: list => list[0].snapshot.audio = { version: 1, audible: [{ key: 'at|one', volume: .4 }] }
+    };
+    for (const [field, change] of Object.entries(changes)) {
+        const original = [entry('a'), entry('b')];
+        original[0].snapshot = { ...snapshot(), columns: 2, channels: [...snapshot().channels, { key: 'at|two', name: 'Two', color: 30 }] };
+        const server = backend(original), a = client(server);
+        await a.reload(); const expected = a.list(), latest = copy(original); change(latest);
+        server.replace({ version: 1, bookmarks: latest });
+        await assert.rejects(a.removeAll({ expected }), error => error.code === 'conflict' && /整份.*清單.*再次確認/.test(error.message), field);
+        assert.equal(server.writes, 0, field); assert.deepEqual(a.list(), original, field);
+        assert.deepEqual(server.current().document.bookmarks, latest, field);
+    }
+});
+
+test('removeAll uses canonical formatting and captures its confirmation before queued work or caller mutations', async () => {
+    const original = [entry('a'), entry('b')], server = backend(original), a = client(server);
+    await a.reload();
+    const gate = deferred(), reached = deferred();
+    server.readHook = async value => { server.readHook = null; reached.resolve(); await gate.promise; return value; };
+    const reload = a.reload(); await reached.promise;
+    const expected = a.list(), clearing = a.removeAll({ expected });
+    expected.reverse(); expected[0].name = 'Caller changed after confirmation';
+    gate.resolve(); await reload;
+    assert.deepEqual(await clearing, original);
+    await a.undo();
+    const renamed = a.rename('a', 'Queued change'), staleClear = a.removeAll();
+    await renamed; await assert.rejects(staleClear, error => error.code === 'conflict');
+    assert.equal(a.list()[0].name, 'Queued change'); assert.equal(a.list().length, 2);
+    const canonical = a.list();
+    server.replace({ version: 1, bookmarks: canonical.map(item => ({ ...item, name: ' ' + item.name + ' ' })) });
+    assert.deepEqual(await a.removeAll({ expected: canonical }), canonical, 'formatting normalized to the same canonical data is unchanged');
+});
+
+test('a removeAll CAS race never deletes a new or modified entry and preserves the previous single undo', async () => {
+    for (const change of ['add', 'modify', 'move']) {
+        const server = backend(['backup', 'a', 'b'].map(id => entry(id))), a = client(server);
+        await a.reload(); await a.remove('backup');
+        const cached = a.list(); let raced = false;
+        server.writeHook = () => {
+            if (raced) return; raced = true;
+            const latest = server.current().document;
+            if (change === 'add') latest.bookmarks.unshift(entry('new'));
+            if (change === 'modify') latest.bookmarks[0].name = 'Concurrent name';
+            if (change === 'move') latest.bookmarks.reverse();
+            server.replace(latest);
+        };
+        const writes = server.writes;
+        await assert.rejects(a.removeAll(), error => error.code === 'conflict', change);
+        assert.equal(server.writes, writes + 1, 'the retry rechecks confirmation before another write');
+        assert.deepEqual(a.list(), cached); assert.equal(a.canUndo(), true);
+        server.writeHook = null;
+        const restored = await a.undo();
+        assert.equal(restored.id, 'backup'); assert.equal(Array.isArray(restored), false, 'single undo retains its entry return shape');
+        assert.equal(a.list().some(item => item.id === 'backup'), true);
+        if (change === 'add') assert.equal(a.list().some(item => item.id === 'new'), true);
+    }
+});
+
+test('empty removeAll writes nothing and preserves either a single or bulk undo; stale empty confirmation still conflicts', async () => {
+    for (const bulk of [false, true]) {
+        const server = backend([entry('a')]), a = client(server); await a.reload();
+        if (bulk) await a.removeAll(); else await a.remove('a');
+        const writes = server.writes;
+        assert.deepEqual(await a.removeAll(), []); assert.equal(server.writes, writes); assert.equal(a.canUndo(), true);
+        server.replace({ version: 1, bookmarks: [entry('new')] });
+        await assert.rejects(a.removeAll({ expected: [] }), error => error.code === 'conflict');
+        assert.equal(server.writes, writes); assert.equal(a.canUndo(), true);
+        const restored = await a.undo();
+        assert.equal(Array.isArray(restored), bulk); assert.deepEqual(ids(a), bulk ? ['new', 'a'] : ['a', 'new']);
+    }
+});
+
+test('failed reads, invalid confirmations and unknown clear outcomes retain cache and the previous undo', async () => {
+    const server = backend([entry('backup'), entry('a')]), cache = storage(), a = client(server, { cacheStorage: cache });
+    await a.reload(); await a.remove('backup');
+    const cached = a.list(), raw = [...cache.values], writes = server.writes;
+    for (const expected of [null, {}, [entry('duplicate'), entry('duplicate')]]) {
+        await assert.rejects(a.removeAll({ expected }));
+        assert.equal(server.writes, writes); assert.deepEqual(a.list(), cached); assert.equal(a.canUndo(), true);
+    }
+    const read = server.read;
+    server.read = async () => { throw Object.assign(Error('offline'), { code: 'network' }); };
+    await assert.rejects(a.removeAll(), error => error.code === 'network');
+    assert.deepEqual(a.list(), cached); assert.equal(a.canUndo(), true);
+    server.read = read;
+    server.write = async function(next) { this.writes++; this.replace(next); throw Object.assign(Error('lost acknowledgement'), { code: 'network', outcomeUnknown: true }); };
+    await assert.rejects(a.removeAll(), error => error.outcomeUnknown === true);
+    assert.equal(server.writes, writes + 1); assert.deepEqual(server.current().document.bookmarks, []);
+    assert.deepEqual(a.list(), cached); assert.deepEqual([...cache.values], raw); assert.equal(a.canUndo(), true);
+    assert.notEqual(a.getSyncState(), 'synced');
+});
+
+test('a mismatching or malformed bulk acknowledgement is unknown and cannot replace cache or undo', async () => {
+    for (const badDocument of [{ version: 1, bookmarks: [entry('unexpected')] }, { version: 999, bookmarks: [] }]) {
+        const server = backend([entry('backup'), entry('a')]), a = client(server);
+        await a.reload(); await a.remove('backup'); const cached = a.list(), write = server.write.bind(server);
+        server.write = async (next, token) => { await write(next, token); return { document: badDocument, token: 'unconfirmed' }; };
+        const writes = server.writes;
+        await assert.rejects(a.removeAll(), error => error.code === 'invalid-response' && error.outcomeUnknown === true);
+        assert.equal(server.writes, writes + 1); assert.deepEqual(a.list(), cached); assert.equal(a.canUndo(), true);
+    }
+});
+
+test('bulk undo keeps new records in their current order and restores the original batch order without duplicating identical IDs', async () => {
+    const original = ['a', 'b', 'c'].map(id => entry(id)), server = backend(original), a = client(server);
+    await a.reload(); await a.removeAll();
+    server.replace({ version: 1, bookmarks: [entry('new-y'), entry('b'), entry('new-x')] });
+    const restored = await a.undo();
+    assert.deepEqual(restored, original); assert.deepEqual(ids(a), ['new-y', 'new-x', 'a', 'b', 'c']);
+    assert.equal(a.list().filter(item => item.id === 'b').length, 1); assert.equal(a.canUndo(), false);
+});
+
+test('bulk undo already restored elsewhere is a verified no-op preserving current order and returns the complete batch', async () => {
+    const original = ['a', 'b'].map(id => entry(id)), server = backend(original), a = client(server);
+    await a.reload(); await a.removeAll();
+    server.replace({ version: 1, bookmarks: [entry('b'), entry('new'), entry('a')] });
+    const writes = server.writes;
+    assert.deepEqual(await a.undo(), original);
+    assert.equal(server.writes, writes); assert.deepEqual(ids(a), ['b', 'new', 'a']); assert.equal(a.canUndo(), false);
+});
+
+test('bulk undo rejects any same-ID content change before writing and retains the entire undo batch', async () => {
+    for (const field of ['name', 'snapshot', 'createdAt', 'updatedAt']) {
+        const server = backend([entry('a'), entry('b')]), a = client(server); await a.reload(); await a.removeAll();
+        const collision = entry('b');
+        if (field === 'name') collision.name = 'Changed';
+        if (field === 'snapshot') collision.snapshot = snapshot('at|other');
+        if (field === 'createdAt') collision.createdAt++;
+        if (field === 'updatedAt') collision.updatedAt++;
+        server.replace({ version: 1, bookmarks: [entry('new'), collision] });
+        const before = server.current().document, writes = server.writes;
+        await assert.rejects(a.undo(), error => error.code === 'conflict', field);
+        assert.equal(server.writes, writes); assert.deepEqual(server.current().document, before); assert.equal(a.canUndo(), true);
+    }
+});
+
+test('bulk undo checks count and encoded-size quotas before its atomic restore', async () => {
+    const original = [entry('a'), entry('b')], server = backend(original), a = client(server);
+    await a.reload(); await a.removeAll();
+    server.replace({ version: 1, bookmarks: Array.from({ length: 49 }, (_, index) => entry('new-' + index)) });
+    const writes = server.writes;
+    await assert.rejects(a.undo(), error => error.code === 'invalid');
+    assert.equal(server.writes, writes); assert.equal(server.current().document.bookmarks.length, 49); assert.equal(a.canUndo(), true);
+    server.replace({ version: 1, bookmarks: Array.from({ length: 48 }, (_, index) => entry('new-' + index)) });
+    assert.deepEqual(await a.undo(), original); assert.equal(a.list().length, 50);
+    const huge = { ...snapshot(), columns: 16, channels: Array.from({ length: 150 }, (_, index) => ({ key: 'm3u8|' + index + 'x'.repeat(3500), name: '台'.repeat(190), color: 120 })) };
+    const largeOld = { ...entry('large-old'), snapshot: huge }, largeNew = { ...entry('large-new'), snapshot: huge };
+    const bytesServer = backend([largeOld]), b = client(bytesServer); await b.reload(); await b.removeAll();
+    bytesServer.replace({ version: 1, bookmarks: [largeNew] }); const bytesWrites = bytesServer.writes;
+    await assert.rejects(b.undo(), error => error.code === 'invalid');
+    assert.equal(bytesServer.writes, bytesWrites); assert.equal(b.canUndo(), true);
+    assert.deepEqual(bytesServer.current().document.bookmarks, [largeNew]);
+});
+
+test('bulk undo retries safely around new arrivals but conflicts with a late same-ID replacement', async () => {
+    for (const collision of [false, true]) {
+        const original = [entry('a'), entry('b')], server = backend(original), a = client(server);
+        await a.reload(); await a.removeAll();
+        server.replace({ version: 1, bookmarks: [entry('new-first')] }); let raced = false;
+        server.writeHook = () => {
+            if (raced) return; raced = true;
+            const latest = server.current().document;
+            latest.bookmarks.unshift(collision ? entry('b', 'Concurrent replacement') : entry('new-second')); server.replace(latest);
+        };
+        const writes = server.writes;
+        if (collision) {
+            await assert.rejects(a.undo(), error => error.code === 'conflict');
+            assert.equal(server.writes, writes + 1); assert.equal(a.canUndo(), true);
+            assert.deepEqual(server.current().document.bookmarks.map(item => item.id), ['b', 'new-first']);
+        } else {
+            assert.deepEqual(await a.undo(), original);
+            assert.equal(server.writes, writes + 2); assert.deepEqual(ids(a), ['new-second', 'new-first', 'a', 'b']);
+        }
+    }
+});
+
+test('unknown bulk undo outcomes keep the batch for a later verified idempotent retry', async () => {
+    const original = [entry('a'), entry('b')], server = backend(original), a = client(server);
+    await a.reload(); await a.removeAll();
+    const write = server.write.bind(server);
+    server.write = async (next, token) => { await write(next, token); throw Object.assign(Error('response lost'), { code: 'network', outcomeUnknown: true }); };
+    const writes = server.writes;
+    await assert.rejects(a.undo(), error => error.outcomeUnknown === true);
+    assert.equal(server.writes, writes + 1); assert.deepEqual(a.list(), []); assert.equal(a.canUndo(), true);
+    assert.deepEqual(server.current().document.bookmarks, original);
+    server.write = write;
+    assert.deepEqual(await a.undo(), original);
+    assert.equal(server.writes, writes + 1, 'a verified existing batch requires no second restore write');
+    assert.equal(a.canUndo(), false);
+});
+
+test('a quota reached during a bulk-undo CAS retry prevents every restoration write', async () => {
+    const original = [entry('a'), entry('b')], server = backend(original), a = client(server);
+    await a.reload(); await a.removeAll();
+    server.replace({ version: 1, bookmarks: Array.from({ length: 48 }, (_, index) => entry('new-' + index)) });
+    let raced = false;
+    server.writeHook = () => {
+        if (raced) return; raced = true;
+        const latest = server.current().document; latest.bookmarks.unshift(entry('late-arrival')); server.replace(latest);
+    };
+    const writes = server.writes;
+    await assert.rejects(a.undo(), error => error.code === 'invalid');
+    assert.equal(server.writes, writes + 1); assert.equal(server.current().document.bookmarks.length, 49);
+    assert.equal(server.current().document.bookmarks.some(item => item.id === 'a' || item.id === 'b'), false);
+    assert.equal(a.canUndo(), true);
+});
+
+test('a bad bulk-undo acknowledgement remains unknown while canonical equivalent acknowledgements succeed', async () => {
+    for (const bad of [false, true]) {
+        const original = [entry('a'), entry('b')], server = backend(original), a = client(server);
+        await a.reload(); await a.removeAll();
+        const write = server.write.bind(server);
+        server.write = async (next, token) => {
+            const saved = await write(next, token);
+            saved.document.bookmarks = bad ? [entry('unexpected')] : saved.document.bookmarks.map(item => ({ ...item, name: ' ' + item.name + ' ' }));
+            return saved;
+        };
+        const writes = server.writes;
+        if (bad) {
+            await assert.rejects(a.undo(), error => error.code === 'invalid-response' && error.outcomeUnknown);
+            assert.deepEqual(a.list(), []); assert.equal(a.canUndo(), true);
+            assert.deepEqual(await a.undo(), original, 'the authoritative read can reconcile an already committed restore');
+        } else assert.deepEqual(await a.undo(), original);
+        assert.equal(server.writes, writes + 1); assert.deepEqual(a.list(), original); assert.equal(a.canUndo(), false);
+    }
+});
+
+test('exhausted removeAll CAS conflicts require fresh confirmation and unknown conflicts are never retried', async () => {
+    for (const unknown of [false, true]) {
+        const server = backend([entry('a')]), a = client(server); await a.reload();
+        server.write = async function() { this.writes++; throw Object.assign(Error('busy CAS'), { code: 'conflict', outcomeUnknown: unknown }); };
+        await assert.rejects(a.removeAll(), error => error.code === 'conflict' && (unknown ? error.outcomeUnknown : /整份.*清單.*再次確認/.test(error.message)));
+        assert.equal(server.writes, unknown ? 1 : 3); assert.deepEqual(ids(a), ['a']); assert.equal(a.canUndo(), false);
+    }
+});
+
+test('an older queued bulk undo cannot erase a newer successful deletion undo record', async () => {
+    const server = backend([entry('original')]), a = client(server, { now: () => 2 });
+    await a.reload(); await a.removeAll();
+    const gate = deferred(), reached = deferred();
+    server.readHook = async value => { server.readHook = null; reached.resolve(); await gate.promise; return value; };
+    const adding = a.add('New', snapshot()); await reached.promise;
+    const next = { ...entry('added-1', 'New'), createdAt: 2, updatedAt: 2 };
+    const clearing = a.removeAll({ expected: [next] }), olderUndo = a.undo();
+    gate.resolve(); await adding; await clearing;
+    assert.deepEqual(await olderUndo, [entry('original')]);
+    assert.equal(a.canUndo(), true, 'the newer deleted batch remains available');
+    assert.deepEqual(await a.undo(), [next]); assert.deepEqual(ids(a), ['original', 'added-1']);
+});
