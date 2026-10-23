@@ -92,7 +92,7 @@
             await loadScript('./menu-dismiss.js?v=20261023-scroll-menu-dismiss');
             await loadScript('./layout-bookmarks.js?v=20261023-scroll-menu-dismiss');
             await loadScript('./shared-bookmarks.js?v=20261022-bookmark-top');
-            await loadScript('./tv-app.js?v=20261023-unified-audio');
+            await loadScript('./tv-app.js?v=20261023-audio-edge-cases');
             if (!window.tvAppReady || typeof window.tvAppReady.then !== 'function') {
                 throw new Error('TV application did not initialize');
             }

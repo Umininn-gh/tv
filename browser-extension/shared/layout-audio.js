@@ -363,17 +363,29 @@
             }
             return true;
         }
+        function hiddenPeer(record, item, result) {
+            // NO_MEDIA means no visible primary media. A readable peer may
+            // still contain hidden audio that the all-media guard can silence.
+            return !record.focusTarget && item.readable === true && result?.code === 'NO_MEDIA' && result.state?.available === false;
+        }
+        function guardedHiddenPeer(record, item, result) {
+            return hiddenPeer(record, item, result) && result.state.muted === true &&
+                result.state.muteSupported === true && result.state.muteGuardActive === true;
+        }
         async function focusRead(ctx, stage, record) {
             const item = entries().get(record.key);
             if (!item || !same(record.lease, item) || !current(item)) return false;
             if (item.ready !== true && item.readable !== true) { record.state = null; record.guardConfirmed = false; return false; }
             const outcome = await read(ctx, stage, record.lease);
             if (!live(ctx, stage)) return false;
-            if (outcome.kind !== 'result' || outcome.value?.ok !== true || outcome.value?.state?.available === false) {
+            const hidden = outcome.kind === 'result' && hiddenPeer(record, item, outcome.value);
+            if (outcome.kind !== 'result' || !hidden && (outcome.value?.ok !== true || outcome.value?.state?.available === false)) {
                 record.failed = true; record.reason = 'read-unconfirmed'; return false;
             }
             focusState(record, outcome.value.state);
-            record.guardConfirmed = record.state.muted === true && record.state.muteGuardActive;
+            record.guardConfirmed = hidden ? guardedHiddenPeer(record, item, outcome.value) :
+                record.state.muted === true && record.state.muteGuardActive;
+            if (hidden) return true; // The guarded write below must prove actual silence.
             if (!own(record.state, 'muted')) { record.failed = true; record.reason = 'mute-unsupported'; return false; }
             return true;
         }
@@ -381,7 +393,9 @@
             const opening = record.focusTarget && (command.action === 'setVolume' || command.action === 'setMuted' && command.value === false);
             const outcome = await write(ctx, stage, record, command, opening ? () => focusSafe(ctx) : null);
             if (!live(ctx, stage)) return false;
-            if (outcome.kind !== 'result' || outcome.value?.ok !== true) {
+            const hiddenGuard = command.action === 'setMuted' && command.value === true && command.guard === true &&
+                outcome.kind === 'result' && guardedHiddenPeer(record, record.lease, outcome.value);
+            if (outcome.kind !== 'result' || outcome.value?.ok !== true && !hiddenGuard) {
                 record.failed = true; record.reason = `${command.action}-unconfirmed`; return false;
             }
             focusState(record, outcome.value.state);
@@ -390,7 +404,14 @@
                 Math.abs(record.state[property] - command.value) >= 0.001 : record.state[property] !== command.value)) {
                 record.failed = true; record.reason = `${property}-unconfirmed`; return false;
             }
-            if (command.action === 'setMuted' && command.value === true && command.guard === true) record.guardConfirmed = true;
+            if (command.action === 'setMuted' && command.value === true && command.guard === true) {
+                // A successful mute does not prove the platform accepted its
+                // persistent guard. An explicit refusal must keep focus closed.
+                record.guardConfirmed = record.state.muteGuardActive === true;
+                if (!record.guardConfirmed) {
+                    record.failed = true; record.reason = 'mute-guard-unconfirmed'; return false;
+                }
+            }
             else if (record.state.muted !== true || outcome.value.state?.muteGuardActive === false) record.guardConfirmed = false;
             return true;
         }
@@ -400,7 +421,7 @@
             await each(peers, async record => {
                 record.guardConfirmed = false;
                 if (!await focusRead(ctx, stage, record) || !live(ctx, stage)) return;
-                if (record.state.muted !== true || !record.state.muteGuardActive) {
+                if (record.state.muted !== true || !record.guardConfirmed) {
                     if (!await focusWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true })) return;
                 }
                 if (!live(ctx, stage)) return;
@@ -469,7 +490,14 @@
             if (!live(ctx, stage)) return;
             await closeUnsafeFocus(ctx, stage, target);
             if (!live(ctx, stage)) return;
-            const pending = peers.some(record => !record.finished && !record.failed) || target && !target.failed && !target.state;
+            // A frame can arrive or renew its document during the last target
+            // read. It was absent from this pass, so keep a bounded next pass
+            // rather than completing with no poll left to discover that peer.
+            const drifted = [...entries().values()].some(item => {
+                const record = ctx.records.get(item.key);
+                return !record?.lease || !same(record.lease, item);
+            });
+            const pending = drifted || peers.some(record => !record.finished && !record.failed) || target && !target.failed && !target.state;
             for (const record of peers) if (record.failed) finish(record, 'failed', record.reason);
             if (target) {
                 if (!target.failed && focusSafe(ctx) && target.state?.muted === false && target.volumeSatisfied) finish(target, 'restored');
@@ -506,6 +534,13 @@
             }
             if (typeof policy?.beforeOpen === 'function') ctx.beforeOpen = policy.beforeOpen;
             if (ctx.restoreDeadline === null || ctx.focus && ctx.phase === 'complete') ctx.restoreDeadline = now() + (ctx.focus ? FOCUS_MS : RESTORE_MS);
+            // A zero-delay timer does not stop Promise microtasks: without an
+            // eager check, a retry after timeout could finish and unmute before
+            // its expired stage's timer had a chance to run.
+            if (ctx.focus && now() >= ctx.restoreDeadline) {
+                timeout(ctx);
+                return Promise.resolve(summary(ctx, 'TIMEOUT'));
+            }
             if (ctx.focus) focusCohort(ctx);
             // Reuse after playback recovery checks the original snapshot again;
             // it does not extend the first round's deadline for loading players.

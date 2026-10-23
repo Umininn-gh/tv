@@ -1179,8 +1179,7 @@ function commitPlayerAudioLayout(batch, restore) {
         const focus = request.focus;
         if (!error && value === true && focus && focus.target?.isConnected &&
             activePlayers.get(focus.key) === focus.entry && getPlayerElement(focus.entry) === focus.target && enlargedPlayerFocus?.key === focus.key &&
-            document.documentElement.getAttribute('data-umininn-player-audio-intent') === focus.intent &&
-            focus.target.getAttribute('data-umininn-player-layout-focus-request') === focus.id) {
+            document.documentElement.getAttribute('data-umininn-player-audio-intent') === focus.intent) {
             batch.pane.setAttribute('data-umininn-layout-audio-focus', focus.id);
         }
     }
@@ -2783,7 +2782,7 @@ applyPlayerBookmark = guardPlayerAudioLayout(applyPlayerBookmark);
             await closePlayer(key);
         } else if (button.dataset.playerAction === 'enlarge') {
             const entry = activePlayers.get(key);
-            if (!entry) return;
+            if (!entry || activePlayers.size < 2 || enlargedPlayerFocus?.key === key && enlargedPlayerFocus.span >= 256) return;
             const target = getPlayerElement(entry);
             let focus;
             if (target && document.documentElement.hasAttribute('data-umininn-player-unified-audio-ready')) {

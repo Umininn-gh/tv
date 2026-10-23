@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.25
+// @version      1.0.26
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -30,7 +30,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.25",
+        userscriptVersion: "1.0.26",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -1151,17 +1151,29 @@
             }
             return true;
         }
+        function hiddenPeer(record, item, result) {
+            // NO_MEDIA means no visible primary media. A readable peer may
+            // still contain hidden audio that the all-media guard can silence.
+            return !record.focusTarget && item.readable === true && result?.code === 'NO_MEDIA' && result.state?.available === false;
+        }
+        function guardedHiddenPeer(record, item, result) {
+            return hiddenPeer(record, item, result) && result.state.muted === true &&
+                result.state.muteSupported === true && result.state.muteGuardActive === true;
+        }
         async function focusRead(ctx, stage, record) {
             const item = entries().get(record.key);
             if (!item || !same(record.lease, item) || !current(item)) return false;
             if (item.ready !== true && item.readable !== true) { record.state = null; record.guardConfirmed = false; return false; }
             const outcome = await read(ctx, stage, record.lease);
             if (!live(ctx, stage)) return false;
-            if (outcome.kind !== 'result' || outcome.value?.ok !== true || outcome.value?.state?.available === false) {
+            const hidden = outcome.kind === 'result' && hiddenPeer(record, item, outcome.value);
+            if (outcome.kind !== 'result' || !hidden && (outcome.value?.ok !== true || outcome.value?.state?.available === false)) {
                 record.failed = true; record.reason = 'read-unconfirmed'; return false;
             }
             focusState(record, outcome.value.state);
-            record.guardConfirmed = record.state.muted === true && record.state.muteGuardActive;
+            record.guardConfirmed = hidden ? guardedHiddenPeer(record, item, outcome.value) :
+                record.state.muted === true && record.state.muteGuardActive;
+            if (hidden) return true; // The guarded write below must prove actual silence.
             if (!own(record.state, 'muted')) { record.failed = true; record.reason = 'mute-unsupported'; return false; }
             return true;
         }
@@ -1169,7 +1181,9 @@
             const opening = record.focusTarget && (command.action === 'setVolume' || command.action === 'setMuted' && command.value === false);
             const outcome = await write(ctx, stage, record, command, opening ? () => focusSafe(ctx) : null);
             if (!live(ctx, stage)) return false;
-            if (outcome.kind !== 'result' || outcome.value?.ok !== true) {
+            const hiddenGuard = command.action === 'setMuted' && command.value === true && command.guard === true &&
+                outcome.kind === 'result' && guardedHiddenPeer(record, record.lease, outcome.value);
+            if (outcome.kind !== 'result' || outcome.value?.ok !== true && !hiddenGuard) {
                 record.failed = true; record.reason = `${command.action}-unconfirmed`; return false;
             }
             focusState(record, outcome.value.state);
@@ -1178,7 +1192,14 @@
                 Math.abs(record.state[property] - command.value) >= 0.001 : record.state[property] !== command.value)) {
                 record.failed = true; record.reason = `${property}-unconfirmed`; return false;
             }
-            if (command.action === 'setMuted' && command.value === true && command.guard === true) record.guardConfirmed = true;
+            if (command.action === 'setMuted' && command.value === true && command.guard === true) {
+                // A successful mute does not prove the platform accepted its
+                // persistent guard. An explicit refusal must keep focus closed.
+                record.guardConfirmed = record.state.muteGuardActive === true;
+                if (!record.guardConfirmed) {
+                    record.failed = true; record.reason = 'mute-guard-unconfirmed'; return false;
+                }
+            }
             else if (record.state.muted !== true || outcome.value.state?.muteGuardActive === false) record.guardConfirmed = false;
             return true;
         }
@@ -1188,7 +1209,7 @@
             await each(peers, async record => {
                 record.guardConfirmed = false;
                 if (!await focusRead(ctx, stage, record) || !live(ctx, stage)) return;
-                if (record.state.muted !== true || !record.state.muteGuardActive) {
+                if (record.state.muted !== true || !record.guardConfirmed) {
                     if (!await focusWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true })) return;
                 }
                 if (!live(ctx, stage)) return;
@@ -1257,7 +1278,14 @@
             if (!live(ctx, stage)) return;
             await closeUnsafeFocus(ctx, stage, target);
             if (!live(ctx, stage)) return;
-            const pending = peers.some(record => !record.finished && !record.failed) || target && !target.failed && !target.state;
+            // A frame can arrive or renew its document during the last target
+            // read. It was absent from this pass, so keep a bounded next pass
+            // rather than completing with no poll left to discover that peer.
+            const drifted = [...entries().values()].some(item => {
+                const record = ctx.records.get(item.key);
+                return !record?.lease || !same(record.lease, item);
+            });
+            const pending = drifted || peers.some(record => !record.finished && !record.failed) || target && !target.failed && !target.state;
             for (const record of peers) if (record.failed) finish(record, 'failed', record.reason);
             if (target) {
                 if (!target.failed && focusSafe(ctx) && target.state?.muted === false && target.volumeSatisfied) finish(target, 'restored');
@@ -1294,6 +1322,13 @@
             }
             if (typeof policy?.beforeOpen === 'function') ctx.beforeOpen = policy.beforeOpen;
             if (ctx.restoreDeadline === null || ctx.focus && ctx.phase === 'complete') ctx.restoreDeadline = now() + (ctx.focus ? FOCUS_MS : RESTORE_MS);
+            // A zero-delay timer does not stop Promise microtasks: without an
+            // eager check, a retry after timeout could finish and unmute before
+            // its expired stage's timer had a chance to run.
+            if (ctx.focus && now() >= ctx.restoreDeadline) {
+                timeout(ctx);
+                return Promise.resolve(summary(ctx, 'TIMEOUT'));
+            }
             if (ctx.focus) focusCohort(ctx);
             // Reuse after playback recovery checks the original snapshot again;
             // it does not extend the first round's deadline for loading players.
@@ -2698,9 +2733,11 @@
             // older issued commands still drain before the target may open.
             // Legacy callers only need the lane for busy entries.
             const cohort = currentEntries().filter(entry => (all || entry.busy) && (entry.kind === 'native' || entry.kind === 'frame' && entry.target));
+            const generation = audioControlGeneration;
             let cursor = 0;
             const task = Promise.all(Array.from({ length: Math.min(4, cohort.length) }, async () => {
-                while (cursor < cohort.length && !disposed) await execute(cohort[cursor++], { action: 'setMuted', value: true, guard: true });
+                while (cursor < cohort.length && !disposed && generation === audioControlGeneration)
+                    await execute(cohort[cursor++], { action: 'setMuted', value: true, guard: true });
             }));
             urgentAudioTasks.add(task);
             void task.finally(() => urgentAudioTasks.delete(task));
@@ -2951,6 +2988,15 @@
                     guardedEntries.delete(entry);
                 }
                 entry.target = { frameId: data.frameId, token: data.token, documentId: typeof data.documentId === 'string' ? data.documentId : null };
+                if (first) for (const intent of new Set([audioFocusIntent, ...layoutFocusCandidates.values()])) {
+                    if (!intent?.unified || intent.entry !== entry) continue;
+                    if (intent.awaitingFirstTarget) {
+                        // Candidates can finish loading behind a newer click.
+                        // Bind once so a valid fallback keeps its own document.
+                        intent.generation = entry.generation;
+                        intent.awaitingFirstTarget = false;
+                    } else if (intent === audioFocusIntent && intent.generation !== entry.generation) invalidateLayoutAudio();
+                }
                 clearProbeTimers(entry);
                 if (first || !entry.busy) applyResult(entry, data.result);
                 if (first && globalMuted !== null && !audioFocusIntent && layoutTicket === null) void execute(entry, { action: 'setMuted', value: globalMuted });
@@ -3120,6 +3166,7 @@
                 `已靜音其他播放器，只開啟「${value.name}」的聲音（音量 ${typeof value.volume === 'number' ? Math.round(value.volume * 100) : 100}%）。`;
             else if (value.phase === 'removed') text = '目標格已移除或更換，已取消開聲。';
             else if (value.phase === 'partial') text = `未開啟目標格的聲音；${value.failures.map(item => `${item.name}：${reasons[item.code] || item.code}`).join('；')}。請確認後重試。`;
+            if (value.phase === 'focused' && value.volumeWarning) text += '部分已靜音播放器未能還原音量。';
             audioFocusStatus.textContent = text;
             audioFocusStatus.hidden = !text;
             if (toggle) {
@@ -3160,7 +3207,8 @@
         }
         function validUnifiedTarget(intent) {
             return intent.target?.isConnected && intent.target.parentElement === doc.getElementById('multi-stream-container') &&
-                entries.get(intent.target) === intent.entry && (!intent.entry || intent.entry.generation === intent.generation);
+                entries.get(intent.target) === intent.entry && (!intent.entry || intent.entry.generation === intent.generation ||
+                    intent.awaitingFirstTarget && !intent.entry.target);
         }
         function newUnifiedIntent(target, requestId, committed) {
             cancelPendingRecovery(); recoveryFlow?.cancel(); clearPreparation();
@@ -3173,6 +3221,7 @@
             win.postMessage(envelope('site:audio-preference', { muted: true }), win.location.origin);
             const entry = entries.get(target);
             const intent = audioFocusIntent = { unified: true, target, entry, generation: entry?.generation,
+                awaitingFirstTarget: entry?.kind === 'frame' && !entry.target,
                 requestId, committed, focused: false, running: false, holding: true, repairs: 0, runId: 0 };
             refreshSummary();
             if (!committed) layoutFocusCandidates.set(requestId, intent);
@@ -3205,15 +3254,21 @@
             if (disposed || audioFocusIntent !== intent || runId !== intent.runId) return;
             intent.running = false;
             intent.holding = result.code === 'PENDING';
-            intent.focused = result.code === 'COMPLETE';
+            intent.focused = unifiedFocusOpened(intent, result);
             intent.lastFingerprint = audioFingerprint();
             showUnifiedStatus(intent, result);
             if (!intent.holding) queueAudioFocusReconcile();
         }
+        function unifiedFocusOpened(intent, result) {
+            if (result.code === 'COMPLETE') return true;
+            return result.code === 'PARTIAL' && result.pending === 0 && result.failed === 0 &&
+                result.results?.some(item => item.key === intent.target.getAttribute('data-channel-key') && item.status === 'restored') &&
+                result.results.every(item => item.status !== 'skipped' || item.reason === 'volume-unsupported');
+        }
         function showUnifiedStatus(intent, result) {
             if (audioFocusIntent !== intent) return;
-            if (result.code === 'COMPLETE') showAudioFocusStatus({ phase: 'focused', volume: 1, muted: false,
-                name: intent.entry?.name.textContent || '目標格' });
+            if (unifiedFocusOpened(intent, result)) showAudioFocusStatus({ phase: 'focused', volume: 1, muted: false,
+                name: intent.entry?.name.textContent || '目標格', volumeWarning: result.code === 'PARTIAL' });
             else if (!['PENDING', 'PREPARED', 'RUNNING'].includes(result.code)) showAudioFocusStatus({ phase: 'partial',
                 failures: [{ name: intent.entry?.name.textContent || '目標格', code: result.code === 'CANCELLED' ? 'stale' : 'unconfirmed' }] });
         }
@@ -3460,7 +3515,7 @@
                             const intent = audioFocusIntent;
                             if (intent?.unified && intent.ticket === value.ticket && ['waiting', 'complete', 'timeout'].includes(value.phase)) {
                                 intent.holding = value.code === 'PENDING';
-                                intent.focused = value.code === 'COMPLETE';
+                                intent.focused = unifiedFocusOpened(intent, value);
                                 intent.lastFingerprint = audioFingerprint();
                                 showUnifiedStatus(intent, value);
                             }

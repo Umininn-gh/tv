@@ -164,7 +164,7 @@ fixture.grid=function(){const pane=document.getElementById('multi-stream-contain
 };
 fixture.mount();fixture.initialGrid=fixture.grid();fixture.initialGeometry=fixture.geometry();`;
 
-async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,catalogChannels=0,hasTouch=false,framePlatform='at',productionKick=false,productionTwitch=false,clock=false,overlayTimeoutSeconds,audioUserscript=false,fixtureBrowser=browser}={}){
+async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,catalogChannels=0,hasTouch=false,framePlatform='at',productionKick=false,productionTwitch=false,clock=false,overlayTimeoutSeconds,audioUserscript=false,lateAudioFrame=null,fixtureBrowser=browser}={}){
     const context=await fixtureBrowser.newContext({viewport,serviceWorkers:'block',...(hasTouch?{hasTouch:true}:{})});t.after(()=>context.close());
     if(storageSeed||denyStorage)await context.addInitScript(({storageSeed,denyStorage,origin})=>{
         if(location.origin!==origin)return;
@@ -188,7 +188,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     <div ${audioUserscript?'id="input-container"':''} style="height:${audioUserscript?40:30}px;flex:none;${audioUserscript?'margin-left:0;width:100%;padding-left:0':''}"><button id="more-channels-btn" onclick="toggleChannelSelection()">看更台</button><button id="adjust-player-positions">調整位置</button><button id="enlarge-player">放大模式</button><button id="reset-player-positions">重設</button><button id="toggle-all-audio">聲音</button></div>
     <div id="channel-selection" style="display:none"><div id="channel-options"></div><button id="fixture-watch-selected" onclick="watchSelectedChannels()">開始觀看</button></div><div id="multi-stream-container-wrapper" style="flex:none;width:${width}px;height:${height}px;min-height:0"><div id="multi-stream-container" class="video-wrapper"></div></div>
     <script src="/instrument.js"></script><script src="/channel-list.js"></script><script src="/stream-performance.js"></script><script src="/player-geometry.js"></script><script src="/player-layout.js"></script><script src="/menu-dismiss.js"></script><script src="/layout-bookmarks.js"></script>${productionTwitch?'<script src="/stream-quality.js"></script>':''}<script src="/fixture-app.js"></script></body></html>`;
-    const child=`<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0"><video id="frame-video" loop muted playsinline preload="auto" src="/silent.wav" style="width:100%;height:100%"></video><script>${instrument}\ninstrumentMedia(document.getElementById('frame-video'));window.fixtureExternalAudioResetCount=0;addEventListener('message',event=>{if(event.data?.fixtureLayoutAudioReset){fixtureExternalAudioResetCount++;for(const saved of fixtureMedia){saved.video.muted=event.data.muted;saved.video.volume=event.data.volume}}});</script></body></html>`;
+    const child=`<!doctype html><html><head><meta charset="utf-8"></head><body style="margin:0"><video id="frame-video" loop muted playsinline preload="auto" src="/silent.wav" style="display:block;width:100%;height:100%"></video><script>${instrument}\ninstrumentMedia(document.getElementById('frame-video'));window.fixtureExternalAudioResetCount=0;addEventListener('message',event=>{if(event.data?.fixtureLayoutAudioReset){fixtureExternalAudioResetCount++;for(const saved of fixtureMedia){saved.video.muted=event.data.muted;saved.video.volume=event.data.volume}}});</script></body></html>`;
     await context.route('**/*',route=>{
         const request=route.request(),url=new URL(request.url());
         if(request.isNavigationRequest()){
@@ -210,7 +210,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
         assert.equal(built.match(/^\/\/ @version\s+(\S+)/m)?.[1],require('../tools/build-player-userscript.cjs').RELEASE_VERSION,'integrated userscript tests must use the newly built distribution');
         await context.addInitScript({content:`
             window.fixtureAudioMessages=[];window.fixtureAudioRequestActions={};window.fixtureLayoutEvents=[];window.fixtureAudioGate={hold:false,targetId:'frame-2',muted:null,action:null,blockUpdates:false,firstDocumentOnly:false,documentId:null,held:[]};
-            for(const type of ['umininn-player-layout-before','umininn-player-layout-after','umininn-player-layout-restored','umininn-player-layout-abort'])document.addEventListener(type,event=>{if(window.top===window&&event.target===document.getElementById('multi-stream-container'))fixtureLayoutEvents.push({type,ticket:event.target.getAttribute('data-umininn-layout-audio-ticket'),status:event.target.getAttribute('data-umininn-layout-audio-status')})},true);
+            for(const type of ['umininn-player-layout-before','umininn-player-layout-after','umininn-player-layout-restored','umininn-player-layout-abort'])document.addEventListener(type,event=>{if(window.top===window&&event.target===document.getElementById('multi-stream-container'))fixtureLayoutEvents.push({type,ticket:event.target.getAttribute('data-umininn-layout-audio-ticket'),status:event.target.getAttribute('data-umininn-layout-audio-status'),focus:event.target.getAttribute('data-umininn-layout-audio-focus'),requests:event.target.getAttribute('data-umininn-layout-audio-focus-requests'),intent:document.documentElement.getAttribute('data-umininn-player-audio-intent'),results:playerAudioLayoutBatch?.results.map(result=>({value:result.value,error:result.error?.message,focus:result.request.focus&&{id:result.request.focus.id,intent:result.request.focus.intent}}))})},true);
             addEventListener('message',event=>{
                 const data=event.data;
                 if(window.top!==window&&data?.channel==='umininn-tv-userscript'&&data.type==='userscript:command')window.top.postMessage({fixtureAudioRequest:true,requestId:data.requestId,action:data.command?.action},${JSON.stringify(new URL(siteUrl).origin)});
@@ -232,7 +232,11 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
                 }
             },true);
             window.fixtureAudioRelease=function(){fixtureAudioGate.hold=false;return fixtureAudioGate.held.splice(0).map(message=>message.data)};
-            addEventListener('DOMContentLoaded',()=>{\n${built}\n},{once:true});
+            addEventListener('DOMContentLoaded',()=>{
+                const start=()=>{\n${built}\n};
+                if(window.top!==window&&new URL(location.href).searchParams.get('index')===${JSON.stringify(lateAudioFrame===null?null:String(lateAudioFrame))})window.fixtureStartLateUserscript=start;
+                else start();
+            },{once:true});
         `});
     }
     const page=await context.newPage();page.setDefaultTimeout(8000);
@@ -246,10 +250,10 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     await page.evaluate(async()=>{for(const [index,saved]of fixtureMedia.entries()){saved.video.volume=.21+index*.1;saved.video.currentTime=.375;if(index===1){saved.video.muted=false;saved.video.pause()}else await saved.video.play()}});
     for(const [index,frame]of frames.entries())await frame.evaluate(async index=>{const video=fixtureMedia[0].video;video.volume=.33+index*.1;video.currentTime=.375;if(index===1){video.muted=false;video.pause()}else await video.play()},index);
     await page.waitForFunction(()=>fixture.identity().loads.every(count=>count===1));
-    if(audioUserscript)await page.waitForFunction(()=>{
+    if(audioUserscript)await page.waitForFunction(lateAudioFrame=>{
         const rows=document.getElementById('umininn-player-panel-host')?.shadowRoot.querySelectorAll('.player');
-        return rows?.length===5&&Array.from(rows).every(row=>!row.querySelector('input').disabled);
-    });
+        return rows?.length===5&&Array.from(rows).every((row,index)=>index===lateAudioFrame||!row.querySelector('input').disabled);
+    },lateAudioFrame);
     if(clock)await page.clock.pauseAt(await page.evaluate(()=>Date.now()+100));
     return {page,frames,navigations,blocked,errors,clockInstalled:clock};
 }
@@ -2240,6 +2244,165 @@ test('top-right enlargement makes only its native, foreign or wrapped player aud
         await assertAudioContinuity(f,before);
     }
     assert.equal((await snapshot(f)).frames[1].media[0].paused,true,'enlarging a manually paused foreign player changes sound without resuming it');
+});
+
+test('extreme unified audio opens a selected foreign player after its delayed first control handshake',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true,lateAudioFrame:2}),keys=await f.page.evaluate(()=>fixture.keys);
+    const before=await seedLayoutSound(f);
+    assert.equal(await f.frames[0].evaluate(()=>typeof fixtureStartLateUserscript),'function','the selected foreign document really has not started its userscript');
+    assert.equal(await f.page.locator(audioPanel+' .player').nth(2).locator('input').isDisabled(),true);
+    await actualMouseWindowAction(f,keys[2],'enlarge');await waitSpan(f,keys[2],2);
+    await f.frames[0].evaluate(()=>{fixtureMedia[0].video.muted=true;fixtureStartLateUserscript()});
+    await waitOnlyAudible(f,3);await waitFocusStatus(f,'只開啟');
+    await f.page.waitForTimeout(350);await waitOnlyAudible(f,3);
+    await assertAudioContinuity(f,before);
+    await f.frames[1].goto(f.frames[1].url(),{waitUntil:'load'});await f.frames[1].waitForFunction(()=>fixtureMedia[0].video.readyState>=2);
+    await f.frames[1].evaluate(async()=>{const video=fixtureMedia[0].video;video.volume=.39;video.muted=false;await video.play()});
+    await waitOnlyAudible(f,3);await waitFocusStatus(f,'只開啟');
+    await f.page.waitForTimeout(300);await waitOnlyAudible(f,3);
+    const renewed=await snapshot(f);
+    assert.equal(renewed.frames[0].id,before.frames[0].id,'the originally late selected player retains its actual document');
+    assert.notEqual(renewed.frames[1].id,before.frames[1].id,'a different peer really renewed its document after the first handshake');
+    assert.equal(renewed.frames[1].media[0].muted,true,'the renewed peer inherits the retained silence policy');
+    assert.deepEqual(renewed.frames[1].media[0].actions,{play:1,pause:0,load:0,seek:0,source:0},'only the renewed platform fixture starts its media; sound policy does not recover or reload it');
+    assert.deepEqual(renewed.main.map(audioStable),before.main.map(audioStable));
+    assert.deepEqual(renewed.frames[0].media.map(audioStable),before.frames[0].media.map(audioStable));
+    assert.deepEqual(await f.page.evaluate(()=>fixture.identity()),{elements:true,entries:true,windows:true,removals:0,frameSources:0,loads:[1,2]});
+    assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
+});
+
+test('extreme unified audio keeps the last successful same-target enlargement when queued clicks reach the size ceiling',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+    await fixedDirectionGrid(f,{columns:256,focus:{key:keys[0],row:0,column:0,span:255},order:keys});
+    await f.page.waitForFunction(()=>playerAudioLayoutBatch===null);
+    const before=await seedLayoutSound(f);await holdAudioReply(f,{action:'getState',blockUpdates:true});
+    await actualMouseWindowAction(f,keys[0],'enlarge');await waitHeldAudioReply(f);
+    await actualMouseWindowAction(f,keys[0],'enlarge');
+    assert.equal(await f.page.evaluate(()=>playerAudioLayoutQueue.length),2,'two actual clicks are coalesced before either geometry command commits');
+    await releaseAudioReply(f);await f.page.evaluate(()=>{fixtureAudioGate.blockUpdates=false});
+    await waitSpan(f,keys[0],256);
+    try{await waitOnlyAudible(f,0);await waitFocusStatus(f,'只開啟')}
+    catch(error){
+        console.error('Size ceiling audio diagnostic:',await f.page.evaluate(()=>({events:fixtureLayoutEvents,
+            rows:document.getElementById('umininn-player-panel-host').shadowRoot.getElementById('players').textContent,
+            status:document.getElementById('umininn-player-panel-host').shadowRoot.getElementById('audio-focus-status').textContent,
+            messages:fixtureAudioMessages.slice(-15)})));
+        console.error('Size ceiling foreign visibility:',await Promise.all(f.frames.map(frame=>frame.evaluate(()=>({viewport:{width:innerWidth,height:innerHeight},bounds:fixtureMedia[0].video.getBoundingClientRect().toJSON()})))));
+        throw error;
+    }
+    assert.equal(await windowCell(f,keys[0]).locator('[data-player-action="enlarge"]').isDisabled(),true);
+    await assertAudioContinuity(f,before);
+});
+
+test('extreme unified audio rejects the old selected frame document when its real document renews during capture',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+    await primeAudio(f);const before=await snapshot(f);await holdAudioReply(f,{action:'getState',firstDocumentOnly:true});
+    await actualMouseWindowAction(f,keys[2],'enlarge');await waitHeldAudioReply(f);
+    await f.frames[0].goto(f.frames[0].url(),{waitUntil:'load'});await f.frames[0].waitForFunction(()=>fixtureMedia[0].video.readyState>=2);
+    await f.frames[0].evaluate(async()=>{const video=fixtureMedia[0].video;video.volume=.39;video.muted=true;await video.play()});
+    await releaseAudioReply(f);await waitSpan(f,keys[2],2);await f.page.waitForFunction(()=>playerAudioLayoutBatch===null);
+    await f.page.waitForTimeout(500);
+    const after=await snapshot(f);
+    assert.notEqual(after.frames[0].id,before.frames[0].id,'the old document was actually replaced inside the same iframe');
+    assert.equal(after.frames[0].media[0].muted,true,'a pending sound intent cannot be transferred to a replacement selected document');
+    assert.equal(after.frames[0].media[0].volume,.39,'the renewed document retains its own volume');
+    assert.deepEqual(after.main.map(audioStable),before.main.map(audioStable));assert.deepEqual(after.frames[1],before.frames[1]);
+    assert.deepEqual(await f.page.evaluate(()=>fixture.identity()),{elements:true,entries:true,windows:true,removals:0,frameSources:0,loads:[2,1]});
+    assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
+});
+
+test('extreme unified audio does not transfer a delayed target unmute to its renewed iframe document',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+    const before=await seedLayoutSound(f);await holdAudioReply(f,{action:'setMuted',muted:false,firstDocumentOnly:true});
+    await actualMouseWindowAction(f,keys[2],'enlarge');await waitSpan(f,keys[2],2);await waitHeldAudioReply(f);
+    assert.equal((await snapshot(f)).frames[0].media[0].muted,false,'the original target unmute has executed before its acknowledgement is delayed');
+    await f.frames[0].goto(f.frames[0].url(),{waitUntil:'load'});await f.frames[0].waitForFunction(()=>fixtureMedia[0].video.readyState>=2);
+    await f.frames[0].evaluate(async()=>{const video=fixtureMedia[0].video;video.volume=.39;video.muted=true;await video.play()});
+    await releaseAudioReply(f);await f.page.waitForFunction(()=>playerAudioLayoutBatch===null);
+    await f.page.waitForTimeout(750);
+    const after=await snapshot(f);
+    assert.notEqual(after.frames[0].id,before.frames[0].id,'the actual selected iframe document renewed during restoration');
+    assert.equal(after.frames[0].media[0].muted,true,'the stale request must not open a replacement target document');
+    assert.equal(after.frames[0].media[0].volume,.39,'the stale request must not raise the replacement document volume');
+    assert.deepEqual(after.frames[0].media[0].actions,{play:1,pause:0,load:0,seek:0,source:0});
+    assert.deepEqual(after.main.map(audioStable),before.main.map(audioStable));
+    assert.deepEqual(after.frames[1].media.map(audioStable),before.frames[1].media.map(audioStable));
+    assert.equal(after.frames[1].id,before.frames[1].id);
+    assert.deepEqual(await f.page.evaluate(()=>fixture.identity()),{elements:true,entries:true,windows:true,removals:0,frameSources:0,loads:[2,1]});
+    assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
+});
+
+test('extreme unified audio reports an opened target accurately when a muted peer loses only its volume capability',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+    const before=await seedLayoutSound(f);await startSoundWriteTrace(f);await resetSoundAfterNextLayout(f);
+    await f.page.evaluate(()=>{
+        document.addEventListener('umininn-player-layout-after',()=>{
+            const video=fixtureMedia[1].video;
+            Object.defineProperty(video,'volume',{configurable:true,get(){return NaN},set(){throw new DOMException('Fixture volume capability was withdrawn','NotSupportedError')}});
+        },{once:true});
+    });
+    await actualMouseWindowAction(f,keys[0],'enlarge');await waitSpan(f,keys[0],2);await waitOnlyAudible(f,0);
+    await f.page.waitForFunction(()=>playerAudioLayoutBatch===null);await f.page.waitForTimeout(250);
+    const status=await f.page.locator(audioPanel+' #audio-focus-status').textContent();
+    assert.equal(status.includes('未開啟目標格的聲音'),false,'a peer volume warning cannot claim that the safely opened 100 percent target is silent');
+    assert.ok(status.includes('只開啟')||status.includes('已開啟'),status);
+    await assertAudioContinuity(f,before);
+});
+
+test('extreme unified audio guards an already hidden audible peer before opening the selected visible player',{skip:!enabled,timeout:120000},async t=>{
+    if(!optional(t))return;
+    for(const action of ['enlarge','audio-focus'])await t.test(action,async st=>{
+        const f=await fixture(st,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+        await primeAudio(f);await f.frames[0].evaluate(()=>{const video=fixtureMedia[0].video;video.muted=false;video.style.display='none'});
+        await f.page.waitForFunction(()=>document.getElementById('umininn-player-panel-host').shadowRoot.querySelectorAll('.player')[2].textContent.includes('未找到可見'));
+        const before=await snapshot(f);assert.equal(before.frames[0].media[0].paused,false);assert.equal(before.frames[0].media[0].muted,false);
+        await actualMouseWindowAction(f,keys[0],action);
+        if(action==='enlarge')await waitSpan(f,keys[0],2);
+        await waitOnlyAudible(f,0);await waitFocusStatus(f,'只開啟');
+        await f.page.waitForFunction(()=>fixtureAudioMessages.some(message=>message.result?.state?.available===false&&message.result.state.muted===true&&message.result.state.muteGuardActive===true));
+        await f.page.waitForTimeout(300);await waitOnlyAudible(f,0);
+        assertOtherVolumes(before,await snapshot(f),0);await assertAudioContinuity(f,before);
+    });
+});
+
+test('extreme unified audio never opens a selected hidden player while guarding hidden peer audio',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+    await primeAudio(f);await f.frames[0].evaluate(()=>{fixtureMedia[0].video.style.display='none'});
+    await f.page.waitForFunction(()=>document.getElementById('umininn-player-panel-host').shadowRoot.querySelectorAll('.player')[2].textContent.includes('未找到可見'));
+    const before=await snapshot(f);await startSoundWriteTrace(f);
+    await actualMouseWindowAction(f,keys[2],'enlarge');await waitSpan(f,keys[2],2);await waitFocusStatus(f,'未開啟');
+    await f.page.waitForTimeout(250);const after=await snapshot(f);
+    assert.equal(after.frames[0].media[0].muted,true,'hidden-media guarding must not authorize a hidden selected target to open');
+    assert.equal(after.frames[0].media[0].volume,before.frames[0].media[0].volume);
+    assert.deepEqual((await readSoundWriteTrace(f)).filter(write=>write.index===3&&(write.property==='volume'||write.property==='muted'&&write.value===false)),[],
+        'a selected target without visible media cannot receive even a transient open or volume raise');
+    await assertAudioContinuity(f,before);
+});
+
+test('extreme unified audio gives the latest real sound action precedence through a mixed burst and reversed stale acknowledgements',{skip:!enabled,timeout:120000},async t=>{
+    if(!optional(t))return;
+    for(const finalAction of ['focus','global-mute'])await t.test(finalAction,async st=>{
+        const f=await fixture(st,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+        const before=await seedLayoutSound(f);await holdAudioReply(f,{action:'getState',blockUpdates:true});
+        await actualMouseWindowAction(f,keys[0],'enlarge');await waitHeldAudioReply(f);
+        await openAudioPanel(f);const slider=f.page.locator(audioPanel+' .player').nth(1).locator('input[type="range"]');await slider.focus();await slider.press('End');
+        await actualMouseWindowAction(f,keys[4],'enlarge');
+        await f.page.locator('#umininn-player-control-host #quick-mute').click();
+        await actualMouseWindowAction(f,keys[3],'enlarge');
+        await actualMouseWindowAction(f,keys[1],'audio-focus');
+        await f.page.evaluate(keys=>{window.fixtureMixedBurstMove=swapPlayerPositions(keys[0],keys[4])},keys);
+        if(finalAction==='global-mute')await f.page.locator('#umininn-player-control-host #quick-mute').click();
+        const messages=await f.page.evaluate(()=>fixtureAudioRelease().reverse());assert.ok(messages.length>0);
+        await f.frames[0].evaluate(({messages,origin})=>{for(const data of messages)window.top.postMessage(data,origin)},{messages,origin:new URL(siteUrl).origin});
+        await f.page.evaluate(()=>{fixtureAudioGate.blockUpdates=false});await f.page.evaluate(()=>fixtureMixedBurstMove);
+        await f.page.waitForFunction(()=>playerAudioLayoutBatch===null);
+        if(finalAction==='focus')await waitOnlyAudible(f,1);
+        else await waitAudio(f,media=>media.every(value=>value.muted));
+        await f.page.waitForTimeout(450);
+        if(finalAction==='focus')await waitOnlyAudible(f,1);
+        else await waitAudio(f,media=>media.every(value=>value.muted));
+        await assertAudioContinuity(f,before);
+    });
 });
 
 test('unified enlargement audio writes its final exclusive sound without briefly restoring audible peers or the target old volume',{skip:!enabled,timeout:60000},async t=>{

@@ -710,9 +710,11 @@
             // older issued commands still drain before the target may open.
             // Legacy callers only need the lane for busy entries.
             const cohort = currentEntries().filter(entry => (all || entry.busy) && (entry.kind === 'native' || entry.kind === 'frame' && entry.target));
+            const generation = audioControlGeneration;
             let cursor = 0;
             const task = Promise.all(Array.from({ length: Math.min(4, cohort.length) }, async () => {
-                while (cursor < cohort.length && !disposed) await execute(cohort[cursor++], { action: 'setMuted', value: true, guard: true });
+                while (cursor < cohort.length && !disposed && generation === audioControlGeneration)
+                    await execute(cohort[cursor++], { action: 'setMuted', value: true, guard: true });
             }));
             urgentAudioTasks.add(task);
             void task.finally(() => urgentAudioTasks.delete(task));
@@ -963,6 +965,15 @@
                     guardedEntries.delete(entry);
                 }
                 entry.target = { frameId: data.frameId, token: data.token, documentId: typeof data.documentId === 'string' ? data.documentId : null };
+                if (first) for (const intent of new Set([audioFocusIntent, ...layoutFocusCandidates.values()])) {
+                    if (!intent?.unified || intent.entry !== entry) continue;
+                    if (intent.awaitingFirstTarget) {
+                        // Candidates can finish loading behind a newer click.
+                        // Bind once so a valid fallback keeps its own document.
+                        intent.generation = entry.generation;
+                        intent.awaitingFirstTarget = false;
+                    } else if (intent === audioFocusIntent && intent.generation !== entry.generation) invalidateLayoutAudio();
+                }
                 clearProbeTimers(entry);
                 if (first || !entry.busy) applyResult(entry, data.result);
                 if (first && globalMuted !== null && !audioFocusIntent && layoutTicket === null) void execute(entry, { action: 'setMuted', value: globalMuted });
@@ -1132,6 +1143,7 @@
                 `已靜音其他播放器，只開啟「${value.name}」的聲音（音量 ${typeof value.volume === 'number' ? Math.round(value.volume * 100) : 100}%）。`;
             else if (value.phase === 'removed') text = '目標格已移除或更換，已取消開聲。';
             else if (value.phase === 'partial') text = `未開啟目標格的聲音；${value.failures.map(item => `${item.name}：${reasons[item.code] || item.code}`).join('；')}。請確認後重試。`;
+            if (value.phase === 'focused' && value.volumeWarning) text += '部分已靜音播放器未能還原音量。';
             audioFocusStatus.textContent = text;
             audioFocusStatus.hidden = !text;
             if (toggle) {
@@ -1172,7 +1184,8 @@
         }
         function validUnifiedTarget(intent) {
             return intent.target?.isConnected && intent.target.parentElement === doc.getElementById('multi-stream-container') &&
-                entries.get(intent.target) === intent.entry && (!intent.entry || intent.entry.generation === intent.generation);
+                entries.get(intent.target) === intent.entry && (!intent.entry || intent.entry.generation === intent.generation ||
+                    intent.awaitingFirstTarget && !intent.entry.target);
         }
         function newUnifiedIntent(target, requestId, committed) {
             cancelPendingRecovery(); recoveryFlow?.cancel(); clearPreparation();
@@ -1185,6 +1198,7 @@
             win.postMessage(envelope('site:audio-preference', { muted: true }), win.location.origin);
             const entry = entries.get(target);
             const intent = audioFocusIntent = { unified: true, target, entry, generation: entry?.generation,
+                awaitingFirstTarget: entry?.kind === 'frame' && !entry.target,
                 requestId, committed, focused: false, running: false, holding: true, repairs: 0, runId: 0 };
             refreshSummary();
             if (!committed) layoutFocusCandidates.set(requestId, intent);
@@ -1217,15 +1231,21 @@
             if (disposed || audioFocusIntent !== intent || runId !== intent.runId) return;
             intent.running = false;
             intent.holding = result.code === 'PENDING';
-            intent.focused = result.code === 'COMPLETE';
+            intent.focused = unifiedFocusOpened(intent, result);
             intent.lastFingerprint = audioFingerprint();
             showUnifiedStatus(intent, result);
             if (!intent.holding) queueAudioFocusReconcile();
         }
+        function unifiedFocusOpened(intent, result) {
+            if (result.code === 'COMPLETE') return true;
+            return result.code === 'PARTIAL' && result.pending === 0 && result.failed === 0 &&
+                result.results?.some(item => item.key === intent.target.getAttribute('data-channel-key') && item.status === 'restored') &&
+                result.results.every(item => item.status !== 'skipped' || item.reason === 'volume-unsupported');
+        }
         function showUnifiedStatus(intent, result) {
             if (audioFocusIntent !== intent) return;
-            if (result.code === 'COMPLETE') showAudioFocusStatus({ phase: 'focused', volume: 1, muted: false,
-                name: intent.entry?.name.textContent || '目標格' });
+            if (unifiedFocusOpened(intent, result)) showAudioFocusStatus({ phase: 'focused', volume: 1, muted: false,
+                name: intent.entry?.name.textContent || '目標格', volumeWarning: result.code === 'PARTIAL' });
             else if (!['PENDING', 'PREPARED', 'RUNNING'].includes(result.code)) showAudioFocusStatus({ phase: 'partial',
                 failures: [{ name: intent.entry?.name.textContent || '目標格', code: result.code === 'CANCELLED' ? 'stale' : 'unconfirmed' }] });
         }
@@ -1472,7 +1492,7 @@
                             const intent = audioFocusIntent;
                             if (intent?.unified && intent.ticket === value.ticket && ['waiting', 'complete', 'timeout'].includes(value.phase)) {
                                 intent.holding = value.code === 'PENDING';
-                                intent.focused = value.code === 'COMPLETE';
+                                intent.focused = unifiedFocusOpened(intent, value);
                                 intent.lastFingerprint = audioFingerprint();
                                 showUnifiedStatus(intent, value);
                             }
