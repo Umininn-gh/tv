@@ -151,7 +151,7 @@ fixture.geometry=function(){
  const rect=element=>{const r=element.getBoundingClientRect();return {left:r.left,top:r.top,right:r.right,bottom:r.bottom,width:r.width,height:r.height}};
  const editor=document.getElementById('player-position-editor');
  let saved=null;try{saved=localStorage.getItem('playerEnlargementLayout')}catch(_){}
- return {layout:playerGeometry,order:fixture.order(),mode:editor.dataset.mode,opened:!editor.hidden,saved,
+ return {layout:playerLayoutState.enlargedGeometry,order:fixture.order(),mode:editor.dataset.mode,opened:!editor.hidden,saved,
   players:Array.from(activePlayers,([key,entry])=>({key,area:getPlayerElement(entry).style.gridArea,rect:rect(getPlayerElement(entry))})),
   cells:Array.from(editor.querySelectorAll('.player-position-cell'),cell=>({key:cell.dataset.playerKey,area:cell.style.gridArea,rect:rect(cell)}))};
 };
@@ -276,7 +276,7 @@ function assertFits(grid){assert.equal(grid.fits,true);assert.ok(grid.overflowX<
 function positionCell(f,key){return f.page.locator(`.player-position-cell[data-player-key=${JSON.stringify(key)}]`)}
 async function geometry(f){return f.page.evaluate(()=>fixture.geometry())}
 async function waitSpan(f,key,span){
-    await f.page.waitForFunction(({key,span})=>playerGeometry?.items.find(item=>item.key===key)?.span===span,{key,span});
+    await f.page.waitForFunction(({key,span})=>playerLayoutState.enlargedGeometry?.items.find(item=>item.key===key)?.span===span,{key,span});
     return geometry(f);
 }
 function assertGeometry(state,{overlay=false}={}){
@@ -300,7 +300,7 @@ function spans(state){return Object.fromEntries(state.layout.items.map(({key,spa
 function allSpans(state){return Object.fromEntries(state.players.map(({key})=>[key,state.layout?.items.find(item=>item.key===key)?.span||1]))}
 function withoutFocus(order,key){return order.filter(item=>item!==key)}
 async function waitSingleCells(f){
-    await f.page.waitForFunction(()=>!playerGeometry?.items.some(item=>item.span>1));return geometry(f);
+    await f.page.waitForFunction(()=>!playerLayoutState.enlargedGeometry?.items.some(item=>item.span>1));return geometry(f);
 }
 function logicalLayout(state,grid){
     return {columns:state.layout?.columns||grid.columns,rows:state.layout?.rows||grid.rows,order:state.order,
@@ -480,7 +480,7 @@ test('an enlarged layout supports click, drag and spatial arrow moves, follows p
     // Pick a guaranteed spatial neighbor from actual occupied rectangles. The
     // enlarged cell invalidates row-major index offsets used by a uniform grid.
     const neighbor=await f.page.evaluate(()=>{
-        const items=playerGeometry.items;
+        const items=playerLayoutState.enlargedGeometry.items;
         for(const source of items)for(const target of items){
             if(source===target)continue;
             const vertical=Math.min(source.row+source.span,target.row+target.span)>Math.max(source.row,target.row);
@@ -545,7 +545,9 @@ test('a failed native player keeps its enlarged grid area and matching move over
     await f.page.keyboard.press('Escape');await f.page.locator('#adjust-player-positions').click();
     const state=await geometry(f);assert.deepEqual(state.layout,enlarged.layout);assertGeometry(state,{overlay:true});assertFits(await f.page.evaluate(()=>fixture.grid()));
     await f.page.locator('#enlarge-player').click();await f.page.locator('.player-position-shrink').click();
-    const shrunk=await waitSingleCells(f);assert.equal(shrunk.saved,null);assert.equal(shrunk.players.find(player=>player.key===key).area,'');
+    const shrunk=await waitSingleCells(f);assert.equal(shrunk.saved,null);
+    const normalArea=await f.page.evaluate(key=>playerGridArea(getCurrentPlayerGeometry().items.find(item=>item.key===key)),key);
+    assert.equal(shrunk.players.find(player=>player.key===key).area,normalArea);
     assert.equal(await f.page.evaluate(()=>fixture.entries[0].resource.element.textContent),'本地模擬播放失敗');assertFits(await f.page.evaluate(()=>fixture.grid()));
     assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
 });
@@ -553,12 +555,12 @@ test('a failed native player keeps its enlarged grid area and matching move over
 test('a tall saved enlargement anchor still fits after selection shrinks to two players in an eight-pixel pane',{skip:!enabled,timeout:30000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1300,height:1000});
     await f.page.evaluate(()=>{
-        enlargedPlayerFocus={key:fixture.keys[0],span:2,row:98,column:0};pendingPlayerGeometry={columns:2};updatePlayerLayout();
+        playerLayoutState.setFocus({key:fixture.keys[0],span:2,row:98,column:0});playerLayoutState.setPending({columns:2});updatePlayerLayout();
         syncActivePlayers(channels.slice(0,2));
         const pane=document.getElementById('multi-stream-container');
         document.getElementById('multi-stream-container-wrapper').style.padding='0';pane.style.border='0';fixture.resize(260,8);
     });
-    await f.page.waitForFunction(()=>{const g=fixture.grid();return g.height===8&&g.fits&&playerGeometry?.rows===100});
+    await f.page.waitForFunction(()=>{const g=fixture.grid();return g.height===8&&g.fits&&playerLayoutState.enlargedGeometry?.rows===100});
     const grid=await f.page.evaluate(()=>fixture.grid());assertFits(grid);assert.equal((await geometry(f)).layout.items.length,2);
     assert.ok(await f.page.evaluate(()=>parseFloat(getComputedStyle(document.getElementById('multi-stream-container')).rowGap)<.1),'gap limit accounts for the saved row anchor rather than only the active channel count');
     await f.page.locator('#adjust-player-positions').click();assertGeometry(await geometry(f),{overlay:true});
@@ -797,7 +799,7 @@ test('switching the enlarged focus after a column change preserves the current v
     await waitColumns(f,2);await f.page.locator('#enlarge-player').click();await positionCell(f,keys[4]).click();
     const first=await waitSpan(f,keys[4],2);assert.equal(first.layout.columns,2);
     await f.page.evaluate(()=>fixture.resize(1800,320));
-    await f.page.waitForFunction(()=>playerGeometry?.columns===3&&fixture.grid().overlayColumns===3);
+    await f.page.waitForFunction(()=>playerLayoutState.enlargedGeometry?.columns===3&&fixture.grid().overlayColumns===3);
     const resized=await geometry(f);assert.notDeepEqual(resized.order,first.order,'the changed columns move the pinned square relative to ordinary players');
     await positionCell(f,keys[0]).click();const changed=await waitSpan(f,keys[0],2);
     assert.deepEqual(withoutFocus(changed.order,keys[0]),withoutFocus(resized.order,keys[0]),'changing focus cannot restore an old internal order after a resize');
@@ -898,7 +900,7 @@ test('restoring an enlargement before the pane has a usable size preserves its a
     assert.equal(JSON.parse((await geometry(hidden)).saved).focus.column,6,'reselecting a dormant focus while hidden cannot clamp its saved anchor to the previous normal grid');
     await settlePane(hidden,3000,500);const reselected=await readLayout(hidden);
     assert.deepEqual(reselected.logical,expected.logical);assertGeometry(reselected.state,{overlay:true});assertFits(reselected.grid);
-    assert.equal(await hidden.page.evaluate(()=>Boolean(playerGeometry.deferredFocus)),false,'the first visible layout finishes the deferred anchor commit');
+    assert.equal(await hidden.page.evaluate(()=>Boolean(playerLayoutState.enlargedGeometry.deferredFocus)),false,'the first visible layout finishes the deferred anchor commit');
     assert.deepEqual(hidden.errors,[]);assert.deepEqual(hidden.blocked,[]);
 });
 
@@ -1185,7 +1187,7 @@ test('a pane change and pointerup in the same task cannot commit a resize using 
         // There is deliberately no await/rAF/RO opportunity between changing the
         // box and releasing the pointer. The release must validate current bounds.
         document.dispatchEvent(new PointerEvent('pointerup',{pointerId:id,pointerType:'mouse',isPrimary:true,button:0,buttons:0,bubbles:true,clientX:x,clientY:y}));
-        return {span:playerGeometry.items.find(item=>item.key===key).span,saved:localStorage.getItem('playerEnlargementLayout')};
+        return {span:playerLayoutState.enlargedGeometry.items.find(item=>item.key===key).span,saved:localStorage.getItem('playerEnlargementLayout')};
     },{id:drag.pointerId,x:drag.point.x+drag.pitch.x*.8,y:drag.point.y+drag.pitch.y*.8,key});
     assert.equal(immediate.span,3);assert.equal(immediate.saved,drag.before.state.saved);
     await f.page.mouse.up();await f.page.waitForTimeout(260);await assertResizeIdle(f);assert.equal(spans(await geometry(f))[key],3);
@@ -1678,9 +1680,9 @@ test('one configurable timeout value drives channel-menu idle completion, editor
 function directionButton(f,key,direction,targetKey){return windowCell(f,key).locator(`[data-player-action="swap-${direction}"]${targetKey===undefined?'':`[data-target-key=${JSON.stringify(targetKey)}]`}`)}
 async function fixedDirectionGrid(f,{columns=3,focus=null,order=null}={}){
     await f.page.evaluate(({columns,focus,order})=>{
-        if(order)order.forEach((key,index)=>{getPlayerElement(activePlayers.get(key)).style.order=String(index)});
-        enlargedPlayerFocus=focus;
-        pendingPlayerGeometry={...PlayerGeometry.build({keys:getPlayerPositionKeys(),columns,focus}),intent:'bookmark'};
+        if(order)playerLayoutState.setOrder(order);
+        playerLayoutState.setFocus(focus);
+        playerLayoutState.setPending({...PlayerGeometry.build({keys:getPlayerPositionKeys(),columns,focus}),intent:'bookmark'});
         updatePlayerLayout({force:true});
     },{columns,focus,order});
     if(f.clockInstalled)await f.page.clock.runFor(50);
@@ -1737,7 +1739,7 @@ test('direction controls hide boundary and empty-tail sides, swap the touching c
         }else await clickDirection(f,keys[0],direction);
         [expected[a],expected[b]]=[expected[b],expected[a]];
         assert.deepEqual(await f.page.evaluate(()=>fixture.order()),expected);assert.equal((await geometry(f)).opened,false);
-        assert.equal(await f.page.evaluate(()=>activePlayers.size),5);assert.equal(await f.page.evaluate(()=>enlargedPlayerFocus),null);
+        assert.equal(await f.page.evaluate(()=>activePlayers.size),5);assert.equal(await f.page.evaluate(()=>playerLayoutState.focus),null);
     }
     assert.deepEqual(expected,keys);
     await hoverWindow(f,keys[0]);await directionButton(f,keys[0],'right').dblclick();[expected[0],expected[1]]=[expected[1],expected[0]];
@@ -1799,11 +1801,11 @@ test('direction controls reject a stale arrow target after the touching neighbor
         const cell=Array.from(document.querySelectorAll('.player-window-cell')).find(cell=>cell.dataset.playerKey===source);
         const button=cell.querySelector(`[data-player-action="swap-up"][data-target-key="${target}"]`);
         swapPlayerPositions(target,replacement);
-        const before=getPlayerPositionKeys(),beforeGeometry=JSON.stringify(playerGeometry),connected=button.isConnected;
+        const before=getPlayerPositionKeys(),beforeGeometry=JSON.stringify(playerLayoutState.enlargedGeometry),connected=button.isConnected;
         // Intentionally stay in one browser task: the old connected button can
         // receive input before the scheduled overlay refresh has run.
         button.click();
-        return {connected,before,after:getPlayerPositionKeys(),beforeGeometry,afterGeometry:JSON.stringify(playerGeometry)};
+        return {connected,before,after:getPlayerPositionKeys(),beforeGeometry,afterGeometry:JSON.stringify(playerLayoutState.enlargedGeometry)};
     },{source:keys[4],target:keys[1],replacement:keys[13]});
     assert.equal(stale.connected,true,'the race checks the previous live overlay, rather than an already removed button');
     assert.deepEqual(stale.after,stale.before);assert.equal(stale.afterGeometry,stale.beforeGeometry,'stale input cannot silently step toward a different adjacent player');
@@ -1877,8 +1879,8 @@ test('direction controls repeat one-cell moves to each boundary and handle a par
             }
             assert.equal(moved,expectedMoves);assert.equal(await directionButton(f,key,direction).count(),0);
             const stopped=await f.page.evaluate(({key,direction,target})=>{
-                const before=JSON.stringify(playerGeometry),result=movePlayerDirection(key,direction,target);
-                return {result,same:before===JSON.stringify(playerGeometry)};
+                const before=JSON.stringify(playerLayoutState.enlargedGeometry),result=movePlayerDirection(key,direction,target);
+                return {result,same:before===JSON.stringify(playerLayoutState.enlargedGeometry)};
             },{key,direction,target:lastTarget});
             assert.deepEqual(stopped,{result:false,same:true},'a repeated stale boundary action cannot extend or wrap the grid');
         }

@@ -533,10 +533,7 @@ const PLAYER_POSITION_STORAGE_KEY = 'playerPositionOrder';
 const PLAYER_ENLARGEMENT_STORAGE_KEY = 'playerEnlargementLayout';
 // Shared duration for the viewing page's temporary menus and editing overlays.
 const PLAYER_OVERLAY_TIMEOUT_SECONDS = 30;
-let preferredPlayerOrder = [];
-let enlargedPlayerFocus = null;
-let playerGeometry = null;
-let pendingPlayerGeometry = null;
+const playerLayoutState = PlayerLayout.createState({ buildGeometry: PlayerGeometry.build });
 let playerPositionEditor = null;
 let playerNameOverlay = null;
 let playerWindowControls = null;
@@ -659,12 +656,11 @@ function getGoshMetadata(channel) {
 function replacePlayerWithError(resource, message) {
     if (resource.disposed || resource.errorShown || !resource.element.isConnected) return;
     const error = buildErrorDiv(message);
-    error.style.order = resource.element.style.order;
-    error.style.gridArea = resource.element.style.gridArea;
     resource.element.replaceWith(error);
     resource.element = error;
     resource.failed = true;
     resource.errorShown = true;
+    projectPlayerLayout();
 }
 
 /* ======================== 平台工具函式 ======================== */
@@ -725,6 +721,7 @@ function destroyAllHLSInstances() {
     playerPositionEditor?.close(false);
     activePlayers.forEach(disposePlayer);
     activePlayers.clear();
+    playerLayoutState.setOrder([]);
     currentHLSInstances.forEach(instance => { try { instance.destroy(); } catch (error) {} });
     currentFLVInstances.forEach(instance => { try { instance.destroy(); } catch (error) {} });
     currentHLSInstances = [];
@@ -744,90 +741,95 @@ function getPlayerElement(entry) {
     return entry.resource ? entry.resource.element : entry.element;
 }
 
+function projectPlayerLayout() {
+    const geometry = playerLayoutState.geometry;
+    const positions = new Map(geometry.items.map(item => [item.key, item]));
+    playerLayoutState.order.forEach((key, index) => {
+        const entry = activePlayers.get(key);
+        if (!entry) return;
+        const element = getPlayerElement(entry);
+        const item = positions.get(key);
+        element.style.order = String(index);
+        element.style.gridArea = item ? playerGridArea(item) : '';
+    });
+}
+
 function updatePlayerLayout({ force = false } = {}) {
     const pane = document.getElementById('multi-stream-container');
     if (!pane) return;
     if (!playerGrid) playerGrid = PlayerLayout.observe(pane, {
         runUpdate: action => withPlayerAudioLayout(action, false),
         stabilizeResize: true,
-        getResizeStability: () => activePlayers.size > 1 && activePlayers.has(enlargedPlayerFocus?.key),
+        getResizeStability: () => activePlayers.size > 1 && activePlayers.has(playerLayoutState.focus?.key),
         getCount: () => activePlayers.size,
         getTrackCount: () => {
-            const focus = activePlayers.size > 1 && activePlayers.has(enlargedPlayerFocus?.key) ? enlargedPlayerFocus : null;
+            const focus = activePlayers.size > 1 && activePlayers.has(playerLayoutState.focus?.key) ? playerLayoutState.focus : null;
             return Math.max(activePlayers.size + (focus?.span || 1) - 1, focus ? focus.row + focus.span : 1,
-                focus ? Math.max(pendingPlayerGeometry?.columns || 0, playerGeometry?.columns || 0) : 1);
+                focus ? Math.max(playerLayoutState.pending?.columns || 0, playerLayoutState.enlargedGeometry?.columns || 0) : 1);
         },
         calculate(options) {
-            const keys = getPlayerPositionKeys();
-            const focus = keys.includes(enlargedPlayerFocus?.key) && keys.length > 1 ? enlargedPlayerFocus : null;
-            if (!focus) {
-                if (pendingPlayerGeometry?.intent === 'bookmark') {
-                    const columns = Math.max(1, Math.min(keys.length || 1, pendingPlayerGeometry.columns));
-                    // Apply the saved grid once, then keep the existing resize
-                    // stability rules. Hidden panes retain the restore intent.
-                    if (options.width > 0 && options.height > 0) pendingPlayerGeometry = null;
-                    return { count: keys.length, columns, rows: Math.max(1, Math.ceil(keys.length / columns)), area: 0 };
-                }
-                pendingPlayerGeometry = null;
-                return PlayerLayout.choose(options);
-            }
-            if (!(options.width > 0 && options.height > 0)) {
-                // A hidden fallback grid must not overwrite the saved anchor.
-                // Keep pending size/restore intent until there is a real pane.
-                const columns = Math.max(focus.span, Math.min(Math.max(pendingPlayerGeometry?.columns || 0,
-                    options.previous?.columns || 0, focus.column + focus.span), focus.span + keys.length - 1));
-                return { ...PlayerGeometry.build({ keys, columns, focus }), count: keys.length, deferredFocus: true };
-            }
-            let next;
-            if (pendingPlayerGeometry?.intent === 'bookmark') {
-                next = PlayerGeometry.build({ keys, columns: pendingPlayerGeometry.columns, focus });
-                pendingPlayerGeometry = null;
-            } else if (pendingPlayerGeometry?.intent === 'size' || pendingPlayerGeometry?.intent === 'restore') {
-                // Explicit sizing and reopening settle on the best grid immediately.
-                pendingPlayerGeometry = null;
-                next = PlayerGeometry.choose({ ...options, keys, focus, force: true });
-            } else if (pendingPlayerGeometry?.intent === 'drag') {
-                // The preview already chose these tracks and the opposite corner.
-                next = PlayerGeometry.build({ keys, columns: pendingPlayerGeometry.columns, focus });
-                pendingPlayerGeometry = null;
-            } else if (pendingPlayerGeometry) {
-                // A saved grid may have come from a much larger selection.
-                const columns = Math.max(focus.span, Math.min(pendingPlayerGeometry.columns, focus.span + keys.length - 1));
-                next = PlayerGeometry.build({ keys, columns, focus });
-                pendingPlayerGeometry = null;
-            } else if (options.preserveColumns && options.previous?.columns >= focus.span &&
-                options.previous.columns <= 768) {
-                next = PlayerGeometry.build({ keys, columns: options.previous.columns, focus });
-            } else next = PlayerGeometry.choose({ ...options, keys, focus });
-            return { ...next, count: keys.length };
+            return playerLayoutState.commit(calculatePlayerLayout(options));
         },
-        onChange(next) {
-            playerGeometry = next.items ? next : null;
-            if (playerGeometry) {
-                if (!next.deferredFocus) enlargedPlayerFocus = playerGeometry.items.find(item => item.span > 1) || enlargedPlayerFocus;
-                const visual = [...next.items].sort((a, b) => a.row - b.row || a.column - b.column);
-                visual.forEach((item, index) => {
-                    const element = getPlayerElement(activePlayers.get(item.key));
-                    element.style.order = String(index);
-                    element.style.gridArea = playerGridArea(item);
-                });
-                savePlayerEnlargement();
-            } else activePlayers.forEach(entry => { getPlayerElement(entry).style.gridArea = ''; });
+        onChange() {
+            projectPlayerLayout();
+            if (playerLayoutState.enlargedGeometry) savePlayerEnlargement();
             playerPositionEditor?.layoutChanged?.();
             playerNameOverlay?.refresh();
             playerWindowControls?.refresh();
         }
     });
-    const previousFocus = playerGeometry?.items.find(item => item.span > 1);
-    const activeFocus = activePlayers.size > 1 && activePlayers.has(enlargedPlayerFocus?.key) ? enlargedPlayerFocus : null;
+    const previousFocus = playerLayoutState.enlargedGeometry?.items.find(item => item.span > 1);
+    const activeFocus = activePlayers.size > 1 && activePlayers.has(playerLayoutState.focus?.key) ? playerLayoutState.focus : null;
     const contextChanged = previousFocus?.key !== activeFocus?.key || previousFocus?.span !== activeFocus?.span;
-    playerGrid.update({ force: force || contextChanged || pendingPlayerGeometry?.intent === 'bookmark' });
+    playerGrid.update({ force: force || contextChanged || playerLayoutState.pending?.intent === 'bookmark' });
     // A retry may replace one player while keeping exactly the same geometry.
-    if (playerGeometry) playerGeometry.items.forEach(item => {
-        const entry = activePlayers.get(item.key);
-        if (entry) getPlayerElement(entry).style.gridArea = playerGridArea(item);
-    });
+    projectPlayerLayout();
     playerWindowControls?.refresh();
+}
+
+function calculatePlayerLayout(options) {
+    const keys = getPlayerPositionKeys();
+    const focus = keys.includes(playerLayoutState.focus?.key) && keys.length > 1 ? playerLayoutState.focus : null;
+    if (!focus) {
+        if (playerLayoutState.pending?.intent === 'bookmark') {
+            const columns = Math.max(1, Math.min(keys.length || 1, playerLayoutState.pending.columns));
+            // Apply the saved grid once, then keep the existing resize
+            // stability rules. Hidden panes retain the restore intent.
+            if (options.width > 0 && options.height > 0) playerLayoutState.setPending(null);
+            return { count: keys.length, columns, rows: Math.max(1, Math.ceil(keys.length / columns)), area: 0 };
+        }
+        playerLayoutState.setPending(null);
+        return PlayerLayout.choose(options);
+    }
+    if (!(options.width > 0 && options.height > 0)) {
+        // A hidden fallback grid must not overwrite the saved anchor.
+        // Keep pending size/restore intent until there is a real pane.
+        const columns = Math.max(focus.span, Math.min(Math.max(playerLayoutState.pending?.columns || 0,
+            options.previous?.columns || 0, focus.column + focus.span), focus.span + keys.length - 1));
+        return { ...PlayerGeometry.build({ keys, columns, focus }), count: keys.length, deferredFocus: true };
+    }
+    let next;
+    if (playerLayoutState.pending?.intent === 'bookmark') {
+        next = PlayerGeometry.build({ keys, columns: playerLayoutState.pending.columns, focus });
+        playerLayoutState.setPending(null);
+    } else if (playerLayoutState.pending?.intent === 'size' || playerLayoutState.pending?.intent === 'restore') {
+        // Explicit sizing and reopening settle on the best grid immediately.
+        playerLayoutState.setPending(null);
+        next = PlayerGeometry.choose({ ...options, keys, focus, force: true });
+    } else if (playerLayoutState.pending?.intent === 'drag') {
+        // The preview already chose these tracks and the opposite corner.
+        next = PlayerGeometry.build({ keys, columns: playerLayoutState.pending.columns, focus });
+        playerLayoutState.setPending(null);
+    } else if (playerLayoutState.pending) {
+        // A saved grid may have come from a much larger selection.
+        const columns = Math.max(focus.span, Math.min(playerLayoutState.pending.columns, focus.span + keys.length - 1));
+        next = PlayerGeometry.build({ keys, columns, focus });
+        playerLayoutState.setPending(null);
+    } else if (options.preserveColumns && options.previous?.columns >= focus.span &&
+        options.previous.columns <= 768) {
+        next = PlayerGeometry.build({ keys, columns: options.previous.columns, focus });
+    } else next = PlayerGeometry.choose({ ...options, keys, focus });
+    return { ...next, count: keys.length };
 }
 
 function playerGridArea(item) {
@@ -835,29 +837,26 @@ function playerGridArea(item) {
 }
 
 function getCurrentPlayerGeometry() {
-    return playerGeometry || PlayerGeometry.build({ keys: getPlayerPositionKeys(), columns: playerGrid?.getColumns() || 1 });
+    return playerLayoutState.geometry;
 }
 
 function savePlayerEnlargement() {
     try {
-        if (!enlargedPlayerFocus) localStorage.removeItem(PLAYER_ENLARGEMENT_STORAGE_KEY);
+        if (!playerLayoutState.focus) localStorage.removeItem(PLAYER_ENLARGEMENT_STORAGE_KEY);
         else localStorage.setItem(PLAYER_ENLARGEMENT_STORAGE_KEY, JSON.stringify({
-            version: 1, columns: pendingPlayerGeometry?.columns || playerGeometry?.columns || 1, focus: enlargedPlayerFocus
+            version: 1, columns: playerLayoutState.pending?.columns || playerLayoutState.enlargedGeometry?.columns || 1, focus: playerLayoutState.focus
         }));
     } catch (_) {}
 }
 
 function applyPlayerSize(next, { optimize = true } = {}) {
     // Capture the reflowed order before the final shrink returns to normal tracks.
-    [...next.items].sort((a, b) => a.row - b.row || a.column - b.column).forEach((item, index) => {
-        getPlayerElement(activePlayers.get(item.key)).style.order = String(index);
-    });
-    enlargedPlayerFocus = next.items.find(item => item.span > 1) || null;
-    pendingPlayerGeometry = enlargedPlayerFocus ? { ...next, intent: optimize ? 'size' : 'drag' } : null;
+    playerLayoutState.commit(next);
+    playerLayoutState.setFocus(next.items.find(item => item.span > 1) || null);
+    playerLayoutState.setPending(playerLayoutState.focus ? { ...next, intent: optimize ? 'size' : 'drag' } : null);
     updatePlayerLayout({ force: true });
-    const keys = getPlayerPositionKeys();
-    preferredPlayerOrder = keys.concat(preferredPlayerOrder.filter(saved => !keys.includes(saved))).slice(0, 256);
-    try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(preferredPlayerOrder)); } catch (_) {}
+    playerLayoutState.rememberOrder();
+    try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(playerLayoutState.preferredOrder)); } catch (_) {}
     savePlayerEnlargement();
     playerPositionEditor?.refresh();
     playerNameOverlay?.refresh();
@@ -866,15 +865,15 @@ function applyPlayerSize(next, { optimize = true } = {}) {
 
 function enlargePlayer(key) {
     if (activePlayers.size < 2 || !activePlayers.has(key)) return false;
-    if (enlargedPlayerFocus?.key === key && enlargedPlayerFocus.span >= 256) return false;
+    if (playerLayoutState.focus?.key === key && playerLayoutState.focus.span >= 256) return false;
     return applyPlayerSize(PlayerGeometry.grow(getCurrentPlayerGeometry(), key));
 }
 
 function shrinkPlayer(key) {
     if (activePlayers.size < 2 || !activePlayers.has(key)) return false;
-    const current = playerGeometry?.items.find(item => item.key === key);
+    const current = playerLayoutState.enlargedGeometry?.items.find(item => item.key === key);
     if (!current || current.span <= 1) return false;
-    return applyPlayerSize(PlayerGeometry.shrink(playerGeometry, key));
+    return applyPlayerSize(PlayerGeometry.shrink(playerLayoutState.enlargedGeometry, key));
 }
 
 function closePlayer(key) {
@@ -885,11 +884,12 @@ function closePlayer(key) {
     const muted = getGlobalMuted();
     if (entry) { disposePlayer(entry); activePlayers.delete(key); }
     else initial.remove();
+    playerLayoutState.setOrder(playerLayoutState.order.filter(value => activePlayers.has(value)));
     // A close must not re-render retained players or apply the 2-to-1 audio rule.
     if (globalMutedPreference === null && activePlayers.size && muted !== getGlobalMuted()) globalMutedPreference = muted;
-    if (enlargedPlayerFocus?.key === key || activePlayers.size < 2) {
-        enlargedPlayerFocus = null;
-        pendingPlayerGeometry = null;
+    if (playerLayoutState.focus?.key === key || activePlayers.size < 2) {
+        playerLayoutState.setFocus(null);
+        playerLayoutState.setPending(null);
         savePlayerEnlargement();
     }
     currentDisplayChannel = activePlayers.size === 1 ? activePlayers.values().next().value.channel : null;
@@ -919,9 +919,7 @@ function closePlayer(key) {
 }
 
 function getPlayerPositionKeys() {
-    return Array.from(activePlayers.keys()).sort((a, b) =>
-        Number(getPlayerElement(activePlayers.get(a)).style.order) -
-        Number(getPlayerElement(activePlayers.get(b)).style.order));
+    return [...playerLayoutState.order];
 }
 
 function swapPlayerPositions(sourceKey, targetKey) {
@@ -930,16 +928,16 @@ function swapPlayerPositions(sourceKey, targetKey) {
     const targetIndex = keys.indexOf(targetKey);
     if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return false;
     [keys[sourceIndex], keys[targetIndex]] = [keys[targetIndex], keys[sourceIndex]];
-    if (playerGeometry) {
-        pendingPlayerGeometry = PlayerGeometry.swap(playerGeometry, sourceKey, targetKey);
-        enlargedPlayerFocus = pendingPlayerGeometry.items.find(item => item.span > 1);
-    }
-    // Change only CSS order: moving connected iframe nodes would restart playback.
-    keys.forEach((key, index) => { getPlayerElement(activePlayers.get(key)).style.order = String(index); });
-    if (pendingPlayerGeometry) { updatePlayerLayout({ force: true }); savePlayerEnlargement(); }
-    const visualKeys = getPlayerPositionKeys();
-    preferredPlayerOrder = visualKeys.concat(preferredPlayerOrder.filter(key => !visualKeys.includes(key))).slice(0, 256);
-    try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(preferredPlayerOrder)); } catch (_) {}
+    if (playerLayoutState.enlargedGeometry) {
+        playerLayoutState.setPending(PlayerGeometry.swap(playerLayoutState.enlargedGeometry, sourceKey, targetKey));
+        playerLayoutState.setFocus(playerLayoutState.pending.items.find(item => item.span > 1));
+        playerLayoutState.commit(PlayerGeometry.build({ keys, columns: playerLayoutState.pending.columns, focus: playerLayoutState.focus }));
+    } else playerLayoutState.setOrder(keys);
+    // Project cells without moving connected iframe nodes or restarting playback.
+    projectPlayerLayout();
+    if (playerLayoutState.pending) { updatePlayerLayout({ force: true }); savePlayerEnlargement(); }
+    playerLayoutState.rememberOrder();
+    try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(playerLayoutState.preferredOrder)); } catch (_) {}
     playerPositionEditor?.refresh();
     playerNameOverlay?.refresh();
     playerWindowControls?.refresh();
@@ -959,18 +957,19 @@ function movePlayerDirection(key, direction, targetKey) {
 }
 
 function resetPlayerPositions() {
-    preferredPlayerOrder = [];
-    const hadEnlargement = Boolean(enlargedPlayerFocus);
-    enlargedPlayerFocus = null;
-    pendingPlayerGeometry = null;
+    playerLayoutState.setPreferredOrder([]);
+    const hadEnlargement = Boolean(playerLayoutState.focus);
+    const hadVisibleEnlargement = Boolean(playerLayoutState.enlargedGeometry);
+    playerLayoutState.setFocus(null);
+    playerLayoutState.setPending(null);
     try { localStorage.removeItem(PLAYER_POSITION_STORAGE_KEY); } catch (_) {}
     if (hadEnlargement) savePlayerEnlargement();
     const defaultRanks = new Map(channels.map((channel, index) => [ChannelList.channelKey(channel), index]));
     const keys = getPlayerPositionKeys();
     keys.sort((a, b) => (defaultRanks.get(a) ?? Infinity) - (defaultRanks.get(b) ?? Infinity));
     // Keep each live player connected, including players showing a playback error.
-    keys.forEach((key, index) => { getPlayerElement(activePlayers.get(key)).style.order = String(index); });
-    updatePlayerLayout();
+    playerLayoutState.commit({ ...PlayerGeometry.build({ keys, columns: playerLayoutState.geometry.columns }), count: keys.length });
+    updatePlayerLayout({ force: hadVisibleEnlargement });
     playerPositionEditor?.refresh();
     playerNameOverlay?.refresh();
 }
@@ -979,13 +978,17 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     const container = document.getElementById("multi-stream-container");
     if (!container) return;
     const selected = ChannelList.mergeChannels(requested);
-    const preferredRanks = new Map(preferredPlayerOrder.map((key, index) => [key, index]));
+    const preferredRanks = new Map(playerLayoutState.preferredOrder.map((key, index) => [key, index]));
     selected.sort((a, b) => (preferredRanks.get(ChannelList.channelKey(a)) ?? Infinity) -
         (preferredRanks.get(ChannelList.channelKey(b)) ?? Infinity));
     const desired = new Set(selected.map(ChannelList.channelKey));
+    const previousFocus = playerLayoutState.enlargedGeometry?.items.find(item => item.span > 1);
+    const selectedFocus = selected.length > 1 && desired.has(playerLayoutState.focus?.key) ? playerLayoutState.focus : null;
+    const layoutContextChanged = previousFocus?.key !== selectedFocus?.key || previousFocus?.span !== selectedFocus?.span;
     for (const [key, entry] of activePlayers) {
         if (!desired.has(key)) { disposePlayer(entry); activePlayers.delete(key); }
     }
+    playerLayoutState.setOrder(selected.map(ChannelList.channelKey));
     // Remove the initial placeholder without disconnecting retained players.
     const retained = new Set(Array.from(activePlayers.values(), entry => entry.resource ? entry.resource.element : entry.element));
     for (const child of Array.from(container.children)) {
@@ -998,7 +1001,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     updateGlobalAudioButton();
     if (!count) {
         container.innerHTML = `<div style="color:var(--label-2); text-align:center; padding:2rem;">${emptyMessage}</div>`;
-        updatePlayerLayout();
+        updatePlayerLayout({ force: layoutContextChanged });
         playerPositionEditor?.refresh();
         playerNameOverlay?.refresh();
         return;
@@ -1036,11 +1039,9 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
         visible.dataset.channelKey = key;
         visible.classList.toggle('full-screen-video', count === 1);
         visible.classList.toggle('video', count > 1);
-        // Moving an iframe in the DOM can restart it; CSS order keeps it connected.
-        visible.style.order = String(index);
     });
     activePlayers.forEach(entry => entry.resource?.twitch?.refresh());
-    updatePlayerLayout();
+    updatePlayerLayout({ force: layoutContextChanged });
     updateGlobalAudioButton();
     if (unsyncedAudio.length) showGlobalAudioFeedback({ muted, unsupported: unsyncedAudio, reloaded: 0 });
     playerPositionEditor?.refresh();
@@ -1219,7 +1220,7 @@ function commitPlayerAudioLayout(batch, restore) {
         }
         const focus = request.focus;
         if (!error && value === true && focus && focus.target?.isConnected &&
-            activePlayers.get(focus.key) === focus.entry && getPlayerElement(focus.entry) === focus.target && enlargedPlayerFocus?.key === focus.key &&
+            activePlayers.get(focus.key) === focus.entry && getPlayerElement(focus.entry) === focus.target && playerLayoutState.focus?.key === focus.key &&
             document.documentElement.getAttribute('data-umininn-player-audio-intent') === focus.intent) {
             batch.pane.setAttribute('data-umininn-layout-audio-focus', focus.id);
             batch.pane.removeAttribute('data-umininn-layout-bookmark-audio');
@@ -1698,12 +1699,15 @@ function applyPlayerBookmark(value) {
     // players' sound preference even when switching between one and many.
     if (activePlayers.size) globalMutedPreference = getGlobalMuted();
     const keys = selected.map(ChannelList.channelKey);
-    preferredPlayerOrder = keys.concat(preferredPlayerOrder.filter(key => !keys.includes(key))).slice(0, 256);
-    enlargedPlayerFocus = keys.length > 1 && keys.includes(snapshot.focus?.key) ? { ...snapshot.focus } : null;
-    const columns = enlargedPlayerFocus ? snapshot.columns : Math.min(snapshot.columns, keys.length);
-    pendingPlayerGeometry = { columns, intent: 'bookmark' };
+    playerLayoutState.setPreferredOrder(keys.concat(playerLayoutState.preferredOrder.filter(key => !keys.includes(key))).slice(0, 256));
+    playerLayoutState.setFocus(keys.length > 1 && keys.includes(snapshot.focus?.key) ? { ...snapshot.focus } : null);
+    const columns = playerLayoutState.focus ? snapshot.columns : Math.min(snapshot.columns, keys.length);
+    playerLayoutState.setPending({ columns, intent: 'bookmark' });
+    // Restore the snapshot's exact ordering before reconciling retained players;
+    // a previous enlarged anchor must not reorder a normal bookmark's cells.
+    playerLayoutState.commit({ ...PlayerGeometry.build({ keys, columns, focus: playerLayoutState.focus }), count: keys.length });
     syncActivePlayers(selected);
-    try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(preferredPlayerOrder)); } catch (_) {}
+    try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(playerLayoutState.preferredOrder)); } catch (_) {}
     savePlayerEnlargement();
     const selectedKeys = new Set(keys);
     for (const input of document.querySelectorAll('#channel-options input[type="checkbox"]')) {
@@ -1762,7 +1766,7 @@ function applyPlayerBookmark(value) {
     if (!pane || !wrapper || !startButton) return;
     try {
         const saved = JSON.parse(localStorage.getItem(PLAYER_POSITION_STORAGE_KEY));
-        if (Array.isArray(saved)) preferredPlayerOrder = [...new Set(saved.filter(key => typeof key === 'string'))].slice(0, 256);
+        if (Array.isArray(saved)) playerLayoutState.setPreferredOrder([...new Set(saved.filter(key => typeof key === 'string'))].slice(0, 256));
     } catch (_) {}
     try {
         const saved = JSON.parse(localStorage.getItem(PLAYER_ENLARGEMENT_STORAGE_KEY));
@@ -1772,8 +1776,8 @@ function applyPlayerBookmark(value) {
             Number.isInteger(focus.row) && focus.row >= 0 && focus.row <= 512 &&
             Number.isInteger(focus.column) && focus.column >= 0 && focus.column <= 512 &&
             Number.isInteger(saved.columns) && saved.columns >= focus.span && saved.columns <= 768) {
-            enlargedPlayerFocus = { key: focus.key, span: focus.span, row: focus.row, column: focus.column };
-            pendingPlayerGeometry = { columns: saved.columns, intent: 'restore' };
+            playerLayoutState.setFocus({ key: focus.key, span: focus.span, row: focus.row, column: focus.column });
+            playerLayoutState.setPending({ columns: saved.columns, intent: 'restore' });
         }
     } catch (_) {}
 
@@ -1897,15 +1901,15 @@ function applyPlayerBookmark(value) {
         cells.style.gridTemplateColumns = style.gridTemplateColumns;
         cells.style.gridTemplateRows = style.gridTemplateRows;
         cells.style.gap = style.gap;
-        const columns = playerGeometry?.columns || playerGrid?.getColumns() || 1;
-        const rows = playerGeometry?.rows || Math.max(1, Math.ceil(activePlayers.size / columns));
+        const columns = playerLayoutState.geometry.columns;
+        const rows = playerLayoutState.geometry.rows;
         const cellWidth = (pane.clientWidth - (parseFloat(style.columnGap) || 0) * (columns - 1)) / columns;
         const cellHeight = (pane.clientHeight - (parseFloat(style.rowGap) || 0) * (rows - 1)) / rows;
         const cellSize = Math.max(0, Math.min(cellWidth, cellHeight));
         layer.style.setProperty('--player-position-cell-size', `${cellSize}px`);
         // Browsers round nonzero borders up to a physical pixel in tiny tracks.
         layer.style.setProperty('--player-position-cell-border', `${cellSize < 4 ? 0 : Math.min(2, cellSize / 16)}px`);
-        const positions = new Map((playerGeometry?.items || []).map(item => [item.key, item]));
+        const positions = new Map(playerLayoutState.geometry.items.map(item => [item.key, item]));
         buttons.forEach((button, key) => {
             button.style.gridArea = positions.has(key) ? playerGridArea(positions.get(key)) : '';
         });
@@ -1955,7 +1959,7 @@ function applyPlayerBookmark(value) {
     function refresh() {
         startButton.disabled = activePlayers.size < 2;
         if (enlargeButton) enlargeButton.disabled = startButton.disabled;
-        const focus = !startButton.disabled && playerGeometry?.items.find(item => item.span > 1);
+        const focus = !startButton.disabled && playerLayoutState.enlargedGeometry?.items.find(item => item.span > 1);
         shrinkButton.hidden = mode !== 'enlarge';
         shrinkButton.disabled = !focus;
         shrinkButton.title = focus ? `將 ${activePlayers.get(focus.key).channel.name} 由 ${focus.span}×${focus.span} 縮小至 ${focus.span - 1}×${focus.span - 1}` : '最小為 1×1；先點選播放器放大';
@@ -1967,7 +1971,7 @@ function applyPlayerBookmark(value) {
         pickedKey = null;
         buttons.clear();
         cells.replaceChildren();
-        const sizes = new Map((playerGeometry?.items || []).map(item => [item.key, item.span]));
+        const sizes = new Map(playerLayoutState.geometry.items.map(item => [item.key, item.span]));
         getPlayerPositionKeys().forEach((key, index) => {
             const entry = activePlayers.get(key);
             const button = document.createElement('button');
@@ -2087,7 +2091,7 @@ function applyPlayerBookmark(value) {
     shrinkButton.addEventListener('click', () => {
         void withPlayerAudioLayout(() => {
             if (!opened || mode !== 'enlarge') return;
-            const focus = playerGeometry?.items.find(item => item.span > 1);
+            const focus = playerLayoutState.enlargedGeometry?.items.find(item => item.span > 1);
             if (!focus) return;
             const name = activePlayers.get(focus.key).channel.name;
             if (shrinkPlayer(focus.key)) announcement.textContent = `${name} 已縮小至 ${focus.span - 1}×${focus.span - 1}${focus.span === 2 ? '，已達最小單位，保留目前排列' : ''}`;
@@ -2121,7 +2125,7 @@ function applyPlayerBookmark(value) {
         if (mode === 'enlarge') {
             void withPlayerAudioLayout(() => {
                 if (!opened || mode !== 'enlarge' || !activePlayers.has(key)) return;
-                if (enlargePlayer(key)) announcement.textContent = `${activePlayers.get(key).channel.name} 已放大至 ${enlargedPlayerFocus.span}×${enlargedPlayerFocus.span}`;
+                if (enlargePlayer(key)) announcement.textContent = `${activePlayers.get(key).channel.name} 已放大至 ${playerLayoutState.focus.span}×${playerLayoutState.focus.span}`;
                 else announcement.textContent = '已達放大上限';
             });
             return;
@@ -2141,7 +2145,7 @@ function applyPlayerBookmark(value) {
         const button = event.target.closest('.player-position-cell');
         if (!button || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
         event.preventDefault();
-        if (playerGeometry || mode === 'enlarge') {
+        if (playerLayoutState.enlargedGeometry || mode === 'enlarge') {
             const geometry = getCurrentPlayerGeometry();
             const source = geometry.items.find(item => item.key === button.dataset.playerKey);
             if (!source) return;
@@ -2172,7 +2176,7 @@ function applyPlayerBookmark(value) {
         }
         const keys = getPlayerPositionKeys();
         const index = keys.indexOf(button.dataset.playerKey);
-        const columns = playerGrid?.getColumns() || 1;
+        const columns = playerLayoutState.geometry.columns;
         const column = index % columns;
         let target = index;
         if (event.key === 'ArrowLeft' && column > 0) target--;
@@ -2723,7 +2727,7 @@ function applyPlayerBookmark(value) {
             }
             bind(cell, element);
             cell.bar.setAttribute('aria-label', `${name} 播放器控制`);
-            const span = playerGeometry?.items.find(item => item.key === key)?.span || 1;
+            const span = playerLayoutState.enlargedGeometry?.items.find(item => item.key === key)?.span || 1;
             cell.buttons.shrink.hidden = span <= 1;
             cell.buttons.enlarge.disabled = activePlayers.size < 2 || span >= 256;
             for (const action of ['shrink', 'enlarge', 'close']) {
@@ -2845,7 +2849,7 @@ function applyPlayerBookmark(value) {
             await closePlayer(key);
         } else if (button.dataset.playerAction === 'enlarge') {
             const entry = activePlayers.get(key);
-            if (!entry || activePlayers.size < 2 || enlargedPlayerFocus?.key === key && enlargedPlayerFocus.span >= 256) return;
+            if (!entry || activePlayers.size < 2 || playerLayoutState.focus?.key === key && playerLayoutState.focus.span >= 256) return;
             const target = getPlayerElement(entry);
             let focus;
             if (target && document.documentElement.hasAttribute('data-umininn-player-unified-audio-ready')) {

@@ -37,7 +37,7 @@ function loadProduction() {
     bookmarkCss = read('layout-bookmarks.css');
     modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'menu-dismiss', 'layout-bookmarks']
         .map(name => ['/tv/' + name + '.js', read('' + name + '.js')]));
-    const names = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'updatePlayerLayout',
+    const names = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'projectPlayerLayout', 'calculatePlayerLayout', 'updatePlayerLayout',
         'playerGridArea', 'getCurrentPlayerGeometry', 'savePlayerEnlargement', 'getPlayerPositionKeys', 'syncActivePlayers',
         'playerBookmarkAudioAvailable', 'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible'];
     appScript = names.map(name => productionFunction(source, name)).join('\n') + '\n' + productionIife(source, 'initLayoutBookmarks')
@@ -92,7 +92,7 @@ function fixtureDocument({ width = 1100, height = 600, framePlatform = 'at' } = 
     let channels=[{id:'one',platform:'m3u8',name:'劇集一台'},{id:'two',platform:'${framePlatform}',name:'劇集二台'},{id:'three',platform:'${framePlatform}',name:'直播三台'},{id:'four',platform:'m3u8',name:'新聞四台'}];
     const activePlayers=new Map(),playerResources=new WeakMap();
     const PLAYER_POSITION_STORAGE_KEY='playerPositionOrder',PLAYER_ENLARGEMENT_STORAGE_KEY='playerEnlargementLayout';
-    let preferredPlayerOrder=[],enlargedPlayerFocus=null,playerGeometry=null,pendingPlayerGeometry=null,playerGrid=null;
+    const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});let playerGrid=null;
     let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[];
     let layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null;
     const playerWindowControls={refresh(){}},playerNameOverlay={refresh(){},setVisible(){}};
@@ -120,7 +120,7 @@ function fixtureDocument({ width = 1100, height = 600, framePlatform = 'at' } = 
     }
     ${appScript}
     fixture.keys=()=>getPlayerPositionKeys();
-    fixture.geometry=()=>({keys:fixture.keys(),geometry:getCurrentPlayerGeometry(),focus:enlargedPlayerFocus,muted:getGlobalMuted(),renders:fixture.rendered});
+    fixture.geometry=()=>({keys:fixture.keys(),geometry:getCurrentPlayerGeometry(),focus:playerLayoutState.focus,muted:getGlobalMuted(),renders:fixture.rendered});
     fixture.remember=function(keys=fixture.keys()){
       fixture.remembered=new Map(keys.map(key=>{const entry=activePlayers.get(key),element=getPlayerElement(entry);return [key,{entry,element,window:element.tagName==='IFRAME'?element.contentWindow:null}]}));
       return fixture.snapshot();
@@ -128,7 +128,7 @@ function fixtureDocument({ width = 1100, height = 600, framePlatform = 'at' } = 
     fixture.snapshot=()=>Array.from(fixture.remembered,([key,saved])=>{const live=activePlayers.get(key);return {key,sameEntry:live===saved.entry,sameElement:live&&getPlayerElement(live)===saved.element,connected:saved.element.isConnected,
       sameWindow:saved.window?saved.window===saved.element.contentWindow:null,loads:saved.element.dataset.loads,srcWrites:saved.element.dataset.srcWrites,
       media:saved.element.tagName==='VIDEO'?readVideo(saved.element):null}});
-    fixture.setFocus=function(key,span=2){const next=PlayerGeometry.build({keys:fixture.keys(),columns:3,focus:{key,span,row:0,column:1}});enlargedPlayerFocus=next.items.find(item=>item.span>1);pendingPlayerGeometry={...next,intent:'drag'};updatePlayerLayout({force:true})};
+    fixture.setFocus=function(key,span=2){const next=PlayerGeometry.build({keys:fixture.keys(),columns:3,focus:{key,span,row:0,column:1}});playerLayoutState.setFocus(next.items.find(item=>item.span>1));playerLayoutState.setPending({...next,intent:'drag'});updatePlayerLayout({force:true})};
     fixture.seedSelection=function(){const host=document.getElementById('channel-options');host.replaceChildren();for(const channel of channels){const input=document.createElement('input');input.type='checkbox';input.value=channel.id;input.dataset.platform=channel.platform;input.dataset.name=channel.name;input.checked=activePlayers.has(ChannelList.channelKey(channel));host.append(input)}};
     syncActivePlayers(channels);fixture.seedSelection();
     </script></body></html>`;
@@ -220,11 +220,11 @@ async function assertContinuity(f, before) {
     }
 }
 
-test('capture uses actual visible order and enlarged geometry while leaving uncommitted channel selections alone', browserCase, async t => {
+test('capture uses authoritative visual order and enlarged geometry while leaving uncommitted channel selections alone', browserCase, async t => {
     const f = await fixture(t), keys = await f.page.evaluate(() => fixture.keys()), before = await remember(f);
     const snapshot = await f.page.evaluate(keys => {
         document.querySelector('#channel-options input').checked = false;
-        getPlayerElement(activePlayers.get(keys[0])).style.order = '9';
+        playerLayoutState.setOrder(keys.slice(1).concat(keys[0]));
         fixture.setFocus(keys[1]);
         return capturePlayerBookmark();
     }, keys);
@@ -241,8 +241,8 @@ test('applying a saved layout restores exact grid and order without reloading re
     const saved = await f.page.evaluate(keys => { fixture.setFocus(keys[1]); return capturePlayerBookmark(); }, keys);
     const before = await remember(f);
     const result = await f.page.evaluate(saved => {
-        enlargedPlayerFocus = null; pendingPlayerGeometry = null;
-        fixture.keys().reverse().forEach((key, index) => { getPlayerElement(activePlayers.get(key)).style.order = String(index); });
+        playerLayoutState.setFocus(null); playerLayoutState.setPending(null);
+        playerLayoutState.setOrder(fixture.keys().reverse());
         updatePlayerLayout({ force: true });
         return applyPlayerBookmark(saved);
     }, saved);
@@ -283,7 +283,7 @@ test('applying identical enlarged geometry at a new pane aspect resets its resiz
     await f.page.evaluate(() => { document.getElementById('multi-stream-container-wrapper').style.width = '601px'; });
     await f.page.waitForTimeout(200);
     assert.equal(await f.page.evaluate(() => getCurrentPlayerGeometry().columns), saved.columns);
-    assert.equal(await f.page.evaluate(() => enlargedPlayerFocus.key), saved.focus.key);
+    assert.equal(await f.page.evaluate(() => playerLayoutState.focus.key), saved.focus.key);
     await assertContinuity(f, before);
 });
 
@@ -293,7 +293,7 @@ test('missing channels are reported, removed enlarged focus becomes normal, and 
     await f.page.evaluate(key => { channels = channels.filter(channel => ChannelList.channelKey(channel) !== key); }, keys[1]);
     const result = await f.page.evaluate(saved => applyPlayerBookmark(saved), saved);
     assert.deepEqual(result, { applied: 3, missing: 1 });
-    assert.equal(await f.page.evaluate(() => enlargedPlayerFocus), null);
+    assert.equal(await f.page.evaluate(() => playerLayoutState.focus), null);
     assert.match(await f.page.locator('#layout-bookmark-feedback').innerText(), /略過 1/);
     const before = await remember(f);
     for (const invalid of [
@@ -346,6 +346,11 @@ test('bookmark menu dismisses on repeated foreign player clicks without consumin
     for (const index of [0, 0, 1]) {
         await trigger.focus(); await f.page.keyboard.press('Enter');
         assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true);
+        // Let the foreign frame paint the dynamically inserted hit target before
+        // sending the click; a warm Chromium compositor can otherwise route it
+        // to the old media surface. Preserve real input and exact event counts.
+        await f.frames[index].locator('#fixture-player-surface').hover();
+        await f.frames[index].evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
         await f.frames[index].locator('#fixture-player-surface').click();
         await f.page.waitForFunction(() => !layoutBookmarkMenu.isOpen());
         assert.equal(await f.page.evaluate(() => document.activeElement?.tagName), 'IFRAME');
@@ -590,7 +595,7 @@ test('preview is a faithful miniature of the saved enlarged grid and applying it
         const item = expected.items.find(item => item.key === channel.key);
         assert.equal(preview.cells.find(cell => cell.name === channel.name).area, `${item.row + 1} / ${item.column + 1} / span ${item.span} / span ${item.span}`);
     }
-    await f.page.evaluate(() => { enlargedPlayerFocus = null; pendingPlayerGeometry = null; updatePlayerLayout({ force: true }); });
+    await f.page.evaluate(() => { playerLayoutState.setFocus(null); playerLayoutState.setPending(null); updatePlayerLayout({ force: true }); });
     await f.page.locator('.layout-bookmark-preview').click();
     await f.page.waitForFunction(() => document.getElementById('layout-bookmarks').hidden);
     assert.deepEqual(await f.page.evaluate(() => capturePlayerBookmark()), saved);

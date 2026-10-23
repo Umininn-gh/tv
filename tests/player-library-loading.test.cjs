@@ -8,6 +8,7 @@ const vm = require('node:vm');
 const ChannelList = require('../channel-list.js');
 const StreamPerformance = require('../stream-performance.js');
 const PlayerLayout = require('../player-layout.js');
+const PlayerGeometry = require('../player-geometry.js');
 const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const app = read('tv-app.js');
 const coreEnd = app.indexOf('/* =============== 頻道儲存 / 載入');
@@ -52,7 +53,7 @@ function fixture({ nativeHls = false } = {}) {
         location: { hostname: 'site.invalid', origin: 'https://site.invalid' },
         sessionStorage: { getItem() { return null; } }, localStorage: { setItem() {}, removeItem() {} },
         TV_LOGIN_CONFIG: { passwordHash: '0'.repeat(64), passwordSalt: 'fixture', storageKey: 'fixture' },
-        ChannelList, StreamPerformance, PlayerLayout, queueMicrotask, URL,
+        ChannelList, StreamPerformance, PlayerLayout, PlayerGeometry, queueMicrotask, URL,
         console: { warn: (...args) => warnings.push(args), error() {} }, addEventListener() {}
     });
     context.window = context;

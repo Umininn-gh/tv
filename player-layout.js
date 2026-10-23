@@ -7,6 +7,60 @@
     const RESIZE_DELAY = 180;
     const ASPECT_RESIZE_BAND = 0.15;
 
+    // The live grid has one owner. CSS is a projection of these cells, never an
+    // input to ordering. Desired focus/pending intent are kept separately from
+    // committed cells so a hidden pane can retain its saved enlarged anchor.
+    function createState({ buildGeometry } = {}) {
+        if (typeof buildGeometry !== 'function') throw new TypeError('buildGeometry is required');
+        const keysOnly = keys => [...new Set(Array.isArray(keys) ? keys.filter(key => typeof key === 'string') : [])];
+        const copy = value => {
+            if (Array.isArray(value)) return Object.freeze(value.map(copy));
+            if (value && typeof value === 'object') return Object.freeze(Object.fromEntries(
+                Object.entries(value).map(([key, item]) => [key, copy(item)])));
+            return value;
+        };
+        let state = copy({ order: [], preferredOrder: [], focus: null, pending: null,
+            geometry: { ...buildGeometry({ keys: [], columns: 1 }), count: 0 } });
+        const patch = value => { state = Object.freeze({ ...state, ...value }); };
+        function commit(next) {
+            const cells = next?.items ? next : { ...next,
+                ...buildGeometry({ keys: state.order, columns: next?.columns || 1 }) };
+            const geometry = copy({ ...cells, count: cells.items.length });
+            const order = Object.freeze([...geometry.items].sort((a, b) => a.row - b.row || a.column - b.column)
+                .map(item => item.key));
+            const focus = geometry.items.find(item => item.span > 1);
+            patch({ geometry, order, ...(!geometry.deferredFocus && focus ? { focus } : {}) });
+            return geometry;
+        }
+        function setOrder(keys) {
+            const order = Object.freeze(keysOnly(keys));
+            // Reordering keeps the adopted tracks. Choosing different tracks is
+            // still the existing layout algorithm's responsibility.
+            const focus = order.length > 1 ? state.geometry.items.find(item => item.span > 1) : null;
+            const geometry = copy({ ...state.geometry,
+                ...buildGeometry({ keys: order, columns: state.geometry.columns, focus }), count: order.length });
+            const visualOrder = Object.freeze([...geometry.items].sort((a, b) => a.row - b.row || a.column - b.column)
+                .map(item => item.key));
+            patch({ order: visualOrder, geometry });
+            return visualOrder;
+        }
+        function setPreferredOrder(keys) { patch({ preferredOrder: Object.freeze(keysOnly(keys).slice(0, 256)) }); }
+        return Object.freeze({
+            get order() { return state.order; },
+            get preferredOrder() { return state.preferredOrder; },
+            get focus() { return state.focus; },
+            get pending() { return state.pending; },
+            get geometry() { return state.geometry; },
+            get enlargedGeometry() { return state.geometry.items.some(item => item.span > 1) ? state.geometry : null; },
+            setOrder,
+            setPreferredOrder,
+            rememberOrder() { setPreferredOrder([...state.order, ...state.preferredOrder.filter(key => !state.order.includes(key))]); },
+            setFocus(value) { patch({ focus: value ? copy(value) : null }); },
+            setPending(value) { patch({ pending: value ? copy(value) : null }); },
+            commit
+        });
+    }
+
     function choose({ count, width, height, columnGap = 0, rowGap = 0, previous, force = false,
         preserveColumns = false }) {
         count = Number.isFinite(Number(count)) ? Math.max(0, Math.floor(Number(count))) : 0;
@@ -153,7 +207,7 @@
         };
     }
 
-    const api = { choose, observe };
+    const api = { choose, observe, createState };
     if (typeof module === 'object' && module.exports) module.exports = api;
     else root.PlayerLayout = api;
 })(typeof globalThis === 'object' ? globalThis : this);

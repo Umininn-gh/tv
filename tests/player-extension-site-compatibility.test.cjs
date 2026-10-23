@@ -286,6 +286,7 @@ for (const admin of [false, true]) {
             await mountLogin(page);
             await page.addScriptTag({ content: read('site/assets/js/channel-list.js') });
             await page.addScriptTag({ content: read('site/assets/js/stream-performance.js') });
+            await page.addScriptTag({ content: read('site/assets/js/player-geometry.js') });
             await page.addScriptTag({ content: read('site/assets/js/player-layout.js') });
             await page.addScriptTag({ content: `window.Hls = class {
                 static Events = {MANIFEST_PARSED: 'manifest', ERROR: 'error'};

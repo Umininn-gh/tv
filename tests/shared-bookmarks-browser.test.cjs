@@ -33,7 +33,7 @@ test.before(async () => {
     css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match => match[1]).join('\n') + '\n' + read('layout-bookmarks.css');
     modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'menu-dismiss', 'layout-bookmarks', 'shared-bookmarks']
         .map(name => ['/tv/' + name + '.js', read('' + name + '.js')]));
-    appScript = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'updatePlayerLayout',
+    appScript = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'projectPlayerLayout', 'calculatePlayerLayout', 'updatePlayerLayout',
         'playerGridArea', 'getCurrentPlayerGeometry', 'savePlayerEnlargement', 'getPlayerPositionKeys', 'syncActivePlayers',
         'playerLayoutAudioAvailable', 'playerBookmarkAudioAvailable', 'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible']
         .map(name => productionFunction(source, name)).join('\n');
@@ -56,7 +56,7 @@ function htmlFixture({ width = 1100, height = 600 } = {}) {
     <script>${instrument}
     const channels=[{id:'one',platform:'m3u8',name:'劇集一台'},{id:'two',platform:'at',name:'直播二台'},{id:'three',platform:'at',name:'新聞三台'},{id:'four',platform:'m3u8',name:'劇集四台'}];
     const activePlayers=new Map(),playerResources=new WeakMap(),PLAYER_POSITION_STORAGE_KEY='playerPositionOrder',PLAYER_ENLARGEMENT_STORAGE_KEY='playerEnlargementLayout';
-    let preferredPlayerOrder=[],enlargedPlayerFocus=null,playerGeometry=null,pendingPlayerGeometry=null,playerGrid=null;
+    const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});let playerGrid=null;
     let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[],layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null;
     const playerWindowControls={refresh(){}},playerNameOverlay={refresh(){},setVisible(){}},playerPositionEditor={refresh(){},layoutChanged(){},close(){}},channelSelectionIdleTimer={setVisible(){}};
     window.fixture={renders:0,nextId:0,remembered:new Map(),captures:0,applies:0};
@@ -71,7 +71,7 @@ function htmlFixture({ width = 1100, height = 600 } = {}) {
     const sharedQaStore=SharedBookmarks.createStore({transport,cacheStorage:localStorage});
     layoutBookmarkMenu=LayoutBookmarks.mount({button:document.getElementById('layout-bookmarks-btn'),panel:document.getElementById('layout-bookmarks'),store:sharedQaStore,capture:(...args)=>{fixture.captures++;return capturePlayerBookmark(...args)},apply:(...args)=>{fixture.applies++;return applyPlayerBookmark(...args)},beforeOpen(){setChannelSelectionVisible(false);playerPositionEditor.close(false);}});
     fixture.keys=()=>getPlayerPositionKeys();
-    fixture.setFocus=function(){const key=fixture.keys()[1],next=PlayerGeometry.build({keys:fixture.keys(),columns:3,focus:{key,span:2,row:0,column:1}});enlargedPlayerFocus=next.items.find(item=>item.span>1);pendingPlayerGeometry={...next,intent:'drag'};updatePlayerLayout({force:true});};
+    fixture.setFocus=function(){const key=fixture.keys()[1],next=PlayerGeometry.build({keys:fixture.keys(),columns:3,focus:{key,span:2,row:0,column:1}});playerLayoutState.setFocus(next.items.find(item=>item.span>1));playerLayoutState.setPending({...next,intent:'drag'});updatePlayerLayout({force:true});};
     fixture.remember=function(){fixture.remembered=new Map([...activePlayers].map(([key,entry])=>[key,{entry,element:getPlayerElement(entry),window:getPlayerElement(entry).contentWindow}]));return fixture.state();};
     fixture.state=function(){return [...fixture.remembered].map(([key,saved])=>{const current=activePlayers.get(key),element=current&&getPlayerElement(current);return {key,sameEntry:current===saved.entry,sameElement:element===saved.element,connected:saved.element.isConnected,sameWindow:saved.window===saved.element.contentWindow,loads:saved.element.dataset.loads||null,paused:saved.element.tagName==='VIDEO'?saved.element.paused:null,actions:saved.element.qaActions?{...saved.element.qaActions}:null};});};
     syncActivePlayers(channels);for(const channel of channels){const input=document.createElement('input');input.type='checkbox';input.checked=true;input.value=channel.id;input.dataset.platform=channel.platform;document.getElementById('channel-options').append(input);}
