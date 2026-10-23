@@ -437,7 +437,7 @@ test('focus overlays the snapshot before writes: only the target opens at full v
     assert.equal(f.calls.some(call => call.key === b.key && call.action === 'setMuted' && call.value === false), false);
     const targetWrites = f.calls.filter(call => call.key === a.key);
     assert.deepEqual(targetWrites, [
-        { key: a.key, action: 'setVolume', value: 1 }, { key: a.key, action: 'setMuted', value: false }
+        { key: a.key, action: 'setVolume', value: 1, focus: true }, { key: a.key, action: 'setMuted', value: false, focus: true }
     ]);
     assert.equal(f.clock.pending, 0);
 });

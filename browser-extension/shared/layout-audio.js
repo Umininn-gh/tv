@@ -347,7 +347,8 @@
             return { target, peers };
         }
         function focusState(record, state) {
-            record.state = { ...sound(state), muteGuardActive: state?.muteGuardActive === true };
+            record.state = { ...sound(state), muteGuardActive: state?.muteGuardActive === true,
+                focusRestorePending: state?.focusRestorePending === true };
             record.muteSatisfied = record.state.muted === record.desired.muted;
             record.volumeSatisfied = !own(record.desired, 'volume') || own(record.state, 'volume') &&
                 Math.abs(record.state.volume - record.desired.volume) < 0.001;
@@ -471,9 +472,12 @@
                     await guardFocusPeers(ctx, stage, peers);
                     if (!live(ctx, stage)) return;
                     if (target && await focusRead(ctx, stage, target) && focusSafe(ctx)) {
-                        if (!target.volumeSatisfied) await focusWrite(ctx, stage, target, { action: 'setVolume', value: 1 });
-                        if (live(ctx, stage) && !target.failed && focusSafe(ctx) && target.state?.muted !== false)
-                            await focusWrite(ctx, stage, target, { action: 'setMuted', value: false });
+                        // A primary video's state cannot prove that secondary
+                        // soundtracks muted by our earlier guard were released.
+                        if (!target.volumeSatisfied || target.state.focusRestorePending)
+                            await focusWrite(ctx, stage, target, { action: 'setVolume', value: 1, focus: true });
+                        if (live(ctx, stage) && !target.failed && focusSafe(ctx) && (target.state?.muted !== false || target.state.focusRestorePending))
+                            await focusWrite(ctx, stage, target, { action: 'setMuted', value: false, focus: true });
                     }
                 }
             }

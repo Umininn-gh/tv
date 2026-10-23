@@ -21,6 +21,8 @@
         function validCommand(command) {
             if (!object(command)) return false;
             if ('guard' in command && (command.action !== 'setMuted' || command.value !== true || command.guard !== true)) return false;
+            if ('focus' in command && (command.focus !== true || 'guard' in command ||
+                !(command.action === 'setVolume' && command.value === 1 || command.action === 'setMuted' && command.value === false))) return false;
             if (command.action === 'setVolume') return typeof command.value === 'number' && Number.isFinite(command.value) && command.value >= 0 && command.value <= 1;
             if (command.action === 'setMuted') return typeof command.value === 'boolean';
             return ['getState', 'recover'].includes(command.action) && command.value === undefined;
@@ -28,13 +30,14 @@
         function safeState(state) {
             if (!object(state)) return null;
             const result = {};
-            for (const field of ['available', 'muted', 'paused', 'ended', 'recovering', 'recoverSupported', 'platformRecoverSupported', 'volumeSupported', 'muteSupported', 'muteGuardActive', 'disposed']) {
+            for (const field of ['available', 'muted', 'paused', 'ended', 'recovering', 'recoverSupported', 'platformRecoverSupported', 'volumeSupported', 'muteSupported', 'muteGuardActive', 'focusRestorePending', 'disposed']) {
                 if (typeof state[field] === 'boolean' || state[field] === null) result[field] = state[field];
             }
             for (const [field, min, max] of [['volume', 0, 1], ['readyState', 0, 4], ['errorCode', 0, 4], ['mediaId', 1, Number.MAX_SAFE_INTEGER]]) {
                 if (state[field] === null) result[field] = null;
                 else if (typeof state[field] === 'number' && Number.isFinite(state[field]) && state[field] >= min && state[field] <= max) result[field] = state[field];
             }
+            if (Number.isSafeInteger(state.audioUserRevision) && state.audioUserRevision >= 0) result.audioUserRevision = state.audioUserRevision;
             if (['video', 'audio', null].includes(state.mediaType)) result.mediaType = state.mediaType;
             if (['no-media', 'error', 'blocked', 'ended', 'waiting', 'paused', 'playing'].includes(state.playbackStatus)) result.playbackStatus = state.playbackStatus;
             return result;
@@ -97,6 +100,7 @@
             const command = { action: message.command.action };
             if (message.command.value !== undefined) command.value = message.command.value;
             if (message.command.guard === true) command.guard = true;
+            if (message.command.focus === true) command.focus = true;
             const target = { frameId: message.target.frameId };
             // Chromium can additionally select the exact document. The per-document
             // token remains required on both engines, including Firefox versions

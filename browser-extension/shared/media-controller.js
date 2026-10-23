@@ -31,6 +31,9 @@
         let guardTimer = null;
         let guardFailure = false;
         let guardMedia = new Set();
+        // Own only routes this guard actually silenced. A platform's already
+        // muted preload must never acquire permission to become audible.
+        const guardOwned = new Map();
         const guardRepairs = new Map();
         const guardBlocked = new Set();
         let blocked = false;
@@ -109,12 +112,13 @@
             return { available, mediaId: available ? ids.get(media) : null, mediaType: available ? String(media.tagName).toLowerCase() : null,
                 volume, muted, paused, ended, readyState, playbackStatus, errorCode, recovering: Boolean(pending),
                 recoverSupported: available && typeof media.play === 'function', volumeSupported: available && volume !== null,
-                muteSupported: (available || guarded.length > 0) && muted !== null, muteGuardActive: !disposed && muteGuard, audioUserRevision, disposed };
+                muteSupported: (available || guarded.length > 0) && muted !== null, muteGuardActive: !disposed && muteGuard,
+                focusRestorePending: !disposed && guardOwned.size > 0, audioUserRevision, disposed };
         }
         function result(ok = true, code = 'OK', message = '') { return { ok, code, message, state: state() }; }
         function currentResult() { return disposed ? result(false, 'DISPOSED', '控制器已關閉') : muteGuard && guardFailure ?
             result(false, 'NOT_APPLIED', '平台沒有保留全部影片的靜音設定，請重新按放大') : connected(media) ? result() : result(false, 'NO_MEDIA', '未找到可見的影片或音訊'); }
-        function clearMuteGuard() {
+        function clearMuteGuard(preserveOwned = false) {
             if (guardTimer !== null) clear(guardTimer);
             guardTimer = null;
             muteGuard = false;
@@ -123,11 +127,12 @@
             guardBlocked.clear();
             for (const node of guardMedia) for (const event of EVENTS) node.removeEventListener(event, onGuardEvent);
             guardMedia.clear();
+            if (!preserveOwned) guardOwned.clear();
         }
         function onNativeIntent(event) {
             if (event.isTrusted !== true) return;
             audioUserRevision++;
-            if (muteGuard) clearMuteGuard();
+            clearMuteGuard();
             // A native player interaction supersedes the focus preference,
             // including its carry-over setting for a future media replacement.
             requestedMuted = null;
@@ -135,6 +140,7 @@
             notify();
         }
         function observeGuard(candidates) {
+            for (const node of guardOwned.keys()) if (!connected(node) || !candidates.includes(node)) guardOwned.delete(node);
             if (!muteGuard) return;
             const next = new Set(candidates.filter(connected));
             for (const node of guardMedia) if (!next.has(node)) {
@@ -163,6 +169,7 @@
                     if (attempts.length >= GUARD_REPAIR_LIMIT) { guardBlocked.add(node); failed = true; continue; }
                     attempts.push(time);
                     guardRepairs.set(node, attempts);
+                    if (!guardOwned.has(node) && read(node, 'muted') === false) guardOwned.set(node, true);
                     try { node.muted = true; } catch (_) { failed = true; }
                     if (read(node, 'muted') !== true) failed = true;
                 }
@@ -295,8 +302,13 @@
             if (command.action === 'setVolume' && (typeof command.value !== 'number' || !Number.isFinite(command.value) || command.value < 0 || command.value > 1)) return result(false, 'INVALID_VALUE', '音量必須是 0 至 1 的數字');
             if (command.action === 'setMuted' && typeof command.value !== 'boolean') return result(false, 'INVALID_VALUE', '靜音設定必須是布林值');
             if (command.guard !== undefined && (command.guard !== true || command.action !== 'setMuted' || command.value !== true)) return result(false, 'INVALID_VALUE', '靜音保護只支援全部靜音');
+            if ('focus' in command && (command.focus !== true || 'guard' in command ||
+                !(command.action === 'setVolume' && command.value === 1 || command.action === 'setMuted' && command.value === false)))
+                return result(false, 'INVALID_VALUE', '單台開聲只支援音量 100% 及解除靜音');
             if (command.action === 'setMuted') {
-                clearMuteGuard();
+                // Re-arming and the explicit solo action retain ownership of
+                // earlier hidden routes; ordinary manual controls revoke it.
+                clearMuteGuard(command.guard === true || command.focus === true);
                 if (command.guard === true) {
                     muteGuard = true;
                     requestedMuted = null;
@@ -313,14 +325,26 @@
             if (command.action === 'setVolume' || command.action === 'setMuted') {
                 const property = command.action === 'setVolume' ? 'volume' : 'muted';
                 if (property === 'volume' && number(read(media, property)) === null || property === 'muted' && typeof read(media, property) !== 'boolean') return result(false, 'NOT_SUPPORTED', '此播放器未提供這項聲音控制');
+                const routes = command.focus === true ? [...new Set([media, ...guardOwned.keys()])].filter(connected) : [media];
+                let rejected = false, applied = true, primaryWritten = false;
+                applying = true;
                 try {
-                    media[property] = command.value;
-                    if (property === 'volume') requestedVolume = command.value;
-                    else requestedMuted = command.value;
-                } catch (_) { return result(false, 'NOT_SUPPORTED', '播放器拒絕更改聲音設定'); }
+                    for (const node of routes) {
+                        // Focus may reach a secondary soundtrack even when the
+                        // primary video already reported unmuted/100%.
+                        try { node[property] = command.value; if (node === media) primaryWritten = true; } catch (_) { rejected = true; }
+                        if (property === 'volume' ? number(read(node, property)) === null || Math.abs(Number(read(node, property)) - command.value) >= 0.001 :
+                            read(node, property) !== command.value) applied = false;
+                    }
+                    if (primaryWritten) {
+                        if (property === 'volume') requestedVolume = command.value;
+                        else requestedMuted = command.value;
+                    }
+                } finally { applying = false; }
+                if (command.focus === true && property === 'muted' && applied && !rejected) guardOwned.clear();
                 notify();
-                const applied = property === 'volume' ? Math.abs(Number(read(media, property)) - command.value) < 0.001 : read(media, property) === command.value;
-                return result(applied, applied ? 'OK' : 'NOT_APPLIED', applied ? '' : '平台沒有保留所要求的聲音設定');
+                return result(applied && !rejected, rejected ? 'NOT_SUPPORTED' : applied ? 'OK' : 'NOT_APPLIED',
+                    rejected ? '播放器拒絕更改聲音設定' : applied ? '' : '平台沒有保留所要求的聲音設定');
             }
             if (typeof media.play !== 'function') return result(false, 'NOT_SUPPORTED', '此播放器不支援恢復播放');
             if (pending) return pending.promise;

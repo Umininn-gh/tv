@@ -7,8 +7,10 @@
     const validRequest = (id, sequence) => validFrame(sequence) && typeof id === 'string' && /^[0-9a-f]{48}_[0-9a-z]{1,11}$/.test(id) && id.endsWith(`_${sequence.toString(36)}`);
     const fail = (code, message) => ({ ok: false, code, message, state: null });
     function validCommand(value) {
-        if (!object(value) || Object.keys(value).some(key => !['action', 'value', 'guard'].includes(key))) return false;
+        if (!object(value) || Object.keys(value).some(key => !['action', 'value', 'guard', 'focus'].includes(key))) return false;
         if ('guard' in value && (value.action !== 'setMuted' || value.value !== true || value.guard !== true)) return false;
+        if ('focus' in value && (value.focus !== true || 'guard' in value ||
+            !(value.action === 'setVolume' && value.value === 1 || value.action === 'setMuted' && value.value === false))) return false;
         if (value.action === 'setVolume') return typeof value.value === 'number' && Number.isFinite(value.value) && value.value >= 0 && value.value <= 1;
         if (value.action === 'setMuted') return typeof value.value === 'boolean';
         return ['getState', 'recover'].includes(value.action) && value.value === undefined;
@@ -16,13 +18,14 @@
     function safeState(value) {
         if (!object(value)) return null;
         const result = {};
-        for (const field of ['available', 'muted', 'paused', 'ended', 'recovering', 'recoverSupported', 'platformRecoverSupported', 'volumeSupported', 'muteSupported', 'muteGuardActive', 'disposed']) {
+        for (const field of ['available', 'muted', 'paused', 'ended', 'recovering', 'recoverSupported', 'platformRecoverSupported', 'volumeSupported', 'muteSupported', 'muteGuardActive', 'focusRestorePending', 'disposed']) {
             if (typeof value[field] === 'boolean' || value[field] === null) result[field] = value[field];
         }
         for (const [field, min, max] of [['volume', 0, 1], ['readyState', 0, 4], ['errorCode', 0, 4], ['mediaId', 1, Number.MAX_SAFE_INTEGER]]) {
             if (value[field] === null) result[field] = null;
             else if (typeof value[field] === 'number' && Number.isFinite(value[field]) && value[field] >= min && value[field] <= max) result[field] = value[field];
         }
+        if (Number.isSafeInteger(value.audioUserRevision) && value.audioUserRevision >= 0) result.audioUserRevision = value.audioUserRevision;
         if (['video', 'audio', null].includes(value.mediaType)) result.mediaType = value.mediaType;
         if (['no-media', 'error', 'blocked', 'ended', 'waiting', 'paused', 'playing'].includes(value.playbackStatus)) result.playbackStatus = value.playbackStatus;
         return result;
@@ -286,11 +289,13 @@
             win.removeEventListener('pagehide', onHide);
             win.removeEventListener('pageshow', onShow);
             win.removeEventListener('pointerdown', onPlayerPointer, true);
+            win.removeEventListener('keydown', onPlayerPointer, true);
         }
         win.addEventListener('message', onMessage);
         win.addEventListener('pagehide', onHide);
         win.addEventListener('pageshow', onShow);
         win.addEventListener('pointerdown', onPlayerPointer, { capture: true, passive: true });
+        win.addEventListener('keydown', onPlayerPointer, { capture: true, passive: true });
         return { dispose };
     }
     const api = { createSiteTransport, createFrameClient };

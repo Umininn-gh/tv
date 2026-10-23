@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.26
+// @version      1.0.27
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -30,7 +30,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.26",
+        userscriptVersion: "1.0.27",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -134,6 +134,9 @@
         let guardTimer = null;
         let guardFailure = false;
         let guardMedia = new Set();
+        // Own only routes this guard actually silenced. A platform's already
+        // muted preload must never acquire permission to become audible.
+        const guardOwned = new Map();
         const guardRepairs = new Map();
         const guardBlocked = new Set();
         let blocked = false;
@@ -212,12 +215,13 @@
             return { available, mediaId: available ? ids.get(media) : null, mediaType: available ? String(media.tagName).toLowerCase() : null,
                 volume, muted, paused, ended, readyState, playbackStatus, errorCode, recovering: Boolean(pending),
                 recoverSupported: available && typeof media.play === 'function', volumeSupported: available && volume !== null,
-                muteSupported: (available || guarded.length > 0) && muted !== null, muteGuardActive: !disposed && muteGuard, audioUserRevision, disposed };
+                muteSupported: (available || guarded.length > 0) && muted !== null, muteGuardActive: !disposed && muteGuard,
+                focusRestorePending: !disposed && guardOwned.size > 0, audioUserRevision, disposed };
         }
         function result(ok = true, code = 'OK', message = '') { return { ok, code, message, state: state() }; }
         function currentResult() { return disposed ? result(false, 'DISPOSED', '控制器已關閉') : muteGuard && guardFailure ?
             result(false, 'NOT_APPLIED', '平台沒有保留全部影片的靜音設定，請重新按放大') : connected(media) ? result() : result(false, 'NO_MEDIA', '未找到可見的影片或音訊'); }
-        function clearMuteGuard() {
+        function clearMuteGuard(preserveOwned = false) {
             if (guardTimer !== null) clear(guardTimer);
             guardTimer = null;
             muteGuard = false;
@@ -226,11 +230,12 @@
             guardBlocked.clear();
             for (const node of guardMedia) for (const event of EVENTS) node.removeEventListener(event, onGuardEvent);
             guardMedia.clear();
+            if (!preserveOwned) guardOwned.clear();
         }
         function onNativeIntent(event) {
             if (event.isTrusted !== true) return;
             audioUserRevision++;
-            if (muteGuard) clearMuteGuard();
+            clearMuteGuard();
             // A native player interaction supersedes the focus preference,
             // including its carry-over setting for a future media replacement.
             requestedMuted = null;
@@ -238,6 +243,7 @@
             notify();
         }
         function observeGuard(candidates) {
+            for (const node of guardOwned.keys()) if (!connected(node) || !candidates.includes(node)) guardOwned.delete(node);
             if (!muteGuard) return;
             const next = new Set(candidates.filter(connected));
             for (const node of guardMedia) if (!next.has(node)) {
@@ -266,6 +272,7 @@
                     if (attempts.length >= GUARD_REPAIR_LIMIT) { guardBlocked.add(node); failed = true; continue; }
                     attempts.push(time);
                     guardRepairs.set(node, attempts);
+                    if (!guardOwned.has(node) && read(node, 'muted') === false) guardOwned.set(node, true);
                     try { node.muted = true; } catch (_) { failed = true; }
                     if (read(node, 'muted') !== true) failed = true;
                 }
@@ -398,8 +405,13 @@
             if (command.action === 'setVolume' && (typeof command.value !== 'number' || !Number.isFinite(command.value) || command.value < 0 || command.value > 1)) return result(false, 'INVALID_VALUE', '音量必須是 0 至 1 的數字');
             if (command.action === 'setMuted' && typeof command.value !== 'boolean') return result(false, 'INVALID_VALUE', '靜音設定必須是布林值');
             if (command.guard !== undefined && (command.guard !== true || command.action !== 'setMuted' || command.value !== true)) return result(false, 'INVALID_VALUE', '靜音保護只支援全部靜音');
+            if ('focus' in command && (command.focus !== true || 'guard' in command ||
+                !(command.action === 'setVolume' && command.value === 1 || command.action === 'setMuted' && command.value === false)))
+                return result(false, 'INVALID_VALUE', '單台開聲只支援音量 100% 及解除靜音');
             if (command.action === 'setMuted') {
-                clearMuteGuard();
+                // Re-arming and the explicit solo action retain ownership of
+                // earlier hidden routes; ordinary manual controls revoke it.
+                clearMuteGuard(command.guard === true || command.focus === true);
                 if (command.guard === true) {
                     muteGuard = true;
                     requestedMuted = null;
@@ -416,14 +428,26 @@
             if (command.action === 'setVolume' || command.action === 'setMuted') {
                 const property = command.action === 'setVolume' ? 'volume' : 'muted';
                 if (property === 'volume' && number(read(media, property)) === null || property === 'muted' && typeof read(media, property) !== 'boolean') return result(false, 'NOT_SUPPORTED', '此播放器未提供這項聲音控制');
+                const routes = command.focus === true ? [...new Set([media, ...guardOwned.keys()])].filter(connected) : [media];
+                let rejected = false, applied = true, primaryWritten = false;
+                applying = true;
                 try {
-                    media[property] = command.value;
-                    if (property === 'volume') requestedVolume = command.value;
-                    else requestedMuted = command.value;
-                } catch (_) { return result(false, 'NOT_SUPPORTED', '播放器拒絕更改聲音設定'); }
+                    for (const node of routes) {
+                        // Focus may reach a secondary soundtrack even when the
+                        // primary video already reported unmuted/100%.
+                        try { node[property] = command.value; if (node === media) primaryWritten = true; } catch (_) { rejected = true; }
+                        if (property === 'volume' ? number(read(node, property)) === null || Math.abs(Number(read(node, property)) - command.value) >= 0.001 :
+                            read(node, property) !== command.value) applied = false;
+                    }
+                    if (primaryWritten) {
+                        if (property === 'volume') requestedVolume = command.value;
+                        else requestedMuted = command.value;
+                    }
+                } finally { applying = false; }
+                if (command.focus === true && property === 'muted' && applied && !rejected) guardOwned.clear();
                 notify();
-                const applied = property === 'volume' ? Math.abs(Number(read(media, property)) - command.value) < 0.001 : read(media, property) === command.value;
-                return result(applied, applied ? 'OK' : 'NOT_APPLIED', applied ? '' : '平台沒有保留所要求的聲音設定');
+                return result(applied && !rejected, rejected ? 'NOT_SUPPORTED' : applied ? 'OK' : 'NOT_APPLIED',
+                    rejected ? '播放器拒絕更改聲音設定' : applied ? '' : '平台沒有保留所要求的聲音設定');
             }
             if (typeof media.play !== 'function') return result(false, 'NOT_SUPPORTED', '此播放器不支援恢復播放');
             if (pending) return pending.promise;
@@ -1135,7 +1159,8 @@
             return { target, peers };
         }
         function focusState(record, state) {
-            record.state = { ...sound(state), muteGuardActive: state?.muteGuardActive === true };
+            record.state = { ...sound(state), muteGuardActive: state?.muteGuardActive === true,
+                focusRestorePending: state?.focusRestorePending === true };
             record.muteSatisfied = record.state.muted === record.desired.muted;
             record.volumeSatisfied = !own(record.desired, 'volume') || own(record.state, 'volume') &&
                 Math.abs(record.state.volume - record.desired.volume) < 0.001;
@@ -1259,9 +1284,12 @@
                     await guardFocusPeers(ctx, stage, peers);
                     if (!live(ctx, stage)) return;
                     if (target && await focusRead(ctx, stage, target) && focusSafe(ctx)) {
-                        if (!target.volumeSatisfied) await focusWrite(ctx, stage, target, { action: 'setVolume', value: 1 });
-                        if (live(ctx, stage) && !target.failed && focusSafe(ctx) && target.state?.muted !== false)
-                            await focusWrite(ctx, stage, target, { action: 'setMuted', value: false });
+                        // A primary video's state cannot prove that secondary
+                        // soundtracks muted by our earlier guard were released.
+                        if (!target.volumeSatisfied || target.state.focusRestorePending)
+                            await focusWrite(ctx, stage, target, { action: 'setVolume', value: 1, focus: true });
+                        if (live(ctx, stage) && !target.failed && focusSafe(ctx) && (target.state?.muted !== false || target.state.focusRestorePending))
+                            await focusWrite(ctx, stage, target, { action: 'setMuted', value: false, focus: true });
                     }
                 }
             }
@@ -2561,9 +2589,12 @@
         }
         function applyResult(entry, result) {
             if (disposed || !entries.has(entry.element) || !validResult(result)) return;
+            // A new explicit solo request first establishes a fresh baseline.
+            // A delayed report of an earlier native action must not cancel it.
+            const baseline = audioFocusIntent?.refreshWaiters?.has(entry) === true;
             const revision = result.state?.audioUserRevision;
             if (Number.isInteger(revision)) {
-                if (entry.audioUserRevision !== undefined && revision > entry.audioUserRevision) {
+                if (!baseline && entry.audioUserRevision !== undefined && revision > entry.audioUserRevision) {
                     invalidateLayoutAudio();
                     void afterAudioFocus(() => {});
                 }
@@ -2576,7 +2607,7 @@
             // Native controls inside an iframe cannot bubble to the site. A
             // revoked guard is their explicit override, so stop the retained
             // focus policy instead of fighting the user's sound control.
-            if (audioFocusIntent && !entry.guardInFlight &&
+            if (audioFocusIntent && !baseline && !entry.guardInFlight &&
                 guardedEntries.get(entry) === entry.generation && result.state?.muteGuardActive === false) {
                 void afterAudioFocus(() => {});
             } else queueAudioFocusReconcile();
@@ -2990,7 +3021,7 @@
                 entry.target = { frameId: data.frameId, token: data.token, documentId: typeof data.documentId === 'string' ? data.documentId : null };
                 if (first) for (const intent of new Set([audioFocusIntent, ...layoutFocusCandidates.values()])) {
                     if (!intent?.unified || intent.entry !== entry) continue;
-                    if (intent.awaitingFirstTarget) {
+                    if (intent.awaitingFirstTarget || intent.refreshTargetPending || intent.refreshWaiters?.has(entry)) {
                         // Candidates can finish loading behind a newer click.
                         // Bind once so a valid fallback keeps its own document.
                         intent.generation = entry.generation;
@@ -2998,7 +3029,9 @@
                     } else if (intent === audioFocusIntent && intent.generation !== entry.generation) invalidateLayoutAudio();
                 }
                 clearProbeTimers(entry);
-                if (first || !entry.busy) applyResult(entry, data.result);
+                if (first || !entry.busy || audioFocusIntent?.refreshWaiters?.has(entry)) applyResult(entry, data.result);
+                if (audioFocusIntent?.entry === entry) audioFocusIntent.refreshTargetPending = false;
+                audioFocusIntent?.refreshWaiters?.get(entry)?.();
                 if (first && globalMuted !== null && !audioFocusIntent && layoutTicket === null) void execute(entry, { action: 'setMuted', value: globalMuted });
                 return;
             }
@@ -3014,6 +3047,7 @@
             clearAudioIntent(supersedeSound);
         }
         function clearAudioIntent(supersedeSound = true) {
+            finishAudioRefresh(audioFocusIntent);
             audioFocusIntent = null;
             if (supersedeSound) ++audioControlGeneration;
             if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
@@ -3181,12 +3215,25 @@
             if (disposed || !audioFocusFlow || !container || event.target?.parentElement !== container) return;
             if (layoutAudioFlow?.focusSupported) {
                 invalidateLayoutAudio();
-                const intent = newUnifiedIntent(event.target, null, true);
+                // Platforms can renew a frame controller without replacing its
+                // iframe. Probe the current documents before leasing the target.
+                scan();
+                const intent = newUnifiedIntent(event.target, null, true, true);
                 const ticket = `sound-${++standaloneAudioSequence}`;
                 intent.ticket = ticket;
-                void layoutAudioFlow.prepare(ticket).then(() => {
-                    if (!disposed && audioFocusIntent === intent && validUnifiedTarget(intent))
-                        return restoreUnifiedFocus(intent, ticket);
+                void refreshUnifiedAudio(intent).then(() => {
+                    if (disposed || audioFocusIntent !== intent) return;
+                    if (!validUnifiedTarget(intent)) {
+                        clearAudioIntent(); showAudioFocusStatus({ phase: 'removed' }); return;
+                    }
+                    muteImmediately(true);
+                    return layoutAudioFlow.prepare(ticket);
+                }).then(() => {
+                    if (disposed || audioFocusIntent !== intent) return;
+                    if (!validUnifiedTarget(intent)) {
+                        clearAudioIntent(); showAudioFocusStatus({ phase: 'removed' }); return;
+                    }
+                    return restoreUnifiedFocus(intent, ticket);
                 });
                 return;
             }
@@ -3210,7 +3257,43 @@
                 entries.get(intent.target) === intent.entry && (!intent.entry || intent.entry.generation === intent.generation ||
                     intent.awaitingFirstTarget && !intent.entry.target);
         }
-        function newUnifiedIntent(target, requestId, committed) {
+        function finishAudioRefresh(intent) {
+            if (!intent?.refreshWaiters) return;
+            for (const done of [...intent.refreshWaiters.values()]) done();
+            intent.refreshTargetPending = false;
+        }
+        function onFreshAudioInteraction(event) {
+            if (!audioFocusIntent?.refreshWaiters) return;
+            // The userscript transport authenticates this iframe interaction.
+            // Actual input during the handshake wins over the pending solo;
+            // only earlier delayed state reports belong to its baseline.
+            if ([...entries.values()].some(entry => entry.frame === event.target)) invalidateLayoutAudio();
+        }
+        async function refreshUnifiedAudio(intent) {
+            intent.refreshWaiters = new Map();
+            intent.refreshTargetPending = intent.entry?.kind === 'frame';
+            const waits = [];
+            for (const entry of currentEntries()) {
+                if (entry.kind !== 'frame') continue;
+                waits.push(new Promise(resolve => {
+                    let timer;
+                    const done = () => {
+                        win.clearTimeout(timer);
+                        intent.refreshWaiters.delete(entry);
+                        resolve();
+                    };
+                    intent.refreshWaiters.set(entry, done);
+                    // One bounded handshake per click, never an idle poll.
+                    timer = win.setTimeout(done, 1500);
+                    probe(entry);
+                }));
+            }
+            await Promise.all(waits);
+            intent.refreshTargetPending = false;
+            intent.refreshWaiters = null;
+        }
+        function newUnifiedIntent(target, requestId, committed, deferSafety = false) {
+            finishAudioRefresh(audioFocusIntent);
             cancelPendingRecovery(); recoveryFlow?.cancel(); clearPreparation();
             void audioFocusFlow?.cancel();
             if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
@@ -3226,7 +3309,7 @@
             refreshSummary();
             if (!committed) layoutFocusCandidates.set(requestId, intent);
             showAudioFocusStatus({ phase: 'preparing' });
-            if (committed) muteImmediately(true);
+            if (committed && !deferSafety) muteImmediately(true);
             return intent;
         }
         function onLayoutFocusRequest(event) {
@@ -3499,6 +3582,7 @@
             doc.addEventListener('click', onWatchStart, true);
             doc.addEventListener('umininn-player-bookmark-restored', onBookmarkRestored, true);
             doc.addEventListener('umininn-player-audio-focus', onAudioFocus, true);
+            doc.addEventListener('umininn-player-interaction', onFreshAudioInteraction, true);
             if (doc.documentElement.hasAttribute('data-umininn-player-userscript')) {
                 doc.documentElement.setAttribute('data-umininn-player-audio-focus-ready', '');
                 publishAudioIntent();
@@ -3582,6 +3666,7 @@
             doc.removeEventListener('click', onWatchStart, true);
             doc.removeEventListener('umininn-player-bookmark-restored', onBookmarkRestored, true);
             doc.removeEventListener('umininn-player-audio-focus', onAudioFocus, true);
+            doc.removeEventListener('umininn-player-interaction', onFreshAudioInteraction, true);
             doc.removeEventListener('pointerover', windowControlsPointer, true);
             doc.removeEventListener('pointerout', windowControlsPointer, true);
             doc.removeEventListener('pointermove', windowControlsPointer, true);
@@ -3624,8 +3709,10 @@
     const validRequest = (id, sequence) => validFrame(sequence) && typeof id === 'string' && /^[0-9a-f]{48}_[0-9a-z]{1,11}$/.test(id) && id.endsWith(`_${sequence.toString(36)}`);
     const fail = (code, message) => ({ ok: false, code, message, state: null });
     function validCommand(value) {
-        if (!object(value) || Object.keys(value).some(key => !['action', 'value', 'guard'].includes(key))) return false;
+        if (!object(value) || Object.keys(value).some(key => !['action', 'value', 'guard', 'focus'].includes(key))) return false;
         if ('guard' in value && (value.action !== 'setMuted' || value.value !== true || value.guard !== true)) return false;
+        if ('focus' in value && (value.focus !== true || 'guard' in value ||
+            !(value.action === 'setVolume' && value.value === 1 || value.action === 'setMuted' && value.value === false))) return false;
         if (value.action === 'setVolume') return typeof value.value === 'number' && Number.isFinite(value.value) && value.value >= 0 && value.value <= 1;
         if (value.action === 'setMuted') return typeof value.value === 'boolean';
         return ['getState', 'recover'].includes(value.action) && value.value === undefined;
@@ -3633,13 +3720,14 @@
     function safeState(value) {
         if (!object(value)) return null;
         const result = {};
-        for (const field of ['available', 'muted', 'paused', 'ended', 'recovering', 'recoverSupported', 'platformRecoverSupported', 'volumeSupported', 'muteSupported', 'muteGuardActive', 'disposed']) {
+        for (const field of ['available', 'muted', 'paused', 'ended', 'recovering', 'recoverSupported', 'platformRecoverSupported', 'volumeSupported', 'muteSupported', 'muteGuardActive', 'focusRestorePending', 'disposed']) {
             if (typeof value[field] === 'boolean' || value[field] === null) result[field] = value[field];
         }
         for (const [field, min, max] of [['volume', 0, 1], ['readyState', 0, 4], ['errorCode', 0, 4], ['mediaId', 1, Number.MAX_SAFE_INTEGER]]) {
             if (value[field] === null) result[field] = null;
             else if (typeof value[field] === 'number' && Number.isFinite(value[field]) && value[field] >= min && value[field] <= max) result[field] = value[field];
         }
+        if (Number.isSafeInteger(value.audioUserRevision) && value.audioUserRevision >= 0) result.audioUserRevision = value.audioUserRevision;
         if (['video', 'audio', null].includes(value.mediaType)) result.mediaType = value.mediaType;
         if (['no-media', 'error', 'blocked', 'ended', 'waiting', 'paused', 'playing'].includes(value.playbackStatus)) result.playbackStatus = value.playbackStatus;
         return result;
@@ -3903,11 +3991,13 @@
             win.removeEventListener('pagehide', onHide);
             win.removeEventListener('pageshow', onShow);
             win.removeEventListener('pointerdown', onPlayerPointer, true);
+            win.removeEventListener('keydown', onPlayerPointer, true);
         }
         win.addEventListener('message', onMessage);
         win.addEventListener('pagehide', onHide);
         win.addEventListener('pageshow', onShow);
         win.addEventListener('pointerdown', onPlayerPointer, { capture: true, passive: true });
+        win.addEventListener('keydown', onPlayerPointer, { capture: true, passive: true });
         return { dispose };
     }
     const api = { createSiteTransport, createFrameClient };
