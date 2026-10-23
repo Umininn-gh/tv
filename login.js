@@ -90,9 +90,10 @@
             await loadScript('./stream-quality.js?v=20261016-twitch-auto-init').catch(error => console.warn('畫質調節暫時未能載入，沿用平台播放器。', error));
             await loadScript('./embed-audio.js').catch(error => console.warn('YouTube 聲音同步暫時未能載入，請使用播放器聲音控制。', error));
             await loadScript('./menu-dismiss.js?v=20261023-scroll-menu-dismiss');
+            await loadScript('./topbar-menu.js?v=20261023-responsive-toolbar');
             await loadScript('./layout-bookmarks.js?v=20261023-scroll-menu-dismiss');
             await loadScript('./shared-bookmarks.js?v=20261022-bookmark-top');
-            await loadScript('./tv-app.js?v=20261023-audio-edge-cases');
+            await loadScript('./tv-app.js?v=20261023-responsive-toolbar');
             if (!window.tvAppReady || typeof window.tvAppReady.then !== 'function') {
                 throw new Error('TV application did not initialize');
             }
@@ -107,6 +108,8 @@
             void loadScript('./jquery-3.6.0.min.js', 'module')
                 .catch(error => console.warn('公告暫時未能載入。', error));
         } catch (error) {
+            window.topbarOptionsMenu?.dispose();
+            window.topbarOptionsMenu = null;
             mountedNodes.forEach(node => node.remove());
             clearSession();
             starting = false;

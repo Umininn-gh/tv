@@ -335,6 +335,125 @@
         }
         #global-audio-feedback { max-width: 13em; overflow: hidden; text-overflow: ellipsis; font-size: 10px; }
         #global-audio-feedback[hidden] { display: none; }
+        #topbar-options-btn[hidden], #topbar-options-panel[hidden], #topbar-options-panel > [hidden],
+        #topbar-tasks-panel[hidden] { display: none !important; }
+        #top-bar #topbar-options-btn {
+            flex: 0 0 auto;
+            height: 22px;
+            min-height: 22px;
+            padding: 0 10px;
+            gap: 6px;
+        }
+        #topbar-options-btn[aria-expanded="true"] { background: var(--bg-3); }
+        #topbar-options-btn:focus-visible { outline: 2px solid var(--green); outline-offset: 2px; }
+        #top-bar[data-options-compact="true"] #input-container {
+            min-width: 0;
+            overflow: visible;
+            width: auto;
+            padding: 0;
+        }
+        /* The toolbar clips its contents. Keep the dropdown in the body so it
+           can extend over the viewing area without changing player layout. */
+        #topbar-options-panel {
+            position: fixed;
+            z-index: 12000;
+            top: 36px;
+            right: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            width: min(300px, calc(100vw - 16px));
+            max-height: calc(100dvh - 48px);
+            overflow: auto;
+            overscroll-behavior: contain;
+            padding: 8px;
+            border: 1px solid var(--sep);
+            border-radius: 12px;
+            background: rgba(28, 28, 30, .98);
+            box-shadow: 0 12px 36px #0009;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+        #topbar-options-panel > .topbar-menu-row,
+        #topbar-options-panel #topbar-tasks-btn {
+            flex: 0 0 auto;
+            width: 100%;
+            min-width: 0;
+            min-height: 36px;
+            height: auto;
+            margin: 0;
+            padding: 8px 12px;
+            justify-content: flex-start;
+            border-radius: 7px;
+            font-size: 14px;
+            line-height: 1.4;
+        }
+        #topbar-options-panel button:hover { background: var(--bg-3); }
+        #topbar-options-panel button:focus-visible,
+        #topbar-options-panel .toggle-switch:focus-within {
+            outline: 2px solid var(--green);
+            outline-offset: -2px;
+        }
+        #topbar-options-panel #hideNotLiveToggle { gap: 12px; }
+        #topbar-options-panel #hideNotLiveToggle { position: relative; }
+        #topbar-options-panel #hideNotLiveToggle input {
+            display: block;
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            min-height: 0;
+            margin: 0;
+            padding: 0;
+            opacity: 0;
+            border: 0;
+        }
+        #topbar-options-panel #hideNotLiveToggle .slider { width: 34px; height: 21px; }
+        #topbar-options-panel #hideNotLiveToggle .slider::before {
+            width: 17px;
+            height: 17px;
+            top: 2px;
+            left: 2px;
+        }
+        #topbar-options-panel #hideNotLiveToggle input:checked + .slider::before { transform: translateX(13px); }
+        #topbar-tasks-btn { gap: 8px; }
+        #topbar-tasks-btn img { width: 20px; height: 20px; object-fit: contain; }
+        #topbar-tasks-btn::after { content: '▸'; margin-left: auto; color: var(--label-2); }
+        #topbar-tasks-btn[aria-expanded="true"]::after { content: '▾'; }
+        #topbar-tasks-panel {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            margin: 0 0 4px 16px;
+            padding: 4px 0 4px 8px;
+            border-left: 1px solid var(--sep);
+        }
+        #topbar-tasks-panel button {
+            width: 100%;
+            min-height: 34px;
+            height: auto;
+            padding: 7px 10px;
+            justify-content: flex-start;
+            border-radius: 6px;
+            font-size: 13px;
+            line-height: 1.4;
+        }
+        #topbar-options-panel #global-audio-feedback:not([hidden]) {
+            display: block;
+            max-width: none;
+            padding: 0 12px 6px;
+            white-space: normal;
+            font-size: 11px;
+            color: var(--label-2);
+        }
+        #topbar-options-panel #umininn-player-control-host {
+            display: flex !important;
+            flex-wrap: wrap;
+            width: 100%;
+            height: auto !important;
+            min-height: 36px;
+            padding: 6px;
+            border-top: 1px solid var(--sep);
+        }
         #top-bar .toggle-switch .slider { width: 25.5px; height: 15.5px; }
         #top-bar .toggle-switch .slider::before {
             width: 13.5px;
@@ -1193,8 +1312,8 @@
 
             #input-container {
                 flex-wrap: nowrap;
-                overflow-x: auto;
-                padding-bottom: .15em;
+                overflow: hidden;
+                padding-bottom: 0;
                 margin-top: 0;
                 width: 100%;
                 justify-content: flex-start;
@@ -1203,7 +1322,9 @@
             #input-container::-webkit-scrollbar { display: none; }
 
             #mobile-menu-btn { display: inline-flex; }
-            .top-container { flex-direction: column; align-items: stretch; gap: .5em; }
+            .top-container { flex-direction: row; align-items: center; gap: .5em; }
+            #top-bar[data-options-compact="true"] #input-container { flex: 1 1 auto; }
+            #top-bar[data-options-compact="true"] #mobile-menu-btn { margin-right: auto; }
             #top-bar { padding: .25em .5em; min-height: auto; }
 
             .modal-panel { padding: 1.2rem 1rem; width: 100%; }
@@ -1472,7 +1593,7 @@
     <link rel="stylesheet" href="./login.css">
     <link rel="stylesheet" href="./layout-bookmarks.css?v=20261019-shared-bookmarks">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261023-audio-edge-cases"></script>
+    <script defer src="./login.js?v=20261023-responsive-toolbar"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">
@@ -1522,9 +1643,13 @@
                 <span id="global-audio-feedback" role="status" aria-live="polite" hidden></span>
                 <button id="more-channels-btn" onclick="toggleChannelSelection()">📺 看更台</button>
                 <button id="layout-bookmarks-btn" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="layout-bookmarks">🔖 書籤</button>
+                <button id="topbar-options-btn" type="button" aria-expanded="false"
+                    aria-controls="topbar-options-panel" hidden>⋯ 選項 <span aria-hidden="true">▾</span></button>
             </div>
         </div>
     </div>
+
+    <div id="topbar-options-panel" role="region" aria-label="網站選項" tabindex="-1" hidden></div>
 
     <div id="admin-modal" class="modal-overlay">
         <div class="admin-panel">

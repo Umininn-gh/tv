@@ -3202,6 +3202,13 @@ function updateIdPlaceholder() {
     });
 })();
 
+(function initTopbarOptions() {
+    if (!window.UmininnTopbarMenu?.create) return;
+    window.topbarOptionsMenu?.dispose();
+    window.topbarOptionsMenu = window.UmininnTopbarMenu.create({ window, document });
+    window.topbarOptionsMenu.start();
+})();
+
 document.getElementById('confirmAddChannel').onclick = async () => {
     const name = document.getElementById('modal-channel-name').value.trim();
     let id = document.getElementById('modal-channel-id').value.trim();
