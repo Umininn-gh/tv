@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.24
+// @version      1.0.25
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js

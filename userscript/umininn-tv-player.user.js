@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.24
+// @version      1.0.25
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -30,7 +30,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.24",
+        userscriptVersion: "1.0.25",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -789,7 +789,7 @@
 /* Preserve each channel's sound across one layout transaction. No source changes. */
 (function (root) {
     'use strict';
-    const CAPTURE_MS = 2500, RESTORE_MS = 30000, POLL_MS = 1000, LIMIT = 4;
+    const CAPTURE_MS = 2500, RESTORE_MS = 30000, FOCUS_MS = 6000, POLL_MS = 1000, LIMIT = 4;
     const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
     const finiteVolume = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
     function sound(state) {
@@ -811,14 +811,17 @@
         const readWaiters = new Set();
         function entries() {
             const result = new Map(), duplicates = new Set();
+            let unaddressable = 0;
             let list;
-            try { list = options.getEntries() || []; } catch (_) { return result; }
-            if (typeof list[Symbol.iterator] !== 'function') return result;
+            try { list = options.getEntries() || []; } catch (_) { result.ambiguous = 1; return result; }
+            if (typeof list[Symbol.iterator] !== 'function') { result.ambiguous = 1; return result; }
             for (const item of list) {
-                if (!item || typeof item.key !== 'string' || !item.key.trim() || duplicates.has(item.key)) continue;
+                if (!item || typeof item.key !== 'string' || !item.key.trim()) { unaddressable++; continue; }
+                if (duplicates.has(item.key)) continue;
                 if (result.has(item.key)) { result.delete(item.key); duplicates.add(item.key); }
                 else result.set(item.key, item);
             }
+            result.ambiguous = duplicates.size + unaddressable;
             return result;
         }
         function same(left, right) {
@@ -832,7 +835,7 @@
         function live(ctx, stage) { return alive(ctx) && ctx.stage === stage && !stage.stopped; }
         function summary(ctx, code) {
             const records = [...ctx.records.values()];
-            const failed = records.filter(item => ['failed', 'stale', 'timeout'].includes(item.status)).length + ctx.captureFailures;
+            const failed = records.filter(item => ['failed', 'stale', 'timeout'].includes(item.status)).length + ctx.captureFailures + (ctx.focusFailure ? 1 : 0);
             const pending = records.filter(item => !item.finished).length;
             const value = code || (pending ? 'PENDING' : failed || records.some(item => item.status === 'skipped') ? 'PARTIAL' : 'COMPLETE');
             return { ok: ['PREPARED', 'COMPLETE'].includes(value), code: value, ticket: ctx.ticket,
@@ -903,12 +906,13 @@
             if (outcome.kind === 'result' && !current(item)) return { kind: 'stale' };
             return outcome;
         }
-        function write(ctx, stage, record, command) {
+        function write(ctx, stage, record, command, permitted) {
             // The tail retains an issued operation after logical cancellation.
             // Its successor checks its lease only after that operation settles.
             const completed = writeTail.then(async () => {
                 if (!live(ctx, stage)) return { kind: 'stopped' };
                 if (!current(record.lease)) return { kind: 'stale' };
+                if (permitted && !permitted()) return { kind: 'blocked' };
                 let result;
                 try { result = await options.write(record.lease, command); }
                 catch (_) { return { kind: 'error' }; }
@@ -926,7 +930,7 @@
             }));
         }
         function makeRecord(key, desired) {
-            return { key, desired: { ...desired }, lease: null, state: null, finished: false, status: 'captured',
+            return { key, desired: { ...desired }, snapshot: { ...desired }, lease: null, state: null, finished: false, status: 'captured',
                 reason: '', failed: false, partial: false, muteSatisfied: false, volumeSatisfied: false };
         }
         function finish(record, status, reason) {
@@ -959,7 +963,9 @@
                     const desired = sound(outcome.value?.state);
                     const record = ctx.records.get(item.key);
                     if (record) {
-                        for (const key of ['muted', 'volume']) if (!own(record.desired, key) && own(desired, key)) record.desired[key] = desired[key];
+                        for (const key of ['muted', 'volume']) if (!own(record.desired, key) && own(desired, key)) {
+                            record.desired[key] = desired[key]; record.snapshot[key] = desired[key];
+                        }
                     } else if (Object.keys(desired).length) ctx.records.set(item.key, makeRecord(item.key, desired));
                     else ctx.captureSkipped++;
                 });
@@ -1095,6 +1101,170 @@
                 finish(record, record.failed ? 'failed' : record.partial ? 'skipped' : 'restored', record.reason);
             }
         }
+        function focused(ctx, item) {
+            return Boolean(item && item.key === ctx.focus.key && item.identity === ctx.focus.identity &&
+                (!ctx.focus.element || item.element === ctx.focus.element));
+        }
+        function focusCohort(ctx) {
+            const found = entries(), peers = [];
+            let target = null;
+            ctx.focusFailure = Boolean(found.ambiguous);
+            for (const item of found.values()) {
+                let record = ctx.records.get(item.key);
+                if (!record) { record = makeRecord(item.key, {}); ctx.records.set(item.key, record); }
+                const isTarget = focused(ctx, item);
+                record.focusTarget = isTarget;
+                // Peers can acquire a new document: muting the current document
+                // is safe. Opening the target is bound to its original identity.
+                if (!record.lease || !same(record.lease, item)) {
+                    record.lease = { ...item }; record.state = null;
+                    record.muteSatisfied = false; record.volumeSatisfied = false;
+                }
+                record.finished = false; record.status = 'waiting'; record.failed = false;
+                record.partial = false; record.reason = '';
+                record.desired.muted = !isTarget;
+                if (isTarget) { record.desired.volume = 1; target = record; }
+                else {
+                    if (own(record.snapshot, 'volume')) record.desired.volume = record.snapshot.volume;
+                    else delete record.desired.volume;
+                    peers.push(record);
+                }
+            }
+            for (const record of ctx.records.values()) if (!found.has(record.key)) finish(record, 'removed', 'removed');
+            if (!target) ctx.focusFailure = true;
+            return { target, peers };
+        }
+        function focusState(record, state) {
+            record.state = { ...sound(state), muteGuardActive: state?.muteGuardActive === true };
+            record.muteSatisfied = record.state.muted === record.desired.muted;
+            record.volumeSatisfied = !own(record.desired, 'volume') || own(record.state, 'volume') &&
+                Math.abs(record.state.volume - record.desired.volume) < 0.001;
+        }
+        function focusSafe(ctx) {
+            const found = entries();
+            if (found.ambiguous || !focused(ctx, found.get(ctx.focus.key))) return false;
+            for (const item of found.values()) {
+                if (focused(ctx, item)) continue;
+                const record = ctx.records.get(item.key);
+                if (!record || record.failed || !record.lease || !same(record.lease, item) || !current(record.lease) ||
+                    record.state?.muted !== true || !record.guardConfirmed) return false;
+            }
+            return true;
+        }
+        async function focusRead(ctx, stage, record) {
+            const item = entries().get(record.key);
+            if (!item || !same(record.lease, item) || !current(item)) return false;
+            if (item.ready !== true && item.readable !== true) { record.state = null; record.guardConfirmed = false; return false; }
+            const outcome = await read(ctx, stage, record.lease);
+            if (!live(ctx, stage)) return false;
+            if (outcome.kind !== 'result' || outcome.value?.ok !== true || outcome.value?.state?.available === false) {
+                record.failed = true; record.reason = 'read-unconfirmed'; return false;
+            }
+            focusState(record, outcome.value.state);
+            record.guardConfirmed = record.state.muted === true && record.state.muteGuardActive;
+            if (!own(record.state, 'muted')) { record.failed = true; record.reason = 'mute-unsupported'; return false; }
+            return true;
+        }
+        async function focusWrite(ctx, stage, record, command) {
+            const opening = record.focusTarget && (command.action === 'setVolume' || command.action === 'setMuted' && command.value === false);
+            const outcome = await write(ctx, stage, record, command, opening ? () => focusSafe(ctx) : null);
+            if (!live(ctx, stage)) return false;
+            if (outcome.kind !== 'result' || outcome.value?.ok !== true) {
+                record.failed = true; record.reason = `${command.action}-unconfirmed`; return false;
+            }
+            focusState(record, outcome.value.state);
+            const property = command.action === 'setMuted' ? 'muted' : 'volume';
+            if (!own(record.state, property) || (property === 'volume' ?
+                Math.abs(record.state[property] - command.value) >= 0.001 : record.state[property] !== command.value)) {
+                record.failed = true; record.reason = `${property}-unconfirmed`; return false;
+            }
+            if (command.action === 'setMuted' && command.value === true && command.guard === true) record.guardConfirmed = true;
+            else if (record.state.muted !== true || outcome.value.state?.muteGuardActive === false) record.guardConfirmed = false;
+            return true;
+        }
+        async function guardFocusPeers(ctx, stage, peers) {
+            // Queue each ready peer's mute as its own read completes rather
+            // than waiting for every other platform's read to respond.
+            await each(peers, async record => {
+                record.guardConfirmed = false;
+                if (!await focusRead(ctx, stage, record) || !live(ctx, stage)) return;
+                if (record.state.muted !== true || !record.state.muteGuardActive) {
+                    if (!await focusWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true })) return;
+                }
+                if (!live(ctx, stage)) return;
+                if (own(record.desired, 'volume') && own(record.state, 'volume') && !record.volumeSatisfied) {
+                    if (!await focusWrite(ctx, stage, record, { action: 'setVolume', value: record.desired.volume })) return;
+                    // A platform may clear mute while applying its volume.
+                    if (record.state.muted !== true || !record.guardConfirmed) {
+                        if (!await focusWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true })) return;
+                    }
+                }
+                if (!record.failed && record.state.muted === true && record.guardConfirmed) {
+                    const partial = own(record.desired, 'volume') && !record.volumeSatisfied;
+                    finish(record, partial ? 'skipped' : 'restored', partial ? 'volume-unsupported' : '');
+                }
+            });
+        }
+        async function closeUnsafeFocus(ctx, stage, target) {
+            if (!target || !live(ctx, stage)) return;
+            if (target.state?.muted === false && !focusSafe(ctx))
+                await focusWrite(ctx, stage, target, { action: 'setMuted', value: true, guard: true });
+        }
+        async function processFocus(ctx, stage) {
+            let { target, peers } = focusCohort(ctx);
+            await Promise.all([
+                guardFocusPeers(ctx, stage, peers),
+                (async () => {
+                    if (target && await focusRead(ctx, stage, target)) await closeUnsafeFocus(ctx, stage, target);
+                })()
+            ]);
+            if (!live(ctx, stage)) return;
+            if (focusSafe(ctx) && target && !target.failed) {
+                // Drain writes already issued by manual/legacy controllers only
+                // after peers are muted. This wait is outside our write tail.
+                const callback = ctx.beforeOpen || options.beforeOpen;
+                if (typeof callback === 'function') {
+                    let request;
+                    try { request = Promise.resolve(callback()).then(() => ({ kind: 'settled' }), () => ({ kind: 'error' })); }
+                    catch (_) { request = Promise.resolve({ kind: 'error' }); }
+                    const outcome = await boundary(ctx, stage, request);
+                    if (!live(ctx, stage)) return;
+                    if (outcome.kind !== 'settled') { target.failed = true; target.reason = 'prior-audio-unconfirmed'; }
+                }
+                if (!target.failed) {
+                    // The drain and volume restoration may publish a new frame
+                    // or clear mute. Re-read every current peer before opening.
+                    ({ target, peers } = focusCohort(ctx));
+                    await guardFocusPeers(ctx, stage, peers);
+                    if (!live(ctx, stage)) return;
+                    if (target && await focusRead(ctx, stage, target) && focusSafe(ctx)) {
+                        if (!target.volumeSatisfied) await focusWrite(ctx, stage, target, { action: 'setVolume', value: 1 });
+                        if (live(ctx, stage) && !target.failed && focusSafe(ctx) && target.state?.muted !== false)
+                            await focusWrite(ctx, stage, target, { action: 'setMuted', value: false });
+                    }
+                }
+            }
+            if (!live(ctx, stage)) return;
+            if (target && !target.failed && target.state?.muted === false) {
+                // An unmute/volume ACK can be delayed while another platform
+                // replaces media or clears mute. Cached pre-open confirmation
+                // is insufficient to declare the final cohort safe.
+                ({ target, peers } = focusCohort(ctx));
+                await guardFocusPeers(ctx, stage, peers);
+                if (!live(ctx, stage)) return;
+                if (target) await focusRead(ctx, stage, target);
+            }
+            if (!live(ctx, stage)) return;
+            await closeUnsafeFocus(ctx, stage, target);
+            if (!live(ctx, stage)) return;
+            const pending = peers.some(record => !record.finished && !record.failed) || target && !target.failed && !target.state;
+            for (const record of peers) if (record.failed) finish(record, 'failed', record.reason);
+            if (target) {
+                if (!target.failed && focusSafe(ctx) && target.state?.muted === false && target.volumeSatisfied) finish(target, 'restored');
+                else if (target.failed || !pending || ctx.focusFailure) finish(target, 'failed', target.reason || 'focus-withheld');
+                else { target.status = 'waiting'; target.finished = false; }
+            }
+        }
         function schedule(ctx, stage) {
             if (!live(ctx, stage) || ctx.poll !== null || ![...ctx.records.values()].some(record => !record.finished)) return;
             if (now() >= ctx.restoreDeadline) { timeout(ctx); closeStage(ctx); return; }
@@ -1105,18 +1275,26 @@
             if (now() >= ctx.restoreDeadline) { timeout(ctx); closeStage(ctx); return; }
             clearPoll(ctx);
             ctx.running = true;
-            try { await process(ctx, stage, leaseRecords(ctx, stage)); }
+            try { if (ctx.focus) await processFocus(ctx, stage); else await process(ctx, stage, leaseRecords(ctx, stage)); }
             finally { ctx.running = false; }
             if (!live(ctx, stage)) return;
             completed(ctx, stage);
             schedule(ctx, stage);
         }
-        function restore(ticket) {
+        function restore(ticket, policy) {
             const ctx = active;
             if (!ctx || ctx.cancelled || ctx.ticket !== ticket || ctx.phase === 'preparing') return Promise.resolve({ ok: false, code: 'CANCELLED', ticket });
             if (ctx.phase === 'restoring' && !ctx.initialDone) return ctx.initialPromise;
             closeStage(ctx);
-            if (ctx.restoreDeadline === null) ctx.restoreDeadline = now() + RESTORE_MS;
+            if (policy?.focus && (!ctx.focus || ctx.focus.key !== policy.focus.key || ctx.focus.identity !== policy.focus.identity ||
+                ctx.focus.element !== policy.focus.element)) {
+                ctx.focus = { ...policy.focus };
+                ctx.captureFailures = 0;
+                ctx.restoreDeadline = null;
+            }
+            if (typeof policy?.beforeOpen === 'function') ctx.beforeOpen = policy.beforeOpen;
+            if (ctx.restoreDeadline === null || ctx.focus && ctx.phase === 'complete') ctx.restoreDeadline = now() + (ctx.focus ? FOCUS_MS : RESTORE_MS);
+            if (ctx.focus) focusCohort(ctx);
             // Reuse after playback recovery checks the original snapshot again;
             // it does not extend the first round's deadline for loading players.
             for (const record of ctx.records.values()) if (!['removed', 'stale'].includes(record.status)) {
@@ -1124,12 +1302,15 @@
                 record.muteSatisfied = false; record.volumeSatisfied = false;
             }
             ctx.phase = 'restoring'; ctx.initialDone = false; ctx.running = true;
-            const remaining = Math.max(CAPTURE_MS, ctx.restoreDeadline - now());
+            const remaining = Math.max(ctx.focus ? 0 : CAPTURE_MS, ctx.restoreDeadline - now());
             const stage = createStage(ctx, remaining, () => timeout(ctx));
             emit(ctx, 'restoring', 'RUNNING');
             ctx.initialPromise = (async () => {
                 const drained = await boundary(ctx, stage, writeTail.then(() => ({ kind: 'settled' })));
-                if (drained.kind === 'settled' && live(ctx, stage)) await process(ctx, stage, leaseRecords(ctx, stage));
+                if (drained.kind === 'settled' && live(ctx, stage)) {
+                    if (ctx.focus) await processFocus(ctx, stage);
+                    else await process(ctx, stage, leaseRecords(ctx, stage));
+                }
                 ctx.running = false; ctx.initialDone = true;
                 if (!alive(ctx)) return summary(ctx, 'CANCELLED');
                 if (stage.expired || ctx.phase === 'timeout') return summary(ctx, 'TIMEOUT');
@@ -1157,7 +1338,7 @@
             // Those notifications cannot recursively restart their own pass.
             if (ctx?.phase === 'restoring' && ctx.initialDone && !ctx.running && ctx.stage && !ctx.stage.stopped) void pump(ctx, ctx.stage);
         }
-        return { prepare, restore, notify, cancel, settle: () => writeTail };
+        return { prepare, restore, notify, cancel, settle: () => writeTail, focusSupported: true };
     }
     const api = { createLayoutAudioFlow };
     root.UmininnLayoutAudio = api;
@@ -2105,6 +2286,8 @@
         let sequence = 0, scanTimer = null, disposed = false, globalMuted = null;
         let audioFocusIntent = null, audioReconcileTimer = null, audioControlGeneration = 0;
         let layoutAudioFlow = null, layoutTicket = null, layoutUserEpoch = 0;
+        let layoutAudioPhase = '', standaloneAudioSequence = 0, manualAudioTail = Promise.resolve();
+        const layoutFocusCandidates = new Map();
         let layoutCompletion = Promise.resolve(), finishLayoutCompletion = null;
         let automaticRecoveryReason = null;
         let preparation = null, preparedCohort = new Set(), watchStartTimer = null, unreadyWrappers = 0;
@@ -2345,7 +2528,10 @@
             if (disposed || !entries.has(entry.element) || !validResult(result)) return;
             const revision = result.state?.audioUserRevision;
             if (Number.isInteger(revision)) {
-                if (entry.audioUserRevision !== undefined && revision > entry.audioUserRevision) invalidateLayoutAudio();
+                if (entry.audioUserRevision !== undefined && revision > entry.audioUserRevision) {
+                    invalidateLayoutAudio();
+                    void afterAudioFocus(() => {});
+                }
                 entry.audioUserRevision = revision;
             }
             entry.result = result;
@@ -2364,7 +2550,7 @@
         async function execute(entry, command, settings = {}) {
             const readable = entry.kind === 'native' || entry.kind === 'frame' && Boolean(entry.target);
             const guard = command.action === 'setMuted' && command.value === true && command.guard === true;
-            const priority = settings.priority === true && ['setMuted', 'setVolume'].includes(command.action);
+            const priority = settings.priority === true && ['setMuted', 'setVolume', 'getState'].includes(command.action);
             if (entry.busy && !guard && !settings.revoke && !priority || guard && entry.guardInFlight || !entries.has(entry.element) ||
                 (command.action === 'getState' || guard || settings.revoke ? !readable : !can(entry, command.action))) return { ok: false, code: 'unavailable' };
             const generation = entry.generation;
@@ -2420,6 +2606,12 @@
         }
 
         function afterAudioFocus(action, preserveLayout = false) {
+            if (preserveLayout && layoutAudioFlow?.focusSupported) {
+                const generation = audioControlGeneration;
+                return Promise.all([manualAudioTail, layoutAudioFlow.settle(), ...urgentAudioTasks]).then(() => {
+                    if (!disposed && generation === audioControlGeneration) return action();
+                });
+            }
             if (!preserveLayout) invalidateLayoutAudio();
             const ticket = ++audioControlGeneration;
             audioFocusIntent = null;
@@ -2427,7 +2619,8 @@
             audioReconcileTimer = null;
             showAudioFocusStatus({ phase: 'cancelled' });
             const settled = audioFocusFlow?.cancel() || Promise.resolve();
-            return Promise.all([settled, layoutAudioFlow?.settle(), ...urgentAudioTasks]).then(async () => {
+            const previousManual = manualAudioTail;
+            const task = Promise.all([previousManual, settled, layoutAudioFlow?.settle(), ...urgentAudioTasks]).then(async () => {
                 if (disposed || ticket !== audioControlGeneration) return;
                 const guarded = [...guardedEntries].filter(([entry, generation]) => isCurrent(entry, generation));
                 let cursor = 0;
@@ -2440,6 +2633,8 @@
                 }));
                 if (!disposed && ticket === audioControlGeneration) return action();
             });
+            manualAudioTail = task.catch(() => {});
+            return task;
         }
 
         function audioFingerprint() {
@@ -2467,11 +2662,27 @@
         function queueAudioFocusReconcile() {
             const intent = audioFocusIntent;
             if (disposed || !intent) return;
+            if (intent.unified && (intent.holding || !intent.committed)) { intent.dirty = true; layoutAudioFlow?.notify(); return; }
             if (intent.running) { intent.dirty = true; return; }
             if (audioReconcileTimer !== null) return;
             audioReconcileTimer = win.setTimeout(() => {
                 audioReconcileTimer = null;
                 if (disposed || audioFocusIntent !== intent || intent.running) return;
+                if (intent.unified) {
+                    if (!validUnifiedTarget(intent)) { clearAudioIntent(); showAudioFocusStatus({ phase: 'removed' }); return; }
+                    const fingerprint = audioFingerprint();
+                    if (!intent.dirty && intent.lastFingerprint === fingerprint || intent.repairs >= 4) return;
+                    intent.dirty = false;
+                    const cohort = audioFocusSnapshot();
+                    const needsRepair = cohort.some(item => item.key !== intent.target &&
+                        (item.state?.muted !== true || item.state?.muteGuardActive !== true)) ||
+                        !intent.focused;
+                    if (!needsRepair) { intent.lastFingerprint = fingerprint; return; }
+                    intent.repairs++;
+                    intent.automatic = true;
+                    void restoreUnifiedFocus(intent, intent.ticket);
+                    return;
+                }
                 const snapshot = audioFocusSnapshot(), target = snapshot.find(item => item.key === intent.target);
                 if (!target) { audioFocusIntent = null; void audioFocusFlow.cancel(); showAudioFocusStatus({ phase: 'removed' }); return; }
                 const changedTarget = target.entry !== intent.entry || target.generation !== intent.generation;
@@ -2482,10 +2693,11 @@
                 startAudioFocusIntent(intent, intent.focused && !changedTarget, true);
             }, 100);
         }
-        function muteImmediately() {
-            // Idle entries are handled immediately by the normal bounded
-            // worker. Only busy ones need this separate safety lane.
-            const cohort = currentEntries().filter(entry => entry.busy && (entry.kind === 'native' || entry.kind === 'frame' && entry.target));
+        function muteImmediately(all = false) {
+            // A newly committed solo intent silences the readable cohort now;
+            // older issued commands still drain before the target may open.
+            // Legacy callers only need the lane for busy entries.
+            const cohort = currentEntries().filter(entry => (all || entry.busy) && (entry.kind === 'native' || entry.kind === 'frame' && entry.target));
             let cursor = 0;
             const task = Promise.all(Array.from({ length: Math.min(4, cohort.length) }, async () => {
                 while (cursor < cohort.length && !disposed) await execute(cohort[cursor++], { action: 'setMuted', value: true, guard: true });
@@ -2601,8 +2813,10 @@
             automaticRecoveryReason = reason;
             cancelPendingRecovery();
             const generation = recoveryStartGeneration;
-            showAudioFocusStatus({ phase: 'cancelled' });
-            void afterAudioFocus(() => {}, true);
+            if (!audioFocusIntent?.unified) {
+                showAudioFocusStatus({ phase: 'cancelled' });
+                void afterAudioFocus(() => {}, true);
+            }
             recoveryFlow?.cancel();
             clearPreparation();
             // A new task observes the completed selection/layout, including
@@ -2743,12 +2957,23 @@
                 return;
             }
         }
-        function invalidateLayoutAudio() {
+        function invalidateLayoutAudio(supersedeSound = true) {
             layoutUserEpoch++;
             publishAudioIntent();
             automaticRecoveryReason = null;
             layoutTicket = null;
+            layoutAudioPhase = '';
             layoutAudioFlow?.cancel();
+            layoutFocusCandidates.clear();
+            clearAudioIntent(supersedeSound);
+        }
+        function clearAudioIntent(supersedeSound = true) {
+            audioFocusIntent = null;
+            if (supersedeSound) ++audioControlGeneration;
+            if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
+            audioReconcileTimer = null;
+            void audioFocusFlow?.cancel();
+            showAudioFocusStatus({ phase: 'cancelled' });
         }
         function publishAudioIntent() {
             if (!disposed && doc.documentElement.hasAttribute('data-umininn-player-audio-focus-ready')) {
@@ -2764,6 +2989,7 @@
                 const entry = entries.get(element);
                 return { key: element.getAttribute('data-channel-key') || '', identity: entry || element, element, entry,
                     version: entry ? layoutAudioVersion(entry) : 'pending',
+                    readable: Boolean(entry && (entry.kind === 'native' || entry.kind === 'frame' && entry.target)),
                     ready: Boolean(entry && !entry.busy && (can(entry, 'setMuted') || can(entry, 'setVolume'))),
                     state: entry?.result?.state };
             });
@@ -2794,12 +3020,18 @@
             finishLayoutCompletion?.();
             layoutCompletion = new Promise(resolve => { finishLayoutCompletion = resolve; });
             layoutTicket = ticket;
+            layoutAudioPhase = 'preparing';
             const epoch = layoutUserEpoch;
             // Recovery and solo writes must settle before the fresh snapshot.
             cancelPendingRecovery();
             recoveryFlow?.cancel(); clearPreparation();
             try {
-                await afterAudioFocus(() => {}, true);
+                if (layoutAudioFlow.focusSupported) {
+                    if (audioFocusIntent?.unified) {
+                        audioFocusIntent.holding = true;
+                        audioFocusIntent.runId = (audioFocusIntent.runId || 0) + 1;
+                    } else await Promise.all([manualAudioTail, audioFocusFlow?.cancel(), ...urgentAudioTasks]);
+                } else await afterAudioFocus(() => {}, true);
                 if (!disposed && layoutTicket === ticket && epoch === layoutUserEpoch) {
                     scan();
                     await layoutAudioFlow.prepare(ticket);
@@ -2810,13 +3042,33 @@
             const request = layoutEvent(event);
             if (!request) return;
             const { pane, ticket } = request;
+            layoutAudioPhase = 'restoring';
             const complete = finishLayoutCompletion;
             // Let the page finish its mutation, including synchronous platform events.
             win.setTimeout(async () => {
                 try {
                     scan();
-                    if (layoutTicket === ticket) await layoutAudioFlow.restore(ticket);
+                    if (layoutTicket === ticket) {
+                        layoutAudioPhase = 'restoring';
+                        let intent = audioFocusIntent;
+                        const committed = pane.getAttribute('data-umininn-layout-audio-focus');
+                        const requests = (pane.getAttribute('data-umininn-layout-audio-focus-requests') || '').split(',');
+                        if (intent?.unified && !intent.committed && requests.includes(intent.requestId)) {
+                            const candidate = layoutFocusCandidates.get(committed);
+                            if (candidate && validUnifiedTarget(candidate)) audioFocusIntent = intent = candidate;
+                            for (const id of requests) layoutFocusCandidates.delete(id);
+                        }
+                        if (intent?.unified && validUnifiedTarget(intent) && (intent.committed || committed === intent.requestId)) {
+                            intent.committed = true;
+                            intent.repairs = 0;
+                            await restoreUnifiedFocus(intent, ticket);
+                        } else {
+                            if (intent?.unified) clearAudioIntent();
+                            await layoutAudioFlow.restore(ticket);
+                        }
+                    }
                 } finally {
+                    if (layoutTicket === ticket) layoutAudioPhase = '';
                     acknowledgeLayout(pane, ticket, 'umininn-player-layout-restored');
                     complete?.();
                     if (finishLayoutCompletion === complete) finishLayoutCompletion = null;
@@ -2827,7 +3079,9 @@
         }
         function onLayoutAbort(event) {
             if (event.target !== doc.getElementById('multi-stream-container')) return;
-            invalidateLayoutAudio(); layoutTicket = null;
+            // A layout timeout cancels its snapshot, not a user's sound write
+            // that may still be draining outside the geometry transaction.
+            invalidateLayoutAudio(false); layoutTicket = null;
             finishLayoutCompletion?.(); finishLayoutCompletion = null;
         }
         function onLayoutPageHide() {
@@ -2878,6 +3132,17 @@
             // A plain bubbling event works across Firefox userscript sandboxes;
             // only a current pane itself may request focus, never its inner DOM.
             if (disposed || !audioFocusFlow || !container || event.target?.parentElement !== container) return;
+            if (layoutAudioFlow?.focusSupported) {
+                invalidateLayoutAudio();
+                const intent = newUnifiedIntent(event.target, null, true);
+                const ticket = `sound-${++standaloneAudioSequence}`;
+                intent.ticket = ticket;
+                void layoutAudioFlow.prepare(ticket).then(() => {
+                    if (!disposed && audioFocusIntent === intent && validUnifiedTarget(intent))
+                        return restoreUnifiedFocus(intent, ticket);
+                });
+                return;
+            }
             invalidateLayoutAudio();
             cancelPendingRecovery();
             recoveryFlow?.cancel();
@@ -2892,6 +3157,65 @@
             // while the new request waits for the serialized confirmation.
             muteImmediately();
             startAudioFocusIntent(intent);
+        }
+        function validUnifiedTarget(intent) {
+            return intent.target?.isConnected && intent.target.parentElement === doc.getElementById('multi-stream-container') &&
+                entries.get(intent.target) === intent.entry && (!intent.entry || intent.entry.generation === intent.generation);
+        }
+        function newUnifiedIntent(target, requestId, committed) {
+            cancelPendingRecovery(); recoveryFlow?.cancel(); clearPreparation();
+            void audioFocusFlow?.cancel();
+            if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
+            audioReconcileTimer = null;
+            ++audioControlGeneration;
+            if (committed) publishAudioIntent();
+            globalMuted = true;
+            win.postMessage(envelope('site:audio-preference', { muted: true }), win.location.origin);
+            const entry = entries.get(target);
+            const intent = audioFocusIntent = { unified: true, target, entry, generation: entry?.generation,
+                requestId, committed, focused: false, running: false, holding: true, repairs: 0, runId: 0 };
+            refreshSummary();
+            if (!committed) layoutFocusCandidates.set(requestId, intent);
+            showAudioFocusStatus({ phase: 'preparing' });
+            if (committed) muteImmediately(true);
+            return intent;
+        }
+        function onLayoutFocusRequest(event) {
+            const pane = doc.getElementById('multi-stream-container'), target = event.target;
+            const requestId = target?.getAttribute?.('data-umininn-player-layout-focus-request');
+            if (disposed || !layoutAudioFlow?.focusSupported || target?.parentElement !== pane || !/^\d{1,16}$/.test(requestId || '')) return;
+            // A second enlarge click can replace a policy during capture. Keep
+            // that single snapshot, but cancel any already restoring old policy.
+            if (layoutAudioPhase !== 'preparing') {
+                layoutAudioFlow.cancel();
+                layoutTicket = null;
+            }
+            newUnifiedIntent(target, requestId, false);
+        }
+        async function restoreUnifiedFocus(intent, ticket) {
+            if (disposed || audioFocusIntent !== intent || !validUnifiedTarget(intent)) return;
+            intent.ticket = ticket;
+            intent.holding = true;
+            intent.running = true;
+            const runId = ++intent.runId;
+            showAudioFocusStatus({ phase: 'preparing' });
+            const result = await layoutAudioFlow.restore(ticket, { focus: {
+                key: intent.target.getAttribute('data-channel-key') || '', identity: intent.entry || intent.target, element: intent.target
+            } });
+            if (disposed || audioFocusIntent !== intent || runId !== intent.runId) return;
+            intent.running = false;
+            intent.holding = result.code === 'PENDING';
+            intent.focused = result.code === 'COMPLETE';
+            intent.lastFingerprint = audioFingerprint();
+            showUnifiedStatus(intent, result);
+            if (!intent.holding) queueAudioFocusReconcile();
+        }
+        function showUnifiedStatus(intent, result) {
+            if (audioFocusIntent !== intent) return;
+            if (result.code === 'COMPLETE') showAudioFocusStatus({ phase: 'focused', volume: 1, muted: false,
+                name: intent.entry?.name.textContent || '目標格' });
+            else if (!['PENDING', 'PREPARED', 'RUNNING'].includes(result.code)) showAudioFocusStatus({ phase: 'partial',
+                failures: [{ name: intent.entry?.name.textContent || '目標格', code: result.code === 'CANCELLED' ? 'stale' : 'unconfirmed' }] });
         }
         function originalMuteClick(event) {
             if (!event.target?.closest?.('#toggle-all-audio')) return;
@@ -3126,12 +3450,20 @@
                 if (options.layoutAudio?.createLayoutAudioFlow) {
                     layoutAudioFlow = options.layoutAudio.createLayoutAudioFlow({
                         clock: win, getEntries: layoutAudioEntries, isCurrent: layoutAudioCurrent,
-                        read: item => execute(item.entry, { action: 'getState' }),
+                        read: item => execute(item.entry, { action: 'getState' }, { priority: true }),
                         write: (item, command) => execute(item.entry, command),
+                        beforeOpen: () => Promise.all([manualAudioTail, audioFocusFlow?.cancel(), ...urgentAudioTasks]),
                         onStatus: value => {
                             if (!disposed) container.setAttribute('data-umininn-layout-audio-status',
                                 value.phase === 'preparing' ? 'capturing' : value.phase === 'restoring' ? 'restoring' :
                                     value.code === 'COMPLETE' ? 'complete' : 'partial');
+                            const intent = audioFocusIntent;
+                            if (intent?.unified && intent.ticket === value.ticket && ['waiting', 'complete', 'timeout'].includes(value.phase)) {
+                                intent.holding = value.code === 'PENDING';
+                                intent.focused = value.code === 'COMPLETE';
+                                intent.lastFingerprint = audioFingerprint();
+                                showUnifiedStatus(intent, value);
+                            }
                         }
                     });
                     doc.addEventListener('umininn-player-layout-before', onLayoutBefore, true);
@@ -3139,6 +3471,10 @@
                     doc.addEventListener('umininn-player-layout-abort', onLayoutAbort, true);
                     win.addEventListener('pagehide', onLayoutPageHide);
                     doc.documentElement.setAttribute('data-umininn-player-layout-audio-ready', '');
+                    if (layoutAudioFlow.focusSupported) {
+                        doc.addEventListener('umininn-player-layout-focus-request', onLayoutFocusRequest, true);
+                        doc.documentElement.setAttribute('data-umininn-player-unified-audio-ready', '');
+                    }
                 }
             }
             doc.addEventListener('pointerover', windowControlsPointer, true);
@@ -3163,6 +3499,8 @@
             doc.documentElement.removeAttribute('data-umininn-player-audio-focus-ready');
             doc.documentElement.removeAttribute('data-umininn-player-audio-intent');
             doc.documentElement.removeAttribute('data-umininn-player-layout-audio-ready');
+            doc.documentElement.removeAttribute('data-umininn-player-unified-audio-ready');
+            doc.removeEventListener('umininn-player-layout-focus-request', onLayoutFocusRequest, true);
             onLayoutPageHide();
             doc.removeEventListener('umininn-player-layout-before', onLayoutBefore, true);
             doc.removeEventListener('umininn-player-layout-after', onLayoutAfter, true);

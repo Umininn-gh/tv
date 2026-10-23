@@ -1,7 +1,7 @@
 /* Preserve each channel's sound across one layout transaction. No source changes. */
 (function (root) {
     'use strict';
-    const CAPTURE_MS = 2500, RESTORE_MS = 30000, POLL_MS = 1000, LIMIT = 4;
+    const CAPTURE_MS = 2500, RESTORE_MS = 30000, FOCUS_MS = 6000, POLL_MS = 1000, LIMIT = 4;
     const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
     const finiteVolume = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
     function sound(state) {
@@ -23,14 +23,17 @@
         const readWaiters = new Set();
         function entries() {
             const result = new Map(), duplicates = new Set();
+            let unaddressable = 0;
             let list;
-            try { list = options.getEntries() || []; } catch (_) { return result; }
-            if (typeof list[Symbol.iterator] !== 'function') return result;
+            try { list = options.getEntries() || []; } catch (_) { result.ambiguous = 1; return result; }
+            if (typeof list[Symbol.iterator] !== 'function') { result.ambiguous = 1; return result; }
             for (const item of list) {
-                if (!item || typeof item.key !== 'string' || !item.key.trim() || duplicates.has(item.key)) continue;
+                if (!item || typeof item.key !== 'string' || !item.key.trim()) { unaddressable++; continue; }
+                if (duplicates.has(item.key)) continue;
                 if (result.has(item.key)) { result.delete(item.key); duplicates.add(item.key); }
                 else result.set(item.key, item);
             }
+            result.ambiguous = duplicates.size + unaddressable;
             return result;
         }
         function same(left, right) {
@@ -44,7 +47,7 @@
         function live(ctx, stage) { return alive(ctx) && ctx.stage === stage && !stage.stopped; }
         function summary(ctx, code) {
             const records = [...ctx.records.values()];
-            const failed = records.filter(item => ['failed', 'stale', 'timeout'].includes(item.status)).length + ctx.captureFailures;
+            const failed = records.filter(item => ['failed', 'stale', 'timeout'].includes(item.status)).length + ctx.captureFailures + (ctx.focusFailure ? 1 : 0);
             const pending = records.filter(item => !item.finished).length;
             const value = code || (pending ? 'PENDING' : failed || records.some(item => item.status === 'skipped') ? 'PARTIAL' : 'COMPLETE');
             return { ok: ['PREPARED', 'COMPLETE'].includes(value), code: value, ticket: ctx.ticket,
@@ -115,12 +118,13 @@
             if (outcome.kind === 'result' && !current(item)) return { kind: 'stale' };
             return outcome;
         }
-        function write(ctx, stage, record, command) {
+        function write(ctx, stage, record, command, permitted) {
             // The tail retains an issued operation after logical cancellation.
             // Its successor checks its lease only after that operation settles.
             const completed = writeTail.then(async () => {
                 if (!live(ctx, stage)) return { kind: 'stopped' };
                 if (!current(record.lease)) return { kind: 'stale' };
+                if (permitted && !permitted()) return { kind: 'blocked' };
                 let result;
                 try { result = await options.write(record.lease, command); }
                 catch (_) { return { kind: 'error' }; }
@@ -138,7 +142,7 @@
             }));
         }
         function makeRecord(key, desired) {
-            return { key, desired: { ...desired }, lease: null, state: null, finished: false, status: 'captured',
+            return { key, desired: { ...desired }, snapshot: { ...desired }, lease: null, state: null, finished: false, status: 'captured',
                 reason: '', failed: false, partial: false, muteSatisfied: false, volumeSatisfied: false };
         }
         function finish(record, status, reason) {
@@ -171,7 +175,9 @@
                     const desired = sound(outcome.value?.state);
                     const record = ctx.records.get(item.key);
                     if (record) {
-                        for (const key of ['muted', 'volume']) if (!own(record.desired, key) && own(desired, key)) record.desired[key] = desired[key];
+                        for (const key of ['muted', 'volume']) if (!own(record.desired, key) && own(desired, key)) {
+                            record.desired[key] = desired[key]; record.snapshot[key] = desired[key];
+                        }
                     } else if (Object.keys(desired).length) ctx.records.set(item.key, makeRecord(item.key, desired));
                     else ctx.captureSkipped++;
                 });
@@ -307,6 +313,170 @@
                 finish(record, record.failed ? 'failed' : record.partial ? 'skipped' : 'restored', record.reason);
             }
         }
+        function focused(ctx, item) {
+            return Boolean(item && item.key === ctx.focus.key && item.identity === ctx.focus.identity &&
+                (!ctx.focus.element || item.element === ctx.focus.element));
+        }
+        function focusCohort(ctx) {
+            const found = entries(), peers = [];
+            let target = null;
+            ctx.focusFailure = Boolean(found.ambiguous);
+            for (const item of found.values()) {
+                let record = ctx.records.get(item.key);
+                if (!record) { record = makeRecord(item.key, {}); ctx.records.set(item.key, record); }
+                const isTarget = focused(ctx, item);
+                record.focusTarget = isTarget;
+                // Peers can acquire a new document: muting the current document
+                // is safe. Opening the target is bound to its original identity.
+                if (!record.lease || !same(record.lease, item)) {
+                    record.lease = { ...item }; record.state = null;
+                    record.muteSatisfied = false; record.volumeSatisfied = false;
+                }
+                record.finished = false; record.status = 'waiting'; record.failed = false;
+                record.partial = false; record.reason = '';
+                record.desired.muted = !isTarget;
+                if (isTarget) { record.desired.volume = 1; target = record; }
+                else {
+                    if (own(record.snapshot, 'volume')) record.desired.volume = record.snapshot.volume;
+                    else delete record.desired.volume;
+                    peers.push(record);
+                }
+            }
+            for (const record of ctx.records.values()) if (!found.has(record.key)) finish(record, 'removed', 'removed');
+            if (!target) ctx.focusFailure = true;
+            return { target, peers };
+        }
+        function focusState(record, state) {
+            record.state = { ...sound(state), muteGuardActive: state?.muteGuardActive === true };
+            record.muteSatisfied = record.state.muted === record.desired.muted;
+            record.volumeSatisfied = !own(record.desired, 'volume') || own(record.state, 'volume') &&
+                Math.abs(record.state.volume - record.desired.volume) < 0.001;
+        }
+        function focusSafe(ctx) {
+            const found = entries();
+            if (found.ambiguous || !focused(ctx, found.get(ctx.focus.key))) return false;
+            for (const item of found.values()) {
+                if (focused(ctx, item)) continue;
+                const record = ctx.records.get(item.key);
+                if (!record || record.failed || !record.lease || !same(record.lease, item) || !current(record.lease) ||
+                    record.state?.muted !== true || !record.guardConfirmed) return false;
+            }
+            return true;
+        }
+        async function focusRead(ctx, stage, record) {
+            const item = entries().get(record.key);
+            if (!item || !same(record.lease, item) || !current(item)) return false;
+            if (item.ready !== true && item.readable !== true) { record.state = null; record.guardConfirmed = false; return false; }
+            const outcome = await read(ctx, stage, record.lease);
+            if (!live(ctx, stage)) return false;
+            if (outcome.kind !== 'result' || outcome.value?.ok !== true || outcome.value?.state?.available === false) {
+                record.failed = true; record.reason = 'read-unconfirmed'; return false;
+            }
+            focusState(record, outcome.value.state);
+            record.guardConfirmed = record.state.muted === true && record.state.muteGuardActive;
+            if (!own(record.state, 'muted')) { record.failed = true; record.reason = 'mute-unsupported'; return false; }
+            return true;
+        }
+        async function focusWrite(ctx, stage, record, command) {
+            const opening = record.focusTarget && (command.action === 'setVolume' || command.action === 'setMuted' && command.value === false);
+            const outcome = await write(ctx, stage, record, command, opening ? () => focusSafe(ctx) : null);
+            if (!live(ctx, stage)) return false;
+            if (outcome.kind !== 'result' || outcome.value?.ok !== true) {
+                record.failed = true; record.reason = `${command.action}-unconfirmed`; return false;
+            }
+            focusState(record, outcome.value.state);
+            const property = command.action === 'setMuted' ? 'muted' : 'volume';
+            if (!own(record.state, property) || (property === 'volume' ?
+                Math.abs(record.state[property] - command.value) >= 0.001 : record.state[property] !== command.value)) {
+                record.failed = true; record.reason = `${property}-unconfirmed`; return false;
+            }
+            if (command.action === 'setMuted' && command.value === true && command.guard === true) record.guardConfirmed = true;
+            else if (record.state.muted !== true || outcome.value.state?.muteGuardActive === false) record.guardConfirmed = false;
+            return true;
+        }
+        async function guardFocusPeers(ctx, stage, peers) {
+            // Queue each ready peer's mute as its own read completes rather
+            // than waiting for every other platform's read to respond.
+            await each(peers, async record => {
+                record.guardConfirmed = false;
+                if (!await focusRead(ctx, stage, record) || !live(ctx, stage)) return;
+                if (record.state.muted !== true || !record.state.muteGuardActive) {
+                    if (!await focusWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true })) return;
+                }
+                if (!live(ctx, stage)) return;
+                if (own(record.desired, 'volume') && own(record.state, 'volume') && !record.volumeSatisfied) {
+                    if (!await focusWrite(ctx, stage, record, { action: 'setVolume', value: record.desired.volume })) return;
+                    // A platform may clear mute while applying its volume.
+                    if (record.state.muted !== true || !record.guardConfirmed) {
+                        if (!await focusWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true })) return;
+                    }
+                }
+                if (!record.failed && record.state.muted === true && record.guardConfirmed) {
+                    const partial = own(record.desired, 'volume') && !record.volumeSatisfied;
+                    finish(record, partial ? 'skipped' : 'restored', partial ? 'volume-unsupported' : '');
+                }
+            });
+        }
+        async function closeUnsafeFocus(ctx, stage, target) {
+            if (!target || !live(ctx, stage)) return;
+            if (target.state?.muted === false && !focusSafe(ctx))
+                await focusWrite(ctx, stage, target, { action: 'setMuted', value: true, guard: true });
+        }
+        async function processFocus(ctx, stage) {
+            let { target, peers } = focusCohort(ctx);
+            await Promise.all([
+                guardFocusPeers(ctx, stage, peers),
+                (async () => {
+                    if (target && await focusRead(ctx, stage, target)) await closeUnsafeFocus(ctx, stage, target);
+                })()
+            ]);
+            if (!live(ctx, stage)) return;
+            if (focusSafe(ctx) && target && !target.failed) {
+                // Drain writes already issued by manual/legacy controllers only
+                // after peers are muted. This wait is outside our write tail.
+                const callback = ctx.beforeOpen || options.beforeOpen;
+                if (typeof callback === 'function') {
+                    let request;
+                    try { request = Promise.resolve(callback()).then(() => ({ kind: 'settled' }), () => ({ kind: 'error' })); }
+                    catch (_) { request = Promise.resolve({ kind: 'error' }); }
+                    const outcome = await boundary(ctx, stage, request);
+                    if (!live(ctx, stage)) return;
+                    if (outcome.kind !== 'settled') { target.failed = true; target.reason = 'prior-audio-unconfirmed'; }
+                }
+                if (!target.failed) {
+                    // The drain and volume restoration may publish a new frame
+                    // or clear mute. Re-read every current peer before opening.
+                    ({ target, peers } = focusCohort(ctx));
+                    await guardFocusPeers(ctx, stage, peers);
+                    if (!live(ctx, stage)) return;
+                    if (target && await focusRead(ctx, stage, target) && focusSafe(ctx)) {
+                        if (!target.volumeSatisfied) await focusWrite(ctx, stage, target, { action: 'setVolume', value: 1 });
+                        if (live(ctx, stage) && !target.failed && focusSafe(ctx) && target.state?.muted !== false)
+                            await focusWrite(ctx, stage, target, { action: 'setMuted', value: false });
+                    }
+                }
+            }
+            if (!live(ctx, stage)) return;
+            if (target && !target.failed && target.state?.muted === false) {
+                // An unmute/volume ACK can be delayed while another platform
+                // replaces media or clears mute. Cached pre-open confirmation
+                // is insufficient to declare the final cohort safe.
+                ({ target, peers } = focusCohort(ctx));
+                await guardFocusPeers(ctx, stage, peers);
+                if (!live(ctx, stage)) return;
+                if (target) await focusRead(ctx, stage, target);
+            }
+            if (!live(ctx, stage)) return;
+            await closeUnsafeFocus(ctx, stage, target);
+            if (!live(ctx, stage)) return;
+            const pending = peers.some(record => !record.finished && !record.failed) || target && !target.failed && !target.state;
+            for (const record of peers) if (record.failed) finish(record, 'failed', record.reason);
+            if (target) {
+                if (!target.failed && focusSafe(ctx) && target.state?.muted === false && target.volumeSatisfied) finish(target, 'restored');
+                else if (target.failed || !pending || ctx.focusFailure) finish(target, 'failed', target.reason || 'focus-withheld');
+                else { target.status = 'waiting'; target.finished = false; }
+            }
+        }
         function schedule(ctx, stage) {
             if (!live(ctx, stage) || ctx.poll !== null || ![...ctx.records.values()].some(record => !record.finished)) return;
             if (now() >= ctx.restoreDeadline) { timeout(ctx); closeStage(ctx); return; }
@@ -317,18 +487,26 @@
             if (now() >= ctx.restoreDeadline) { timeout(ctx); closeStage(ctx); return; }
             clearPoll(ctx);
             ctx.running = true;
-            try { await process(ctx, stage, leaseRecords(ctx, stage)); }
+            try { if (ctx.focus) await processFocus(ctx, stage); else await process(ctx, stage, leaseRecords(ctx, stage)); }
             finally { ctx.running = false; }
             if (!live(ctx, stage)) return;
             completed(ctx, stage);
             schedule(ctx, stage);
         }
-        function restore(ticket) {
+        function restore(ticket, policy) {
             const ctx = active;
             if (!ctx || ctx.cancelled || ctx.ticket !== ticket || ctx.phase === 'preparing') return Promise.resolve({ ok: false, code: 'CANCELLED', ticket });
             if (ctx.phase === 'restoring' && !ctx.initialDone) return ctx.initialPromise;
             closeStage(ctx);
-            if (ctx.restoreDeadline === null) ctx.restoreDeadline = now() + RESTORE_MS;
+            if (policy?.focus && (!ctx.focus || ctx.focus.key !== policy.focus.key || ctx.focus.identity !== policy.focus.identity ||
+                ctx.focus.element !== policy.focus.element)) {
+                ctx.focus = { ...policy.focus };
+                ctx.captureFailures = 0;
+                ctx.restoreDeadline = null;
+            }
+            if (typeof policy?.beforeOpen === 'function') ctx.beforeOpen = policy.beforeOpen;
+            if (ctx.restoreDeadline === null || ctx.focus && ctx.phase === 'complete') ctx.restoreDeadline = now() + (ctx.focus ? FOCUS_MS : RESTORE_MS);
+            if (ctx.focus) focusCohort(ctx);
             // Reuse after playback recovery checks the original snapshot again;
             // it does not extend the first round's deadline for loading players.
             for (const record of ctx.records.values()) if (!['removed', 'stale'].includes(record.status)) {
@@ -336,12 +514,15 @@
                 record.muteSatisfied = false; record.volumeSatisfied = false;
             }
             ctx.phase = 'restoring'; ctx.initialDone = false; ctx.running = true;
-            const remaining = Math.max(CAPTURE_MS, ctx.restoreDeadline - now());
+            const remaining = Math.max(ctx.focus ? 0 : CAPTURE_MS, ctx.restoreDeadline - now());
             const stage = createStage(ctx, remaining, () => timeout(ctx));
             emit(ctx, 'restoring', 'RUNNING');
             ctx.initialPromise = (async () => {
                 const drained = await boundary(ctx, stage, writeTail.then(() => ({ kind: 'settled' })));
-                if (drained.kind === 'settled' && live(ctx, stage)) await process(ctx, stage, leaseRecords(ctx, stage));
+                if (drained.kind === 'settled' && live(ctx, stage)) {
+                    if (ctx.focus) await processFocus(ctx, stage);
+                    else await process(ctx, stage, leaseRecords(ctx, stage));
+                }
                 ctx.running = false; ctx.initialDone = true;
                 if (!alive(ctx)) return summary(ctx, 'CANCELLED');
                 if (stage.expired || ctx.phase === 'timeout') return summary(ctx, 'TIMEOUT');
@@ -369,7 +550,7 @@
             // Those notifications cannot recursively restart their own pass.
             if (ctx?.phase === 'restoring' && ctx.initialDone && !ctx.running && ctx.stage && !ctx.stage.stopped) void pump(ctx, ctx.stage);
         }
-        return { prepare, restore, notify, cancel, settle: () => writeTail };
+        return { prepare, restore, notify, cancel, settle: () => writeTail, focusSupported: true };
     }
     const api = { createLayoutAudioFlow };
     root.UmininnLayoutAudio = api;

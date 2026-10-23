@@ -7,7 +7,7 @@ function deferred() {
     const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
     return { promise, resolve, reject };
 }
-async function flush() { for (let index = 0; index < 60; index++) await Promise.resolve(); }
+async function flush() { for (let index = 0; index < 160; index++) await Promise.resolve(); }
 function fakeClock() {
     let time = 0, next = 0;
     const jobs = new Map();
@@ -44,6 +44,7 @@ function fixture(initial) {
             calls.push({ key: item.key, ...command });
             const target = items.find(value => value.key === item.key);
             target.state[command.action === 'setMuted' ? 'muted' : 'volume'] = command.value;
+            if (command.action === 'setMuted' && ownGuard(command)) target.state.muteGuardActive = command.value && command.guard === true;
             return { ok: true, state: { ...target.state } };
         },
         onStatus: status => reports.push(status)
@@ -51,6 +52,8 @@ function fixture(initial) {
     const flow = createLayoutAudioFlow(settings);
     return { flow, clock, calls, reports, settings, get items() { return items; }, set items(value) { items = value; } };
 }
+function ownGuard(command) { return command.guard === true || command.value === false; }
+function focus(item) { return { focus: { key: item.key, identity: item.identity, element: item.element } }; }
 
 test('preserves distinct channel audio by key, including false and zero, after position changes', async () => {
     const a = player('twitch|a', false, 0), b = player('kick|b', true, 0.27);
@@ -417,4 +420,215 @@ test('an unmute that resets volume is reported partial rather than claiming exac
     // A second explicit calibration repairs the changed property only.
     assert.equal((await f.flow.restore(1)).code, 'COMPLETE');
     assert.equal(a.state.volume, 0.2);
+});
+
+test('focus overlays the snapshot before writes: only the target opens at full volume', async () => {
+    const a = player('angel|a', false, 0.21), b = player('kick|b', false, 0.73), f = fixture([a, b]);
+    await f.flow.prepare(1);
+    a.state.muted = true; a.state.volume = 0.48;
+    b.state.volume = 0.95;
+    const result = await f.flow.restore(1, focus(a));
+    assert.equal(f.flow.focusSupported, true);
+    assert.equal(result.code, 'COMPLETE');
+    assert.equal(a.state.muted, false); assert.equal(a.state.volume, 1);
+    assert.equal(b.state.muted, true); assert.equal(b.state.volume, 0.73);
+    assert.equal(b.state.muteGuardActive, true);
+    assert.equal(f.calls.some(call => call.key === a.key && call.action === 'setVolume' && call.value === 0.21), false);
+    assert.equal(f.calls.some(call => call.key === b.key && call.action === 'setMuted' && call.value === false), false);
+    const targetWrites = f.calls.filter(call => call.key === a.key);
+    assert.deepEqual(targetWrites, [
+        { key: a.key, action: 'setVolume', value: 1 }, { key: a.key, action: 'setMuted', value: false }
+    ]);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('a held peer mute ACK prevents both target volume increase and target unmute', async () => {
+    const a = player('twitch|a', true, 0.2), b = player('kick|b', false, 0.7), f = fixture([a, b]), gate = deferred();
+    await f.flow.prepare(1);
+    const original = f.settings.write; let peerMuteStarted = false;
+    f.settings.write = async (item, command) => {
+        if (item.key === b.key && command.action === 'setMuted' && command.value === true) {
+            peerMuteStarted = true; await gate.promise;
+        }
+        return original(item, command);
+    };
+    const restoring = f.flow.restore(1, focus(a)); await flush();
+    assert.equal(peerMuteStarted, true);
+    assert.equal(f.calls.some(call => call.key === a.key), false);
+    gate.resolve();
+    assert.equal((await restoring).code, 'COMPLETE');
+    assert.equal(a.state.volume, 1); assert.equal(a.state.muted, false); assert.equal(b.state.muted, true);
+});
+
+test('an uncaptured peer remains in the safety cohort and withholds target sound', async () => {
+    const a = player('twitch|a', false, 0.2), b = player('kick|b', false, 0.7), f = fixture([a, b]);
+    b.state = { available: true, muteSupported: false, volumeSupported: false };
+    assert.equal((await f.flow.prepare(1)).captured, 1);
+    const result = await f.flow.restore(1, focus(a));
+    assert.equal(result.code, 'PARTIAL');
+    assert.equal(a.state.muted, true);
+    assert.equal(f.calls.some(call => call.key === a.key && (call.action === 'setVolume' || call.value === false)), false);
+    assert.equal(result.results.some(record => record.key === b.key && record.status === 'failed'), true);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('late peer readiness and readable busy peers are guarded before opening the target', async () => {
+    const a = player('twitch|a', true, 0.2), b = player('kick|b', false, 0.7), f = fixture([a, b]);
+    await f.flow.prepare(1); b.ready = false;
+    assert.equal((await f.flow.restore(1, focus(a))).code, 'PENDING');
+    assert.deepEqual(f.calls, []);
+    // The site marks an SDK/iframe readable even while another command keeps
+    // its generic UI readiness false. Its mute guard must not wait for that UI.
+    b.readable = true;
+    f.flow.notify(); await flush();
+    assert.equal(f.reports.at(-1).code, 'COMPLETE');
+    assert.equal(b.state.muted, true); assert.equal(b.state.muteGuardActive, true);
+    assert.equal(a.state.muted, false); assert.equal(a.state.volume, 1);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('a late target waits for readiness without opening a same-key replacement', async () => {
+    const a = player('twitch|a', true, 0.2), b = player('kick|b', true, 0.7), f = fixture([a, b]);
+    b.state.muteGuardActive = true;
+    await f.flow.prepare(1); a.ready = false;
+    assert.equal((await f.flow.restore(1, focus(a))).code, 'PENDING');
+    a.ready = true; f.flow.notify(); await flush();
+    assert.equal(f.reports.at(-1).code, 'COMPLETE');
+    assert.equal(a.state.muted, false); assert.equal(a.state.volume, 1);
+    const replacement = player(a.key, false, 0.36);
+    f.items = [replacement, b]; f.calls.length = 0;
+    assert.equal((await f.flow.restore(1)).code, 'PARTIAL');
+    assert.equal(replacement.state.muted, true);
+    assert.equal(f.calls.some(call => call.key === a.key && (call.action === 'setVolume' && call.value === 1 || call.value === false)), false);
+});
+
+test('focused repair is a no-op when target and guarded peers already match', async () => {
+    const a = player('twitch|a', false, 1), b = player('kick|b', true, 0.7), f = fixture([a, b]);
+    b.state.muteGuardActive = true;
+    await f.flow.prepare(1);
+    assert.equal((await f.flow.restore(1, focus(a))).code, 'COMPLETE');
+    assert.equal((await f.flow.restore(1)).code, 'COMPLETE');
+    assert.deepEqual(f.calls, []); assert.equal(f.clock.pending, 0);
+    b.state.muted = false; b.state.muteGuardActive = false;
+    await f.flow.restore(1);
+    assert.equal(b.state.muted, true); assert.equal(a.state.muted, false);
+    assert.equal(a.state.volume, 1); assert.equal(f.clock.pending, 0);
+});
+
+test('beforeOpen drains old audio only after peers are muted, then rechecks new peers', async () => {
+    const a = player('twitch|a', true, 0.2), b = player('kick|b', false, 0.7), f = fixture([a, b]), gate = deferred();
+    await f.flow.prepare(1);
+    let entered = false;
+    const restoring = f.flow.restore(1, { ...focus(a), beforeOpen: async () => { entered = true; await gate.promise; } });
+    await flush();
+    assert.equal(entered, true); assert.equal(b.state.muted, true);
+    assert.equal(a.state.volume, 0.2); assert.equal(a.state.muted, true);
+    const c = player('native|c', false, 0.38); f.items.push(c);
+    // An older manual operation also cleared an already-confirmed peer.
+    b.state.muted = false; b.state.muteGuardActive = false;
+    gate.resolve();
+    assert.equal((await restoring).code, 'COMPLETE');
+    assert.equal(b.state.muted, true); assert.equal(c.state.muted, true);
+    assert.equal(a.state.volume, 1); assert.equal(a.state.muted, false);
+    assert.equal(f.calls.findIndex(call => call.key === c.key), f.calls.findIndex(call => call.key === c.key && call.value === true));
+    assert.ok(f.calls.findIndex(call => call.key === c.key) < f.calls.findIndex(call => call.key === a.key && call.action === 'setVolume'));
+});
+
+test('cancel breaks a beforeOpen wait and never opens the old focused target', async () => {
+    const a = player('twitch|a', true, 0.2), b = player('kick|b', false, 0.7), f = fixture([a, b]), gate = deferred();
+    await f.flow.prepare(1);
+    const restoring = f.flow.restore(1, { ...focus(a), beforeOpen: () => gate.promise });
+    await flush(); f.flow.cancel();
+    assert.equal((await restoring).code, 'CANCELLED');
+    gate.resolve(); await flush();
+    assert.equal(a.state.muted, true); assert.equal(a.state.volume, 0.2);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('focused waiting is bounded to six seconds and a repeated repair does not extend it', async () => {
+    const a = player('twitch|a', true, 0.2), b = player('kick|b', false, 0.7), f = fixture([a, b]);
+    await f.flow.prepare(1); b.ready = false;
+    await f.flow.restore(1, focus(a)); await f.clock.tick(5000);
+    await f.flow.restore(1, focus(a)); await f.clock.tick(1000);
+    assert.equal(f.reports.at(-1).code, 'TIMEOUT'); assert.equal(f.clock.pending, 0);
+    b.ready = true; f.flow.notify(); await flush();
+    assert.equal(a.state.muted, true); assert.equal(a.state.volume, 0.2);
+});
+
+test('new focus supersedes an issued old write without letting its old unmute follow', async () => {
+    const a = player('twitch|a', true, 0.2), b = player('kick|b', false, 0.7), f = fixture([a, b]), gate = deferred();
+    await f.flow.prepare(1);
+    const original = f.settings.write; let targetVolumeStarted = false;
+    f.settings.write = async (item, command) => {
+        if (item.key === a.key && command.action === 'setVolume') { targetVolumeStarted = true; await gate.promise; }
+        return original(item, command);
+    };
+    const first = f.flow.restore(1, focus(a)); await flush();
+    assert.equal(targetVolumeStarted, true);
+    const prepared = f.flow.prepare(2); await flush();
+    assert.equal((await first).code, 'CANCELLED');
+    gate.resolve(); await prepared;
+    assert.equal((await f.flow.restore(2, focus(b))).code, 'COMPLETE');
+    assert.equal(a.state.muted, true); assert.equal(b.state.muted, false); assert.equal(b.state.volume, 1);
+    assert.equal(f.calls.some(call => call.key === a.key && call.action === 'setMuted' && call.value === false), false);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('peer reset during a held target unmute ACK is re-muted before focus completes', async () => {
+    const a = player('twitch|a', true, 0.2), b = player('kick|b', false, 0.7), f = fixture([a, b]), gate = deferred();
+    await f.flow.prepare(1);
+    const original = f.settings.write; let unmuteStarted = false;
+    f.settings.write = async (item, command) => {
+        const result = await original(item, command);
+        if (item.key === a.key && command.action === 'setMuted' && command.value === false) {
+            unmuteStarted = true; await gate.promise;
+        }
+        return result;
+    };
+    const restoring = f.flow.restore(1, focus(a)); await flush();
+    assert.equal(unmuteStarted, true);
+    b.state.muted = false; b.state.muteGuardActive = false;
+    f.flow.notify();
+    gate.resolve();
+    assert.equal((await restoring).code, 'COMPLETE');
+    assert.equal(a.state.muted, false); assert.equal(a.state.volume, 1);
+    assert.equal(b.state.muted, true); assert.equal(b.state.muteGuardActive, true);
+    const opening = f.calls.findIndex(call => call.key === a.key && call.action === 'setMuted' && call.value === false);
+    assert.ok(f.calls.findIndex((call, index) => index > opening && call.key === b.key && call.action === 'setMuted' && call.value === true) > opening);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('a peer that becomes unreadable during target opening closes target and waits safely', async () => {
+    const a = player('twitch|a', true, 0.2), b = player('kick|b', false, 0.7), f = fixture([a, b]), gate = deferred();
+    await f.flow.prepare(1);
+    const original = f.settings.write; let unmuteStarted = false;
+    f.settings.write = async (item, command) => {
+        const result = await original(item, command);
+        if (item.key === a.key && command.action === 'setMuted' && command.value === false && !unmuteStarted) {
+            unmuteStarted = true; await gate.promise;
+        }
+        return result;
+    };
+    const restoring = f.flow.restore(1, focus(a)); await flush();
+    assert.equal(unmuteStarted, true);
+    b.ready = false; b.version++; b.state.muted = false; b.state.muteGuardActive = false;
+    gate.resolve();
+    assert.equal((await restoring).code, 'PENDING');
+    assert.equal(a.state.muted, true);
+    b.ready = true; f.flow.notify(); await flush();
+    assert.equal(f.reports.at(-1).code, 'COMPLETE');
+    assert.equal(a.state.muted, false); assert.equal(b.state.muted, true); assert.equal(f.clock.pending, 0);
+});
+
+test('an unknown pane with an empty key blocks focus while known peers are still muted', async () => {
+    const a = player('twitch|a', false, 0.2), b = player('kick|b', false, 0.7), f = fixture([a, b]);
+    await f.flow.prepare(1);
+    f.items.push(player('', false, 0.5, false));
+    const result = await f.flow.restore(1, focus(a));
+    assert.equal(result.code, 'PARTIAL');
+    assert.equal(b.state.muted, true); assert.equal(b.state.muteGuardActive, true);
+    assert.equal(a.state.muted, true); assert.equal(a.state.volume, 0.2);
+    assert.equal(f.calls.some(call => call.key === a.key && (call.action === 'setVolume' || call.value === false)), false);
+    assert.equal(f.calls.some(call => call.key === ''), false);
+    assert.equal(f.clock.pending, 0);
 });

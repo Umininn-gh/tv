@@ -1131,19 +1131,18 @@ function setChannelSelectionVisible(visible) {
 // Layout mutations share one preparation/commit/restore transaction. The
 // userscript reads foreign players before this page changes their layout;
 // callbacks stay synchronous inside the transaction, including nested calls.
-let playerAudioLayoutDepth = 0, playerAudioLayoutSequence = 0, playerAudioLayoutRevision = 0;
+let playerAudioLayoutDepth = 0, playerAudioLayoutSequence = 0, playerAudioFocusSequence = 0;
 let playerAudioLayoutBatch = null;
 const playerAudioLayoutQueue = [];
 function playerLayoutAudioAvailable() {
     return document.documentElement.hasAttribute('data-umininn-player-userscript') &&
         document.documentElement.hasAttribute('data-umininn-player-layout-audio-ready');
 }
-function withPlayerAudioLayout(action, supersedeFocus = true) {
+function withPlayerAudioLayout(action, options = {}) {
     if (playerAudioLayoutDepth) return action();
-    if (supersedeFocus) playerAudioLayoutRevision++;
     if (!playerLayoutAudioAvailable()) return action();
     return new Promise((resolve, reject) => {
-        playerAudioLayoutQueue.push({ action, resolve, reject });
+        playerAudioLayoutQueue.push({ action, resolve, reject, focus: options.focus });
         startPlayerAudioLayout();
     });
 }
@@ -1153,6 +1152,8 @@ function startPlayerAudioLayout() {
     const batch = playerAudioLayoutBatch = { pane, ticket: String(++playerAudioLayoutSequence), phase: 'prepare', results: [] };
     if (!pane || !playerLayoutAudioAvailable()) { commitPlayerAudioLayout(batch, false); return; }
     pane.setAttribute('data-umininn-layout-audio-ticket', batch.ticket);
+    pane.removeAttribute('data-umininn-layout-audio-focus');
+    pane.removeAttribute('data-umininn-layout-audio-focus-requests');
     batch.timer = setTimeout(() => commitPlayerAudioLayout(batch, false), 6500);
     pane.dispatchEvent(new Event('umininn-player-layout-before', { bubbles: true }));
 }
@@ -1170,6 +1171,19 @@ function commitPlayerAudioLayout(batch, restore) {
     } finally { playerAudioLayoutDepth--; }
     batch.phase = 'restore';
     if (!restore) { finishPlayerAudioLayout(batch); return; }
+    // Commit the final sound policy with the geometry, before any old sound
+    // can be restored. Newer manual sound input invalidates this request.
+    batch.pane.setAttribute('data-umininn-layout-audio-focus-requests',
+        batch.results.map(result => result.request.focus?.id).filter(Boolean).join(','));
+    for (const { request, value, error } of batch.results) {
+        const focus = request.focus;
+        if (!error && value === true && focus && focus.target?.isConnected &&
+            activePlayers.get(focus.key) === focus.entry && getPlayerElement(focus.entry) === focus.target && enlargedPlayerFocus?.key === focus.key &&
+            document.documentElement.getAttribute('data-umininn-player-audio-intent') === focus.intent &&
+            focus.target.getAttribute('data-umininn-player-layout-focus-request') === focus.id) {
+            batch.pane.setAttribute('data-umininn-layout-audio-focus', focus.id);
+        }
+    }
     batch.timer = setTimeout(() => {
         batch.pane.dispatchEvent(new Event('umininn-player-layout-abort', { bubbles: true }));
         finishPlayerAudioLayout(batch);
@@ -1182,6 +1196,8 @@ function finishPlayerAudioLayout(batch) {
     if (batch.pane?.getAttribute('data-umininn-layout-audio-ticket') === batch.ticket) {
         batch.pane.removeAttribute('data-umininn-layout-audio-ticket');
         batch.pane.removeAttribute('data-umininn-layout-audio-ack');
+        batch.pane.removeAttribute('data-umininn-layout-audio-focus');
+        batch.pane.removeAttribute('data-umininn-layout-audio-focus-requests');
     }
     playerAudioLayoutBatch = null;
     for (const { request, value, error } of batch.results) {
@@ -1209,8 +1225,8 @@ window.addEventListener('pagehide', () => {
     }
     for (const request of playerAudioLayoutQueue.splice(0)) request.resolve(false);
 });
-function guardPlayerAudioLayout(action, supersedeFocus = true) {
-    return function (...args) { return withPlayerAudioLayout(() => action.apply(this, args), supersedeFocus); };
+function guardPlayerAudioLayout(action) {
+    return function (...args) { return withPlayerAudioLayout(() => action.apply(this, args)); };
 }
 updatePlayerLayout = guardPlayerAudioLayout(updatePlayerLayout, false);
 applyPlayerSize = guardPlayerAudioLayout(applyPlayerSize);
@@ -2769,18 +2785,15 @@ applyPlayerBookmark = guardPlayerAudioLayout(applyPlayerBookmark);
             const entry = activePlayers.get(key);
             if (!entry) return;
             const target = getPlayerElement(entry);
-            const audioIntent = document.documentElement.getAttribute('data-umininn-player-audio-intent');
-            const pending = enlargePlayer(key);
-            const revision = playerAudioLayoutRevision;
-            const changed = await pending;
-            // Restore the layout snapshot first. A later layout or manual sound
-            // command owns the result and must not be overwritten by this click.
-            if (changed && audioIntent && !suspended && audioFocusAvailable() &&
-                revision === playerAudioLayoutRevision && enlargedPlayerFocus?.key === key &&
-                target?.isConnected && activePlayers.get(key) === entry && getPlayerElement(entry) === target &&
-                document.documentElement.getAttribute('data-umininn-player-audio-intent') === audioIntent) {
-                target.dispatchEvent(new Event('umininn-player-audio-focus', { bubbles: true }));
+            let focus;
+            if (target && document.documentElement.hasAttribute('data-umininn-player-unified-audio-ready')) {
+                const id = String(++playerAudioFocusSequence);
+                target.setAttribute('data-umininn-player-layout-focus-request', id);
+                target.dispatchEvent(new Event('umininn-player-layout-focus-request', { bubbles: true }));
+                focus = { id, target, entry, key,
+                    intent: document.documentElement.getAttribute('data-umininn-player-audio-intent') };
             }
+            await withPlayerAudioLayout(() => enlargePlayer(key), { focus });
         }
         else if (button.dataset.playerAction === 'audio-focus') {
             if (!audioFocusAvailable() || !activePlayers.has(key)) return;

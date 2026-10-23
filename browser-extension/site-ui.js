@@ -298,6 +298,8 @@
         let sequence = 0, scanTimer = null, disposed = false, globalMuted = null;
         let audioFocusIntent = null, audioReconcileTimer = null, audioControlGeneration = 0;
         let layoutAudioFlow = null, layoutTicket = null, layoutUserEpoch = 0;
+        let layoutAudioPhase = '', standaloneAudioSequence = 0, manualAudioTail = Promise.resolve();
+        const layoutFocusCandidates = new Map();
         let layoutCompletion = Promise.resolve(), finishLayoutCompletion = null;
         let automaticRecoveryReason = null;
         let preparation = null, preparedCohort = new Set(), watchStartTimer = null, unreadyWrappers = 0;
@@ -538,7 +540,10 @@
             if (disposed || !entries.has(entry.element) || !validResult(result)) return;
             const revision = result.state?.audioUserRevision;
             if (Number.isInteger(revision)) {
-                if (entry.audioUserRevision !== undefined && revision > entry.audioUserRevision) invalidateLayoutAudio();
+                if (entry.audioUserRevision !== undefined && revision > entry.audioUserRevision) {
+                    invalidateLayoutAudio();
+                    void afterAudioFocus(() => {});
+                }
                 entry.audioUserRevision = revision;
             }
             entry.result = result;
@@ -557,7 +562,7 @@
         async function execute(entry, command, settings = {}) {
             const readable = entry.kind === 'native' || entry.kind === 'frame' && Boolean(entry.target);
             const guard = command.action === 'setMuted' && command.value === true && command.guard === true;
-            const priority = settings.priority === true && ['setMuted', 'setVolume'].includes(command.action);
+            const priority = settings.priority === true && ['setMuted', 'setVolume', 'getState'].includes(command.action);
             if (entry.busy && !guard && !settings.revoke && !priority || guard && entry.guardInFlight || !entries.has(entry.element) ||
                 (command.action === 'getState' || guard || settings.revoke ? !readable : !can(entry, command.action))) return { ok: false, code: 'unavailable' };
             const generation = entry.generation;
@@ -613,6 +618,12 @@
         }
 
         function afterAudioFocus(action, preserveLayout = false) {
+            if (preserveLayout && layoutAudioFlow?.focusSupported) {
+                const generation = audioControlGeneration;
+                return Promise.all([manualAudioTail, layoutAudioFlow.settle(), ...urgentAudioTasks]).then(() => {
+                    if (!disposed && generation === audioControlGeneration) return action();
+                });
+            }
             if (!preserveLayout) invalidateLayoutAudio();
             const ticket = ++audioControlGeneration;
             audioFocusIntent = null;
@@ -620,7 +631,8 @@
             audioReconcileTimer = null;
             showAudioFocusStatus({ phase: 'cancelled' });
             const settled = audioFocusFlow?.cancel() || Promise.resolve();
-            return Promise.all([settled, layoutAudioFlow?.settle(), ...urgentAudioTasks]).then(async () => {
+            const previousManual = manualAudioTail;
+            const task = Promise.all([previousManual, settled, layoutAudioFlow?.settle(), ...urgentAudioTasks]).then(async () => {
                 if (disposed || ticket !== audioControlGeneration) return;
                 const guarded = [...guardedEntries].filter(([entry, generation]) => isCurrent(entry, generation));
                 let cursor = 0;
@@ -633,6 +645,8 @@
                 }));
                 if (!disposed && ticket === audioControlGeneration) return action();
             });
+            manualAudioTail = task.catch(() => {});
+            return task;
         }
 
         function audioFingerprint() {
@@ -660,11 +674,27 @@
         function queueAudioFocusReconcile() {
             const intent = audioFocusIntent;
             if (disposed || !intent) return;
+            if (intent.unified && (intent.holding || !intent.committed)) { intent.dirty = true; layoutAudioFlow?.notify(); return; }
             if (intent.running) { intent.dirty = true; return; }
             if (audioReconcileTimer !== null) return;
             audioReconcileTimer = win.setTimeout(() => {
                 audioReconcileTimer = null;
                 if (disposed || audioFocusIntent !== intent || intent.running) return;
+                if (intent.unified) {
+                    if (!validUnifiedTarget(intent)) { clearAudioIntent(); showAudioFocusStatus({ phase: 'removed' }); return; }
+                    const fingerprint = audioFingerprint();
+                    if (!intent.dirty && intent.lastFingerprint === fingerprint || intent.repairs >= 4) return;
+                    intent.dirty = false;
+                    const cohort = audioFocusSnapshot();
+                    const needsRepair = cohort.some(item => item.key !== intent.target &&
+                        (item.state?.muted !== true || item.state?.muteGuardActive !== true)) ||
+                        !intent.focused;
+                    if (!needsRepair) { intent.lastFingerprint = fingerprint; return; }
+                    intent.repairs++;
+                    intent.automatic = true;
+                    void restoreUnifiedFocus(intent, intent.ticket);
+                    return;
+                }
                 const snapshot = audioFocusSnapshot(), target = snapshot.find(item => item.key === intent.target);
                 if (!target) { audioFocusIntent = null; void audioFocusFlow.cancel(); showAudioFocusStatus({ phase: 'removed' }); return; }
                 const changedTarget = target.entry !== intent.entry || target.generation !== intent.generation;
@@ -675,10 +705,11 @@
                 startAudioFocusIntent(intent, intent.focused && !changedTarget, true);
             }, 100);
         }
-        function muteImmediately() {
-            // Idle entries are handled immediately by the normal bounded
-            // worker. Only busy ones need this separate safety lane.
-            const cohort = currentEntries().filter(entry => entry.busy && (entry.kind === 'native' || entry.kind === 'frame' && entry.target));
+        function muteImmediately(all = false) {
+            // A newly committed solo intent silences the readable cohort now;
+            // older issued commands still drain before the target may open.
+            // Legacy callers only need the lane for busy entries.
+            const cohort = currentEntries().filter(entry => (all || entry.busy) && (entry.kind === 'native' || entry.kind === 'frame' && entry.target));
             let cursor = 0;
             const task = Promise.all(Array.from({ length: Math.min(4, cohort.length) }, async () => {
                 while (cursor < cohort.length && !disposed) await execute(cohort[cursor++], { action: 'setMuted', value: true, guard: true });
@@ -794,8 +825,10 @@
             automaticRecoveryReason = reason;
             cancelPendingRecovery();
             const generation = recoveryStartGeneration;
-            showAudioFocusStatus({ phase: 'cancelled' });
-            void afterAudioFocus(() => {}, true);
+            if (!audioFocusIntent?.unified) {
+                showAudioFocusStatus({ phase: 'cancelled' });
+                void afterAudioFocus(() => {}, true);
+            }
             recoveryFlow?.cancel();
             clearPreparation();
             // A new task observes the completed selection/layout, including
@@ -936,12 +969,23 @@
                 return;
             }
         }
-        function invalidateLayoutAudio() {
+        function invalidateLayoutAudio(supersedeSound = true) {
             layoutUserEpoch++;
             publishAudioIntent();
             automaticRecoveryReason = null;
             layoutTicket = null;
+            layoutAudioPhase = '';
             layoutAudioFlow?.cancel();
+            layoutFocusCandidates.clear();
+            clearAudioIntent(supersedeSound);
+        }
+        function clearAudioIntent(supersedeSound = true) {
+            audioFocusIntent = null;
+            if (supersedeSound) ++audioControlGeneration;
+            if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
+            audioReconcileTimer = null;
+            void audioFocusFlow?.cancel();
+            showAudioFocusStatus({ phase: 'cancelled' });
         }
         function publishAudioIntent() {
             if (!disposed && doc.documentElement.hasAttribute('data-umininn-player-audio-focus-ready')) {
@@ -957,6 +1001,7 @@
                 const entry = entries.get(element);
                 return { key: element.getAttribute('data-channel-key') || '', identity: entry || element, element, entry,
                     version: entry ? layoutAudioVersion(entry) : 'pending',
+                    readable: Boolean(entry && (entry.kind === 'native' || entry.kind === 'frame' && entry.target)),
                     ready: Boolean(entry && !entry.busy && (can(entry, 'setMuted') || can(entry, 'setVolume'))),
                     state: entry?.result?.state };
             });
@@ -987,12 +1032,18 @@
             finishLayoutCompletion?.();
             layoutCompletion = new Promise(resolve => { finishLayoutCompletion = resolve; });
             layoutTicket = ticket;
+            layoutAudioPhase = 'preparing';
             const epoch = layoutUserEpoch;
             // Recovery and solo writes must settle before the fresh snapshot.
             cancelPendingRecovery();
             recoveryFlow?.cancel(); clearPreparation();
             try {
-                await afterAudioFocus(() => {}, true);
+                if (layoutAudioFlow.focusSupported) {
+                    if (audioFocusIntent?.unified) {
+                        audioFocusIntent.holding = true;
+                        audioFocusIntent.runId = (audioFocusIntent.runId || 0) + 1;
+                    } else await Promise.all([manualAudioTail, audioFocusFlow?.cancel(), ...urgentAudioTasks]);
+                } else await afterAudioFocus(() => {}, true);
                 if (!disposed && layoutTicket === ticket && epoch === layoutUserEpoch) {
                     scan();
                     await layoutAudioFlow.prepare(ticket);
@@ -1003,13 +1054,33 @@
             const request = layoutEvent(event);
             if (!request) return;
             const { pane, ticket } = request;
+            layoutAudioPhase = 'restoring';
             const complete = finishLayoutCompletion;
             // Let the page finish its mutation, including synchronous platform events.
             win.setTimeout(async () => {
                 try {
                     scan();
-                    if (layoutTicket === ticket) await layoutAudioFlow.restore(ticket);
+                    if (layoutTicket === ticket) {
+                        layoutAudioPhase = 'restoring';
+                        let intent = audioFocusIntent;
+                        const committed = pane.getAttribute('data-umininn-layout-audio-focus');
+                        const requests = (pane.getAttribute('data-umininn-layout-audio-focus-requests') || '').split(',');
+                        if (intent?.unified && !intent.committed && requests.includes(intent.requestId)) {
+                            const candidate = layoutFocusCandidates.get(committed);
+                            if (candidate && validUnifiedTarget(candidate)) audioFocusIntent = intent = candidate;
+                            for (const id of requests) layoutFocusCandidates.delete(id);
+                        }
+                        if (intent?.unified && validUnifiedTarget(intent) && (intent.committed || committed === intent.requestId)) {
+                            intent.committed = true;
+                            intent.repairs = 0;
+                            await restoreUnifiedFocus(intent, ticket);
+                        } else {
+                            if (intent?.unified) clearAudioIntent();
+                            await layoutAudioFlow.restore(ticket);
+                        }
+                    }
                 } finally {
+                    if (layoutTicket === ticket) layoutAudioPhase = '';
                     acknowledgeLayout(pane, ticket, 'umininn-player-layout-restored');
                     complete?.();
                     if (finishLayoutCompletion === complete) finishLayoutCompletion = null;
@@ -1020,7 +1091,9 @@
         }
         function onLayoutAbort(event) {
             if (event.target !== doc.getElementById('multi-stream-container')) return;
-            invalidateLayoutAudio(); layoutTicket = null;
+            // A layout timeout cancels its snapshot, not a user's sound write
+            // that may still be draining outside the geometry transaction.
+            invalidateLayoutAudio(false); layoutTicket = null;
             finishLayoutCompletion?.(); finishLayoutCompletion = null;
         }
         function onLayoutPageHide() {
@@ -1071,6 +1144,17 @@
             // A plain bubbling event works across Firefox userscript sandboxes;
             // only a current pane itself may request focus, never its inner DOM.
             if (disposed || !audioFocusFlow || !container || event.target?.parentElement !== container) return;
+            if (layoutAudioFlow?.focusSupported) {
+                invalidateLayoutAudio();
+                const intent = newUnifiedIntent(event.target, null, true);
+                const ticket = `sound-${++standaloneAudioSequence}`;
+                intent.ticket = ticket;
+                void layoutAudioFlow.prepare(ticket).then(() => {
+                    if (!disposed && audioFocusIntent === intent && validUnifiedTarget(intent))
+                        return restoreUnifiedFocus(intent, ticket);
+                });
+                return;
+            }
             invalidateLayoutAudio();
             cancelPendingRecovery();
             recoveryFlow?.cancel();
@@ -1085,6 +1169,65 @@
             // while the new request waits for the serialized confirmation.
             muteImmediately();
             startAudioFocusIntent(intent);
+        }
+        function validUnifiedTarget(intent) {
+            return intent.target?.isConnected && intent.target.parentElement === doc.getElementById('multi-stream-container') &&
+                entries.get(intent.target) === intent.entry && (!intent.entry || intent.entry.generation === intent.generation);
+        }
+        function newUnifiedIntent(target, requestId, committed) {
+            cancelPendingRecovery(); recoveryFlow?.cancel(); clearPreparation();
+            void audioFocusFlow?.cancel();
+            if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
+            audioReconcileTimer = null;
+            ++audioControlGeneration;
+            if (committed) publishAudioIntent();
+            globalMuted = true;
+            win.postMessage(envelope('site:audio-preference', { muted: true }), win.location.origin);
+            const entry = entries.get(target);
+            const intent = audioFocusIntent = { unified: true, target, entry, generation: entry?.generation,
+                requestId, committed, focused: false, running: false, holding: true, repairs: 0, runId: 0 };
+            refreshSummary();
+            if (!committed) layoutFocusCandidates.set(requestId, intent);
+            showAudioFocusStatus({ phase: 'preparing' });
+            if (committed) muteImmediately(true);
+            return intent;
+        }
+        function onLayoutFocusRequest(event) {
+            const pane = doc.getElementById('multi-stream-container'), target = event.target;
+            const requestId = target?.getAttribute?.('data-umininn-player-layout-focus-request');
+            if (disposed || !layoutAudioFlow?.focusSupported || target?.parentElement !== pane || !/^\d{1,16}$/.test(requestId || '')) return;
+            // A second enlarge click can replace a policy during capture. Keep
+            // that single snapshot, but cancel any already restoring old policy.
+            if (layoutAudioPhase !== 'preparing') {
+                layoutAudioFlow.cancel();
+                layoutTicket = null;
+            }
+            newUnifiedIntent(target, requestId, false);
+        }
+        async function restoreUnifiedFocus(intent, ticket) {
+            if (disposed || audioFocusIntent !== intent || !validUnifiedTarget(intent)) return;
+            intent.ticket = ticket;
+            intent.holding = true;
+            intent.running = true;
+            const runId = ++intent.runId;
+            showAudioFocusStatus({ phase: 'preparing' });
+            const result = await layoutAudioFlow.restore(ticket, { focus: {
+                key: intent.target.getAttribute('data-channel-key') || '', identity: intent.entry || intent.target, element: intent.target
+            } });
+            if (disposed || audioFocusIntent !== intent || runId !== intent.runId) return;
+            intent.running = false;
+            intent.holding = result.code === 'PENDING';
+            intent.focused = result.code === 'COMPLETE';
+            intent.lastFingerprint = audioFingerprint();
+            showUnifiedStatus(intent, result);
+            if (!intent.holding) queueAudioFocusReconcile();
+        }
+        function showUnifiedStatus(intent, result) {
+            if (audioFocusIntent !== intent) return;
+            if (result.code === 'COMPLETE') showAudioFocusStatus({ phase: 'focused', volume: 1, muted: false,
+                name: intent.entry?.name.textContent || '目標格' });
+            else if (!['PENDING', 'PREPARED', 'RUNNING'].includes(result.code)) showAudioFocusStatus({ phase: 'partial',
+                failures: [{ name: intent.entry?.name.textContent || '目標格', code: result.code === 'CANCELLED' ? 'stale' : 'unconfirmed' }] });
         }
         function originalMuteClick(event) {
             if (!event.target?.closest?.('#toggle-all-audio')) return;
@@ -1319,12 +1462,20 @@
                 if (options.layoutAudio?.createLayoutAudioFlow) {
                     layoutAudioFlow = options.layoutAudio.createLayoutAudioFlow({
                         clock: win, getEntries: layoutAudioEntries, isCurrent: layoutAudioCurrent,
-                        read: item => execute(item.entry, { action: 'getState' }),
+                        read: item => execute(item.entry, { action: 'getState' }, { priority: true }),
                         write: (item, command) => execute(item.entry, command),
+                        beforeOpen: () => Promise.all([manualAudioTail, audioFocusFlow?.cancel(), ...urgentAudioTasks]),
                         onStatus: value => {
                             if (!disposed) container.setAttribute('data-umininn-layout-audio-status',
                                 value.phase === 'preparing' ? 'capturing' : value.phase === 'restoring' ? 'restoring' :
                                     value.code === 'COMPLETE' ? 'complete' : 'partial');
+                            const intent = audioFocusIntent;
+                            if (intent?.unified && intent.ticket === value.ticket && ['waiting', 'complete', 'timeout'].includes(value.phase)) {
+                                intent.holding = value.code === 'PENDING';
+                                intent.focused = value.code === 'COMPLETE';
+                                intent.lastFingerprint = audioFingerprint();
+                                showUnifiedStatus(intent, value);
+                            }
                         }
                     });
                     doc.addEventListener('umininn-player-layout-before', onLayoutBefore, true);
@@ -1332,6 +1483,10 @@
                     doc.addEventListener('umininn-player-layout-abort', onLayoutAbort, true);
                     win.addEventListener('pagehide', onLayoutPageHide);
                     doc.documentElement.setAttribute('data-umininn-player-layout-audio-ready', '');
+                    if (layoutAudioFlow.focusSupported) {
+                        doc.addEventListener('umininn-player-layout-focus-request', onLayoutFocusRequest, true);
+                        doc.documentElement.setAttribute('data-umininn-player-unified-audio-ready', '');
+                    }
                 }
             }
             doc.addEventListener('pointerover', windowControlsPointer, true);
@@ -1356,6 +1511,8 @@
             doc.documentElement.removeAttribute('data-umininn-player-audio-focus-ready');
             doc.documentElement.removeAttribute('data-umininn-player-audio-intent');
             doc.documentElement.removeAttribute('data-umininn-player-layout-audio-ready');
+            doc.documentElement.removeAttribute('data-umininn-player-unified-audio-ready');
+            doc.removeEventListener('umininn-player-layout-focus-request', onLayoutFocusRequest, true);
             onLayoutPageHide();
             doc.removeEventListener('umininn-player-layout-before', onLayoutBefore, true);
             doc.removeEventListener('umininn-player-layout-after', onLayoutAfter, true);
