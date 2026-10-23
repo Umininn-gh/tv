@@ -1,4 +1,4 @@
-/* Saved player arrangements contain channel identities and geometry, never media. */
+/* Saved arrangements contain identities, geometry and optional userscript audio settings, never media. */
 (function (root) {
     'use strict';
 
@@ -37,7 +37,31 @@
         }
         const aspectRatio = typeof value.aspectRatio === 'number' && Number.isFinite(value.aspectRatio) &&
             value.aspectRatio > 0 ? Math.max(.35, Math.min(4, value.aspectRatio)) : 16 / 9;
-        return { channels, columns: value.columns, focus, aspectRatio };
+        const normalized = { channels, columns: value.columns, focus, aspectRatio };
+        if (Object.prototype.hasOwnProperty.call(value, 'audio')) {
+            const audio = value.audio;
+            if (!audio || audio.version !== 1 || !Array.isArray(audio.audible) || audio.audible.length > channels.length) {
+                throw new Error('佈局的聲音資料版本不相容或不完整。');
+            }
+            const audible = new Map();
+            for (const item of audio.audible) {
+                if (!item || !seen.has(item.key) || audible.has(item.key) ||
+                    typeof item.volume !== 'number' || !Number.isFinite(item.volume) || item.volume <= 0 || item.volume > 1) {
+                    throw new Error('佈局包含重複或無效的聲音設定。');
+                }
+                audible.set(item.key, { key: item.key, volume: item.volume });
+            }
+            // A stable channel order makes equivalent audio settings compare equally during shared imports.
+            normalized.audio = { version: 1, audible: channels.filter(channel => audible.has(channel.key)).map(channel => audible.get(channel.key)) };
+        }
+        return normalized;
+    }
+
+    function preserveAudioOnUpdate(snapshot, previousSnapshot) {
+        if (!snapshot || typeof snapshot !== 'object' || !Array.isArray(snapshot.channels) ||
+            Object.prototype.hasOwnProperty.call(snapshot, 'audio') || !previousSnapshot?.audio) return snapshot;
+        const keys = new Set(snapshot.channels.map(channel => channel?.key));
+        return { ...snapshot, audio: { version: 1, audible: previousSnapshot.audio.audible.filter(item => keys.has(item.key)) } };
     }
 
     function bookmarkName(name) {
@@ -119,7 +143,7 @@
                     const colors = new Map(entry.snapshot.channels.map(channel => [channel.key, channel.color]));
                     const next = snapshot && Array.isArray(snapshot.channels) ? { ...snapshot, channels: snapshot.channels.map(channel =>
                         channel && !integer(channel.color, 0, 359) && colors.has(channel.key) ? { ...channel, color: colors.get(channel.key) } : channel) } : snapshot;
-                    return { ...entry, snapshot: normalizeSnapshot(next), updatedAt: Date.now() };
+                    return { ...entry, snapshot: normalizeSnapshot(preserveAudioOnUpdate(next, entry.snapshot)), updatedAt: Date.now() };
                 });
             },
             move(id, direction) {
@@ -199,8 +223,8 @@
         closeButton.setAttribute('aria-label', '關閉書籤選單'); header.append(title, closeButton);
         const saveButton = action('＋ 儲存目前佈局', 'layout-bookmarks-save');
         const help = el('p', 'layout-bookmarks-help', sharedMode ?
-            '全站共用，所有使用者都可儲存、修改及排序。點縮圖即可套用台佈局。' :
-            '儲存正在觀看的台、排列及放大格。點縮圖即可套用；書籤只儲存在此瀏覽器。');
+            '全站共用，所有使用者都可儲存、修改及排序。點縮圖即可套用台佈局；有 userscript 時亦會儲存及回復有聲台的音量。' :
+            '儲存正在觀看的台、排列及放大格；有 userscript 時亦會儲存及回復有聲台的音量。書籤只儲存在此瀏覽器。');
         const syncStatus = el('p', 'layout-bookmarks-sync');
         syncStatus.setAttribute('role', 'status'); syncStatus.setAttribute('aria-live', 'polite'); syncStatus.hidden = !sharedMode;
         const importButton = action('', 'layout-bookmarks-import'); importButton.hidden = true;
@@ -225,7 +249,7 @@
             if (!localStore) return [];
             const shared = store.list();
             const identity = entry => JSON.stringify({ keys: entry.snapshot.channels.map(channel => channel.key),
-                columns: entry.snapshot.columns, focus: entry.snapshot.focus });
+                columns: entry.snapshot.columns, focus: entry.snapshot.focus, audio: entry.snapshot.audio });
             return localStore.list().filter(entry => !shared.some(item => item.id === entry.id ||
                 item.name === entry.name && identity(item) === identity(entry)));
         }
@@ -284,6 +308,17 @@
                 if (!destroyed) { busy = false; render(); failure(error); if (opened && renameDraft) renameDraft.input.focus(); }
             } finally { busy = false; if (!destroyed) updateControls(); }
         }
+        async function capturedSnapshot() {
+            // Call capture before yielding: it freezes the click-time arrangement while userscript audio reads may await replies.
+            const pending = capture();
+            const captured = pending && typeof pending.then === 'function' ? await pending : pending;
+            if (destroyed) throw new Error('書籤選單已關閉，未有儲存。');
+            return copy(captured);
+        }
+        function audioSummary(snapshot) {
+            if (!snapshot.audio) return '';
+            return snapshot.audio.audible.length ? ' · 有聲 ' + snapshot.audio.audible.length + ' 台（需 userscript）' : ' · 全部靜音（需 userscript）';
+        }
         function renderPreview(entry) {
             const preview = action('', 'layout-bookmark-preview', '套用「' + entry.name + '」');
             preview.setAttribute('aria-label', '套用「' + entry.name + '」，' + entry.snapshot.channels.length + ' 台');
@@ -300,7 +335,9 @@
             const positions = new Map(layout.items.map(item => [item.key, item]));
             for (const channel of snapshot.channels) {
                 const item = positions.get(channel.key), cell = el('span', 'layout-bookmark-cell', channel.name);
-                cell.title = channel.name;
+                const audio = snapshot.audio?.audible.find(item => item.key === channel.key);
+                cell.title = channel.name + (audio ? ' · 音量 ' + Math.round(audio.volume * 100) + '%（需 userscript）' : '');
+                if (audio) cell.append(el('span', 'layout-bookmark-audio', ' 🔊'));
                 cell.style.gridArea = (item.row + 1) + ' / ' + (item.column + 1) + ' / span ' + item.span + ' / span ' + item.span;
                 cell.style.setProperty('--bookmark-hue', channel.color); preview.append(cell);
             }
@@ -357,7 +394,7 @@
                 up.dataset.atBoundary = String(index === 0); down.dataset.atBoundary = String(index === entries.length - 1);
                 const rename = action('改名', 'layout-bookmark-rename', '重新命名「' + entry.name + '」'); nameRow.append(name, up, down, rename);
                 const preview = renderPreview(entry);
-                const meta = el('p', 'layout-bookmark-meta', entry.snapshot.channels.length + ' 台 · 點縮圖套用' + (entry.snapshot.focus ? ' · 有放大格' : ''));
+                const meta = el('p', 'layout-bookmark-meta', entry.snapshot.channels.length + ' 台 · 點縮圖套用' + (entry.snapshot.focus ? ' · 有放大格' : '') + audioSummary(entry.snapshot));
                 const actions = el('div', 'layout-bookmark-actions'), applyButton = action('套用', 'layout-bookmark-apply', '套用「' + entry.name + '」');
                 const updateButton = action('更新為目前佈局', 'layout-bookmark-update');
                 const deleteButton = action('刪除', 'layout-bookmark-delete', '刪除「' + entry.name + '」，刪除後可復原');
@@ -386,8 +423,9 @@
                 updateButton.addEventListener('click', () => {
                     if (!canAct()) return;
                     const id = entry.id, name = entry.name, expected = copy(entry);
-                    let snapshot; try { snapshot = copy(capture()); } catch (error) { failure(error); return; }
-                    mutation(() => store.update(id, snapshot, { expected }), () => { status('「' + name + '」已更新為目前佈局。'); focusAction(id, 'layout-bookmark-update'); });
+                    mutation(async () => store.update(id, await capturedSnapshot(), { expected }), updated => {
+                        status('「' + name + '」已更新為目前佈局' + audioSummary(updated.snapshot) + '。'); focusAction(id, 'layout-bookmark-update');
+                    });
                 });
                 deleteButton.addEventListener('click', () => {
                     if (!canAct()) return;
@@ -436,9 +474,9 @@
             if (!canAct()) return;
             const current = store.list(); let number = current.length + 1;
             while (current.some(entry => entry.name === '佈局 ' + number)) number++;
-            const name = '佈局 ' + number; let snapshot;
-            try { snapshot = copy(capture()); } catch (error) { failure(error); return; }
-            mutation(() => store.add(name, snapshot), entry => status('已儲存「' + entry.name + '」，可按「改名」方便日後尋找。'));
+            const name = '佈局 ' + number;
+            mutation(async () => store.add(name, await capturedSnapshot()), entry =>
+                status('已儲存「' + entry.name + '」' + audioSummary(entry.snapshot) + '，可按「改名」方便日後尋找。'));
         });
         on(undoButton, 'click', () => {
             if (!canAct()) return;
@@ -490,7 +528,7 @@
             destroy() { close(false); destroyed = true; unsubscribe?.(); unsubscribe = null; cleanups.splice(0).forEach(cleanup => cleanup()); } };
     }
 
-    const api = { normalizeSnapshot, createStore, mount };
+    const api = { normalizeSnapshot, preserveAudioOnUpdate, createStore, mount };
     if (typeof module === 'object' && module.exports) module.exports = api;
     else root.LayoutBookmarks = api;
 })(typeof globalThis === 'object' ? globalThis : this);

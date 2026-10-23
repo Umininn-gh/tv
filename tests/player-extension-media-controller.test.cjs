@@ -199,6 +199,50 @@ test('ordinary mute commands revoke focus guard without changing existing primar
     controller.dispose();
 });
 
+test('bookmark focus restores its saved volume to primary and previously audible hidden routes while leaving muted preload silent', async () => {
+    const f = fixture(), outside = f.add(), scope = f.doc.documentElement.append(new f.Node());
+    const main = f.add('video', scope), soundtrack = f.add('audio', scope), preload = f.add('video', scope);
+    soundtrack.hidden = true; soundtrack.volume = .64;
+    preload.hidden = true; preload.muted = true; preload.volume = .13;
+    const controller = f.mount(scope);
+    assert.equal((await controller.execute({ action: 'setMuted', value: true, guard: true })).ok, true);
+    assert.deepEqual([main.muted, soundtrack.muted, preload.muted], [true, true, true]);
+    const volume = await controller.execute({ action: 'setVolume', value: .37, focus: true });
+    assert.equal(volume.ok, true); assert.equal(volume.state.volume, .37);
+    assert.equal(volume.state.muteGuardActive, true, 'volume is restored before any previously audible route may unmute');
+    assert.deepEqual([main.volume, soundtrack.volume, preload.volume], [.37, .37, .13]);
+    assert.deepEqual([main.muted, soundtrack.muted, preload.muted], [true, true, true]);
+    assert.equal(volume.state.focusRestorePending, true);
+    const restored = await controller.execute({ action: 'setMuted', value: false, focus: true });
+    assert.equal(restored.ok, true); assert.equal(restored.state.muteGuardActive, false); assert.equal(restored.state.focusRestorePending, false);
+    assert.deepEqual([main.muted, soundtrack.muted, preload.muted], [false, false, true]);
+    assert.deepEqual([main.volume, soundtrack.volume, preload.volume], [.37, .37, .13]);
+    assert.deepEqual([outside.muted, outside.volume], [false, .8], 'other player scopes are unaffected');
+    for (const node of [main, soundtrack, preload, outside]) {
+        assert.equal(node.playCalls, 0); assert.equal(node.pauseCalls, 0); assert.equal(node.loadCalls, 0);
+    }
+    assert.equal(f.clock.timers.size, 0); controller.dispose();
+});
+
+test('invalid focus commands cannot change a guarded player or its remembered hidden audio', async () => {
+    const f = fixture(), main = f.add(), soundtrack = f.add('audio'); soundtrack.hidden = true;
+    const controller = f.mount(); await controller.execute({ action: 'setMuted', value: true, guard: true });
+    const invalid = [
+        ...[NaN, Infinity, -.01, 1.01, '.37', null].map(value => ({ action: 'setVolume', value, focus: true })),
+        { action: 'setVolume', value: .37, focus: false }, { action: 'setVolume', value: .37, focus: true, guard: true },
+        { action: 'setMuted', value: true, focus: true, guard: true }, { action: 'setMuted', value: false, focus: true, guard: false },
+        { action: 'setMuted', value: true, focus: true }, { action: 'recover', focus: true }, { action: 'getState', focus: true }
+    ];
+    for (const command of invalid) {
+        assert.equal((await controller.execute(command)).code, 'INVALID_VALUE');
+        assert.deepEqual([main.muted, soundtrack.muted, main.volume, soundtrack.volume], [true, true, .8, .8]);
+        assert.equal(controller.getState().state.muteGuardActive, true);
+        assert.equal(controller.getState().state.focusRestorePending, true);
+    }
+    assert.equal(main.playCalls, 0); assert.equal(soundtrack.playCalls, 0);
+    assert.equal(f.clock.timers.size, 0); controller.dispose();
+});
+
 test('trusted native controls revoke focus guard and carry-over while synthetic activity does not', async () => {
     for (const type of ['pointerdown', 'keydown']) {
         const f = fixture(), video = f.add(), controller = f.mount(), received = [];

@@ -183,6 +183,38 @@ test('focus mute guard is narrowly typed and reaches the approved frame unchange
     frame.client.dispose();
 });
 
+test('bookmark focus volumes pass unchanged through site and frame bridges while malformed opt-ins never reach media', async () => {
+    const f = siteFixture(); f.ready();
+    const message = command => envelope('site:command', { target: { frameId: 7, token: TOKEN, documentId: DOCUMENT }, command });
+    const frame = frameFixture(); frame.probe();
+    const allowed = [0, .37, 1].map(value => ({ action: 'setVolume', value, focus: true }));
+    allowed.push({ action: 'setMuted', value: false, focus: true });
+    for (const [index, command] of allowed.entries()) {
+        const pending = f.transport.sendMessage(message(command));
+        assert.deepEqual(f.frameWindow.sent.at(-1).message.command, command);
+        f.result(); assert.equal((await pending).ok, true);
+        frame.command(index + 1, command); await flush();
+        assert.deepEqual(frame.calls.at(-1), command);
+    }
+    const sent = f.frameWindow.sent.length, called = frame.calls.length;
+    const invalid = [
+        ...[NaN, Infinity, -.01, 1.01, '.37', null].map(value => ({ action: 'setVolume', value, focus: true })),
+        { action: 'setVolume', value: .37, focus: false }, { action: 'setVolume', value: .37, focus: true, guard: true },
+        { action: 'setMuted', value: false, focus: true, guard: false }, { action: 'setMuted', value: true, focus: true },
+        { action: 'recover', focus: true }, { action: 'getState', focus: true }
+    ];
+    for (const [index, command] of invalid.entries()) {
+        assert.equal((await f.transport.sendMessage(message(command))).code, 'INVALID_COMMAND');
+        frame.command(index + allowed.length + 1, command);
+        assert.equal(frame.parent.sent.at(-1).message.result.code, 'INVALID_COMMAND');
+    }
+    await flush();
+    assert.equal(f.frameWindow.sent.length, sent, 'invalid commands cannot send any cross-origin message');
+    assert.equal(frame.calls.length, called, 'the receiving frame independently rejects invalid focus commands');
+    assert.equal(f.win.timers.size, 0);
+    f.transport.dispose(); frame.client.dispose();
+});
+
 test('site accepts only an approved connected iframe in the UI player cohort', async () => {
     const f = siteFixture();
     for (const ready of [() => f.ready({}, 'https://evil.example'), () => f.ready({}, PLAYER_ORIGIN, {}), () => f.ready({ token: 'short' }), () => f.ready({ documentId: null }), () => f.ready({ frameId: 0 }), () => f.ready({ frameId: 1.1 }), () => f.ready({ channel: originalConfig.CHANNEL })]) {

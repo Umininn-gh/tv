@@ -31,11 +31,11 @@ test.before(async () => {
     browser = await playwright[engine].launch({ headless: true, ...launch });
     const html = read('index.html'), source = read('tv-app.js');
     css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match => match[1]).join('\n') + '\n' + read('layout-bookmarks.css');
-    modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'layout-bookmarks', 'shared-bookmarks']
+    modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'menu-dismiss', 'layout-bookmarks', 'shared-bookmarks']
         .map(name => ['/tv/' + name + '.js', read('' + name + '.js')]));
     appScript = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'updatePlayerLayout',
         'playerGridArea', 'getCurrentPlayerGeometry', 'savePlayerEnlargement', 'getPlayerPositionKeys', 'syncActivePlayers',
-        'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible']
+        'playerLayoutAudioAvailable', 'playerBookmarkAudioAvailable', 'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible']
         .map(name => productionFunction(source, name)).join('\n');
     console.log(`Shared bookmark model: ${channel}/${engine} ${browser.version()}; independent contexts, production UI/store/capture/apply, local media, fully intercepted network.`);
 });
@@ -61,6 +61,7 @@ function htmlFixture({ width = 1100, height = 600 } = {}) {
     const playerWindowControls={refresh(){}},playerNameOverlay={refresh(){},setVisible(){}},playerPositionEditor={refresh(){},layoutChanged(){},close(){}},channelSelectionIdleTimer={setVisible(){}};
     window.fixture={renders:0,nextId:0,remembered:new Map()};
     function getPlatform(type){return {type:type==='m3u8'?'hls':'iframe'}}
+    function withPlayerAudioLayout(action){return action()}
     function showGlobalAudioFeedback(){} function updateChannelSelectionSummary(){}
     function renderChannelElement(channel,muted,wrapperClass){fixture.renders++;const element=document.createElement(channel.platform==='m3u8'?'video':'iframe');element.id='qa-player-'+fixture.nextId++;element.className=wrapperClass;
       if(element.tagName==='VIDEO'){element.muted=muted;element.loop=true;element.playsInline=true;instrument(element);element.src='/silent.wav?key='+encodeURIComponent(ChannelList.channelKey(channel));playerResources.set(element,{element,video:element,disposed:false,failed:false,hls:null,flv:null});}

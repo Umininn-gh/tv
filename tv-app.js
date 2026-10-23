@@ -1131,18 +1131,53 @@ function setChannelSelectionVisible(visible) {
 // Layout mutations share one preparation/commit/restore transaction. The
 // userscript reads foreign players before this page changes their layout;
 // callbacks stay synchronous inside the transaction, including nested calls.
-let playerAudioLayoutDepth = 0, playerAudioLayoutSequence = 0, playerAudioFocusSequence = 0;
+let playerAudioLayoutDepth = 0, playerAudioLayoutSequence = 0, playerAudioFocusSequence = 0, playerBookmarkAudioSequence = 0;
 let playerAudioLayoutBatch = null;
 const playerAudioLayoutQueue = [];
 function playerLayoutAudioAvailable() {
     return document.documentElement.hasAttribute('data-umininn-player-userscript') &&
         document.documentElement.hasAttribute('data-umininn-player-layout-audio-ready');
 }
+function playerBookmarkAudioAvailable() {
+    return playerLayoutAudioAvailable() && document.documentElement.hasAttribute('data-umininn-player-bookmark-audio-ready');
+}
+function readPlayerBookmarkAudio(keys) {
+    const request = document.createElement('span');
+    request.hidden = true;
+    request.setAttribute('data-umininn-bookmark-audio-request', String(++playerBookmarkAudioSequence));
+    request.setAttribute('data-umininn-bookmark-audio-keys', JSON.stringify(keys));
+    return new Promise((resolve, reject) => {
+        let timer;
+        const cleanup = () => {
+            clearTimeout(timer);
+            request.removeEventListener('umininn-player-bookmark-audio-result', done);
+            window.removeEventListener('pagehide', cancelled);
+            request.remove();
+        };
+        const cancelled = () => { cleanup(); reject(new Error('頁面已離開，書籤未有儲存。')); };
+        const done = event => {
+            if (event.target !== request) return;
+            const error = request.getAttribute('data-umininn-bookmark-audio-error');
+            let audio;
+            try { audio = JSON.parse(request.getAttribute('data-umininn-bookmark-audio-result') || 'null'); }
+            catch (_) {}
+            cleanup();
+            if (error || !audio) reject(new Error(error || '未能確認各台聲音，書籤未有儲存。'));
+            else resolve(audio);
+        };
+        request.addEventListener('umininn-player-bookmark-audio-result', done);
+        window.addEventListener('pagehide', cancelled);
+        timer = setTimeout(() => { cleanup(); reject(new Error('讀取聲音逾時，書籤未有儲存；請稍後重試。')); }, 5500);
+        document.body.appendChild(request);
+        request.dispatchEvent(new Event('umininn-player-bookmark-audio-capture', { bubbles: true }));
+    });
+}
 function withPlayerAudioLayout(action, options = {}) {
     if (playerAudioLayoutDepth) return action();
     if (!playerLayoutAudioAvailable()) return action();
     return new Promise((resolve, reject) => {
-        playerAudioLayoutQueue.push({ action, resolve, reject, focus: options.focus });
+        playerAudioLayoutQueue.push({ action, resolve, reject, focus: options.focus,
+            bookmarkAudio: options.bookmarkAudio, audioIntent: options.audioIntent });
         startPlayerAudioLayout();
     });
 }
@@ -1154,6 +1189,7 @@ function startPlayerAudioLayout() {
     pane.setAttribute('data-umininn-layout-audio-ticket', batch.ticket);
     pane.removeAttribute('data-umininn-layout-audio-focus');
     pane.removeAttribute('data-umininn-layout-audio-focus-requests');
+    pane.removeAttribute('data-umininn-layout-bookmark-audio');
     batch.timer = setTimeout(() => commitPlayerAudioLayout(batch, false), 6500);
     pane.dispatchEvent(new Event('umininn-player-layout-before', { bubbles: true }));
 }
@@ -1176,11 +1212,17 @@ function commitPlayerAudioLayout(batch, restore) {
     batch.pane.setAttribute('data-umininn-layout-audio-focus-requests',
         batch.results.map(result => result.request.focus?.id).filter(Boolean).join(','));
     for (const { request, value, error } of batch.results) {
+        if (!error && value?.applied && request.bookmarkAudio &&
+            document.documentElement.getAttribute('data-umininn-player-audio-intent') === request.audioIntent) {
+            batch.pane.setAttribute('data-umininn-layout-bookmark-audio', JSON.stringify(request.bookmarkAudio));
+            batch.pane.removeAttribute('data-umininn-layout-audio-focus');
+        }
         const focus = request.focus;
         if (!error && value === true && focus && focus.target?.isConnected &&
             activePlayers.get(focus.key) === focus.entry && getPlayerElement(focus.entry) === focus.target && enlargedPlayerFocus?.key === focus.key &&
             document.documentElement.getAttribute('data-umininn-player-audio-intent') === focus.intent) {
             batch.pane.setAttribute('data-umininn-layout-audio-focus', focus.id);
+            batch.pane.removeAttribute('data-umininn-layout-bookmark-audio');
         }
     }
     batch.timer = setTimeout(() => {
@@ -1197,6 +1239,7 @@ function finishPlayerAudioLayout(batch) {
         batch.pane.removeAttribute('data-umininn-layout-audio-ack');
         batch.pane.removeAttribute('data-umininn-layout-audio-focus');
         batch.pane.removeAttribute('data-umininn-layout-audio-focus-requests');
+        batch.pane.removeAttribute('data-umininn-layout-bookmark-audio');
     }
     playerAudioLayoutBatch = null;
     for (const { request, value, error } of batch.results) {
@@ -1619,12 +1662,16 @@ function capturePlayerBookmark() {
     const pane = document.getElementById('multi-stream-container');
     const geometry = getCurrentPlayerGeometry();
     const focus = geometry.items.find(item => item.span > 1);
-    return {
+    const snapshot = {
         channels: keys.map(key => ({ key, name: activePlayers.get(key).channel.name })),
         columns: geometry.columns,
         focus: focus ? { key: focus.key, row: focus.row, column: focus.column, span: focus.span } : null,
         aspectRatio: pane?.clientWidth > 0 && pane?.clientHeight > 0 ? pane.clientWidth / pane.clientHeight : 16 / 9
     };
+    if (!playerBookmarkAudioAvailable()) return snapshot;
+    // Geometry is frozen at the click, before cross-origin state reads await.
+    return readPlayerBookmarkAudio(keys).then(audio => ({ ...snapshot,
+        audio: LayoutBookmarks.normalizeSnapshot({ ...snapshot, audio }).audio }));
 }
 
 function showLayoutBookmarkFeedback(message) {
@@ -1669,7 +1716,23 @@ function applyPlayerBookmark(value) {
     return { applied: selected.length, missing };
 }
 
-applyPlayerBookmark = guardPlayerAudioLayout(applyPlayerBookmark);
+{
+    const applyLayout = applyPlayerBookmark;
+    applyPlayerBookmark = value => {
+        const snapshot = LayoutBookmarks.normalizeSnapshot(value);
+        let bookmarkAudio, audioIntent;
+        if (snapshot.audio && playerBookmarkAudioAvailable()) {
+            const available = new Set(channels.map(channel => ChannelList.channelKey(channel)));
+            if (!snapshot.channels.some(channel => available.has(channel.key)))
+                throw new Error('這個書籤的台已從頻道列表移除；目前播放保持不變。');
+            bookmarkAudio = snapshot.audio;
+            document.getElementById('multi-stream-container')?.dispatchEvent(
+                new Event('umininn-player-bookmark-audio-intent', { bubbles: true }));
+            audioIntent = document.documentElement.getAttribute('data-umininn-player-audio-intent');
+        }
+        return withPlayerAudioLayout(() => applyLayout(snapshot), { bookmarkAudio, audioIntent });
+    };
+}
 
 (function initLayoutBookmarks() {
     const button = document.getElementById('layout-bookmarks-btn');

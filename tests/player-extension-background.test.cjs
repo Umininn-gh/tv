@@ -82,6 +82,28 @@ for (const promiseApi of [false, true]) {
         assert.equal(f.calls.send.length, 1);
         f.broker.dispose();
     });
+    test(`${engine}: bookmark focus forwards saved finite volumes and rejects malformed focus before tab APIs`, async () => {
+        const f = fixture({ promiseApi });
+        const message = command => envelope('site:command', { target: { frameId: 6, token: TOKEN, documentId: 'frame-document' }, command });
+        for (const value of [0, .37, 1]) {
+            const focused = { action: 'setVolume', value, focus: true };
+            assert.equal((await f.broker.handle(message(focused), siteSender())).ok, true);
+            assert.deepEqual(f.calls.send.at(-1).message.command, focused);
+        }
+        const focused = { action: 'setMuted', value: false, focus: true };
+        assert.equal((await f.broker.handle(message(focused), siteSender())).ok, true);
+        assert.deepEqual(f.calls.send.at(-1).message.command, focused);
+        const lookups = f.calls.get.length, sends = f.calls.send.length;
+        const invalid = [
+            ...[NaN, Infinity, -.01, 1.01, '.37', null].map(value => ({ action: 'setVolume', value, focus: true })),
+            { action: 'setVolume', value: .37, focus: false }, { action: 'setVolume', value: .37, focus: true, guard: true },
+            { action: 'setMuted', value: false, focus: true, guard: false }, { action: 'setMuted', value: true, focus: true },
+            { action: 'recover', focus: true }, { action: 'getState', focus: true }
+        ];
+        for (const value of invalid) assert.equal((await f.broker.handle(message(value), siteSender())).code, 'INVALID_COMMAND');
+        assert.equal(f.calls.get.length, lookups); assert.equal(f.calls.send.length, sends);
+        assert.equal(f.timers.size, 0); f.broker.dispose();
+    });
     test(`${engine}: API failures are bounded, readable errors and do not disclose raw private URLs`, async () => {
         const f = fixture({ promiseApi });
         f.behavior.get = () => Promise.reject(new Error('Denied https://private.example/token'));

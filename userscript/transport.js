@@ -10,7 +10,7 @@
         if (!object(value) || Object.keys(value).some(key => !['action', 'value', 'guard', 'focus'].includes(key))) return false;
         if ('guard' in value && (value.action !== 'setMuted' || value.value !== true || value.guard !== true)) return false;
         if ('focus' in value && (value.focus !== true || 'guard' in value ||
-            !(value.action === 'setVolume' && value.value === 1 || value.action === 'setMuted' && value.value === false))) return false;
+            !(value.action === 'setVolume' || value.action === 'setMuted' && value.value === false))) return false;
         if (value.action === 'setVolume') return typeof value.value === 'number' && Number.isFinite(value.value) && value.value >= 0 && value.value <= 1;
         if (value.action === 'setMuted') return typeof value.value === 'boolean';
         return ['getState', 'recover'].includes(value.action) && value.value === undefined;

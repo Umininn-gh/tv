@@ -22,7 +22,7 @@
             if (!object(command)) return false;
             if ('guard' in command && (command.action !== 'setMuted' || command.value !== true || command.guard !== true)) return false;
             if ('focus' in command && (command.focus !== true || 'guard' in command ||
-                !(command.action === 'setVolume' && command.value === 1 || command.action === 'setMuted' && command.value === false))) return false;
+                !(command.action === 'setVolume' || command.action === 'setMuted' && command.value === false))) return false;
             if (command.action === 'setVolume') return typeof command.value === 'number' && Number.isFinite(command.value) && command.value >= 0 && command.value <= 1;
             if (command.action === 'setMuted') return typeof command.value === 'boolean';
             return ['getState', 'recover'].includes(command.action) && command.value === undefined;

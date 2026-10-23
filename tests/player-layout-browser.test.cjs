@@ -31,7 +31,7 @@ test.before(async () => {
         ...(engine==='firefox'?{firefoxUserPrefs:{'media.autoplay.default':0}}:{args:['--autoplay-policy=no-user-gesture-required']})}); }
     catch (error) { if(executablePath)throw error; unavailable='Optional browser executable unavailable.'; return; }
     const read = file => fs.readFileSync(path.join(root, siteFile(file)), 'utf8');
-    const source=read('tv-app.js');
+    const source=read('site/assets/js/tv-app.js');
     const coreEnd=source.indexOf('/* =============== 頻道儲存 / 載入');
     const statusClassStart=source.indexOf('function applyStatusClass(');
     const statusClassEnd=source.indexOf('\nfunction updateButtonStatus(',statusClassStart);
@@ -41,9 +41,9 @@ test.before(async () => {
     const editorEnd=source.indexOf('\nfunction toggleChannelMenu()',editorStart);
     assert.ok(coreEnd>0&&statusClassStart>coreEnd&&statusClassEnd>statusClassStart&&summaryStart>statusClassEnd&&selectionStart>summaryStart&&editorStart>selectionStart&&editorEnd>editorStart,'reviewed production core/status/selection/editor seams must exist');
     appScript=source.slice(0,coreEnd)+'\n'+source.slice(statusClassStart,statusClassEnd)+'\n'+source.slice(summaryStart,editorEnd)+'\n'+fixtureApp;
-    layoutScript=read('player-layout.js');geometryScript=read('player-geometry.js');channelScript=read('channel-list.js');performanceScript=read('stream-performance.js');bookmarkScript=read('layout-bookmarks.js');menuDismissScript=read('menu-dismiss.js');
-    qualityScript=read('stream-quality.js');
-    css=[...read('index.html').matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match=>match[1]).join('\n');
+    layoutScript=read('site/assets/js/player-layout.js');geometryScript=read('site/assets/js/player-geometry.js');channelScript=read('site/assets/js/channel-list.js');performanceScript=read('site/assets/js/stream-performance.js');bookmarkScript=read('site/assets/js/layout-bookmarks.js');menuDismissScript=read('site/assets/js/menu-dismiss.js');
+    qualityScript=read('site/assets/js/stream-quality.js');
+    css=[...read('site/index.html').matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match=>match[1]).join('\n');
     console.log(`Player layout model: ${engine} ${browser.version()} (headless; production CSS/app sections; all network intercepted; no live platform).`);
 });
 test.after(async()=>{await browser?.close()});
@@ -206,7 +206,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
         blocked.push(request.url());return route.abort();
     });
     if(audioUserscript){
-        const built=fs.readFileSync(path.join(root,siteFile('userscript/umininn-tv-player.user.js')),'utf8');
+        const built=fs.readFileSync(path.join(root,siteFile('site/userscript/umininn-tv-player.user.js')),'utf8');
         assert.equal(built.match(/^\/\/ @version\s+(\S+)/m)?.[1],require('../tools/build-player-userscript.cjs').RELEASE_VERSION,'integrated userscript tests must use the newly built distribution');
         await context.addInitScript({content:`
             window.fixtureAudioMessages=[];window.fixtureAudioRequestActions={};window.fixtureLayoutEvents=[];window.fixtureAudioGate={hold:false,targetId:'frame-2',muted:null,action:null,blockUpdates:false,firstDocumentOnly:false,documentId:null,held:[]};
@@ -1911,7 +1911,7 @@ test('direction controls persist the stepped layout through small pane changes, 
     const key=keys[4],focus={key,row:1,column:1,span:3};await fixedDirectionGrid(f,{columns:5,focus,order:keys});
     const target=(await directionTargets(f,key)).right[0],start=await geometry(f);await clickDirection(f,key,'right',target);
     const stepped=await readLayout(f);assertDirectionStep(start,stepped.state,key,'right');
-    const saved=await f.page.evaluate(()=>({bookmark:capturePlayerBookmark(),storage:{
+    const saved=await f.page.evaluate(async()=>({bookmark:await capturePlayerBookmark(),storage:{
         playerPositionOrder:localStorage.getItem('playerPositionOrder'),playerEnlargementLayout:localStorage.getItem('playerEnlargementLayout')
     }}));
     assert.deepEqual(saved.bookmark.focus,{...focus,column:2});assert.equal(saved.bookmark.columns,5);
@@ -3161,10 +3161,10 @@ test('layout audio tolerates an unreadable tile and drops removed channel snapsh
         {muted:true,volume:.71,actions:{play:0,pause:0,load:0,seek:0,source:0}},'an absent-before source cannot inherit the removed foreign channel sound');
 });
 
-test('bookmark layout audio uses sound immediately before applying rather than the saved layout date and emits its recovery trigger once',{skip:!enabled,timeout:60000},async t=>{
+test('legacy bookmark layout audio uses sound immediately before applying and emits its recovery trigger once',{skip:!enabled,timeout:60000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
     await requireLayoutAudio(f);
-    const saved=await f.page.evaluate(()=>capturePlayerBookmark());
+    const saved=await f.page.evaluate(async()=>{const saved=await capturePlayerBookmark();delete saved.audio;return saved});
     await seedLayoutSound(f);
     // Recovery is intentionally part of applying bookmarks. Start these model
     // videos here so its already-playing branch does not obscure audio-only
@@ -3183,6 +3183,197 @@ test('bookmark layout audio uses sound immediately before applying rather than t
     const partial=await f.page.evaluate(async()=>{channels=channels.filter(channel=>channel.id!=='layout-3');return applyPlayerBookmark(fixturePartialBookmark)});
     assert.deepEqual(partial,{applied:4,missing:1});
     await assertActiveContinuity(f,retained);
+});
+
+async function playBookmarkMedia(f){
+    await f.page.evaluate(async()=>{for(const saved of fixtureMedia)await saved.video.play()});
+    for(const frame of f.frames)await frame.evaluate(()=>fixtureMedia[0].video.play());
+}
+async function replaceBookmarkSound(f,{muted=false,volume=.91}={}){
+    await f.page.evaluate(value=>{for(const saved of fixtureMedia)Object.assign(saved.video,value)},{muted,volume});
+    for(const frame of f.frames)await frame.evaluate(value=>Object.assign(fixtureMedia[0].video,value),{muted,volume});
+}
+function sortedBookmarkAudio(audio){return {...audio,audible:[...audio.audible].sort((a,b)=>a.key.localeCompare(b.key))}}
+async function bookmarkGeometryOnly(f){
+    return f.page.evaluate(()=>({channels:getPlayerPositionKeys().map(key=>({key,name:activePlayers.get(key).channel.name})),
+        columns:getCurrentPlayerGeometry().columns,focus:null,aspectRatio:1.5}));
+}
+
+test('bookmark saved audio reads fresh foreign state and stores only audible channel identities and volume',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+    await seedLayoutSound(f);await holdAudioReply(f,{action:'getState',blockUpdates:true});
+    await f.frames[0].evaluate(()=>{fixtureMedia[0].video.muted=false;fixtureMedia[0].video.volume=.12});
+    const before=await snapshot(f),arrangement=await readLayout(f);
+    await f.page.evaluate(()=>{window.fixtureBookmarkCaptureDone=false;window.fixtureBookmarkCapture=Promise.resolve(capturePlayerBookmark()).then(value=>{fixtureBookmarkCaptureDone=true;return value})});
+    await waitHeldAudioReply(f);
+    assert.equal(await f.page.evaluate(()=>fixtureBookmarkCaptureDone),false,'saving waits for a new reply instead of silently copying old panel state');
+    assert.deepEqual((await readLayout(f)).logical,arrangement.logical,'saving itself does not change the arrangement');
+    await releaseAudioReply(f);const saved=await f.page.evaluate(()=>fixtureBookmarkCapture);
+    assert.deepEqual(sortedBookmarkAudio(saved.audio),sortedBookmarkAudio({version:1,audible:[{key:keys[2],volume:.12},{key:keys[4],volume:.59}]}));
+    assert.equal(saved.channels.length,5,'the layout still saves every selected tile, including silent tiles');
+    assert.ok(!saved.audio.audible.some(item=>item.key===keys[0]),'unmuted zero volume is silent and has no saved audible entry');
+    assert.ok(!saved.audio.audible.some(item=>item.key===keys[1]||item.key===keys[3]),'muted tiles have no saved audible entry');
+    const persisted=await f.page.evaluate(saved=>{
+        const values=new Map(),storage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,String(value))};
+        const store=LayoutBookmarks.createStore(storage);
+        const initial=store.add('Stable channel colors',{...saved,channels:saved.channels.map((channel,index)=>({...channel,color:11+index*56})),audio:{version:1,audible:[]}});
+        const updated=store.update(initial.id,saved);store.reload();
+        return {initial,updated,reloaded:store.list()[0]};
+    },saved);
+    const colors=entry=>Object.fromEntries(entry.snapshot.channels.map(({key,color})=>[key,color]));
+    assert.deepEqual(colors(persisted.updated),colors(persisted.initial),'updating real stored audio preserves each existing channel color');
+    assert.deepEqual(colors(persisted.reloaded),colors(persisted.initial),'stable colors survive the real serialized store roundtrip');
+    assert.deepEqual(sortedBookmarkAudio(persisted.reloaded.snapshot.audio),sortedBookmarkAudio(saved.audio),'the same update persists the freshly captured audible channels and volumes');
+    await f.page.evaluate(()=>{fixtureAudioGate.blockUpdates=false});await assertContinuity(f,before);
+});
+
+test('bookmark saved audio mutes the entire restored layout before reopening only saved channels at their own volume',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+    await seedLayoutSound(f);const saved=await f.page.evaluate(()=>capturePlayerBookmark());
+    assert.equal(saved.audio.audible.length,2);await f.page.evaluate(keys=>swapPlayerPositions(keys[0],keys[4]),keys);
+    await replaceBookmarkSound(f);await playBookmarkMedia(f);const before=await snapshot(f);
+    await holdAudioReply(f,{action:'setMuted',muted:true});
+    await f.page.evaluate(saved=>{window.fixtureBookmarkApplyDone=false;window.fixtureBookmarkApply=Promise.resolve(applyPlayerBookmark(saved)).then(value=>{fixtureBookmarkApplyDone=true;return value})},saved);
+    await waitHeldAudioReply(f);await f.page.waitForTimeout(120);
+    const barrierSound=audibleMedia(await snapshot(f)).map(({muted,volume})=>({muted,volume}));
+    assert.ok(barrierSound.every(media=>media.muted),'the true mute command reaches every player before any saved native or foreign voice is opened: '+JSON.stringify(barrierSound));
+    assert.equal(await f.page.evaluate(()=>fixtureBookmarkApplyDone),false,'a foreign mute acknowledgement is part of the safety barrier');
+    await releaseAudioReply(f);assert.deepEqual(await f.page.evaluate(()=>fixtureBookmarkApply),{applied:5,missing:0});
+    const expected=[{muted:true,volume:.91},{muted:true,volume:.91},{muted:false,volume:.59},{muted:false,volume:.26},{muted:true,volume:.91}];
+    await waitExactSound(f,expected);await f.page.waitForTimeout(1100);await waitExactSound(f,expected);
+    assert.deepEqual(await f.page.evaluate(()=>fixture.order()),saved.channels.map(channel=>channel.key),'saved channel identity wins over the current tile position');
+    await assertAudioContinuity(f,before);
+});
+
+test('bookmark saved audio applies saved volume to an owned hidden soundtrack even when the primary volume already matches',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true});
+    await seedLayoutSound(f);const saved=await f.page.evaluate(()=>capturePlayerBookmark());await playBookmarkMedia(f);
+    await f.frames[0].evaluate(async()=>{
+        const soundtrack=document.createElement('audio');soundtrack.id='bookmark-hidden-soundtrack';soundtrack.loop=true;soundtrack.muted=false;soundtrack.volume=.91;
+        soundtrack.src='/silent.wav?bookmark-hidden-soundtrack=1';soundtrack.style.display='none';instrumentMedia(soundtrack);document.body.appendChild(soundtrack);
+        const preload=document.createElement('audio');preload.id='bookmark-muted-preload';preload.preload='auto';preload.muted=true;preload.volume=.13;
+        preload.src='/silent.wav?bookmark-muted-preload=1';preload.style.display='none';instrumentMedia(preload);document.body.appendChild(preload);
+        await soundtrack.play();
+    });
+    await f.frames[0].waitForFunction(()=>document.getElementById('bookmark-hidden-soundtrack')?.readyState>=2&&document.getElementById('bookmark-muted-preload')?.readyState>=2);
+    const before=await snapshot(f);
+    assert.deepEqual(before.frames[0].media.map(({muted,volume})=>({muted,volume})),[
+        {muted:false,volume:.26},{muted:false,volume:.91},{muted:true,volume:.13}
+    ],'the saved primary volume already matches while the owned audible soundtrack differs');
+    await f.page.evaluate(saved=>applyPlayerBookmark(saved),saved);
+    const matching=()=>{
+        const primary=fixtureMedia[0].video,soundtrack=document.getElementById('bookmark-hidden-soundtrack'),preload=document.getElementById('bookmark-muted-preload');
+        return primary.volume===.26&&!primary.muted&&soundtrack.volume===.26&&!soundtrack.muted&&preload.volume===.13&&preload.muted;
+    };
+    await f.frames[0].waitForFunction(matching);await f.page.waitForTimeout(1200);assert.equal(await f.frames[0].evaluate(matching),true,'saved sound remains correct after automatic bookmark playback recovery');
+    const after=await snapshot(f);
+    assert.equal(after.frames[0].media[2].paused,true,'a muted preload remains paused');
+    assert.equal(after.main[2].muted,false);assert.equal(after.main[2].volume,.59,'the separate saved native voice retains its own volume');
+    assert.ok(after.main.slice(0,2).every(media=>media.muted));assert.equal(after.frames[1].media[0].muted,true);
+    await assertAudioContinuity(f,before);
+});
+
+test('bookmark saved audio with an empty audible list explicitly mutes all channels and survives automatic playback recovery',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true});
+    await requireLayoutAudio(f);await primeAudio(f);
+    const saved=await f.page.evaluate(()=>capturePlayerBookmark());assert.deepEqual(saved.audio,{version:1,audible:[]});
+    await replaceBookmarkSound(f,{muted:false,volume:.46});
+    await f.page.evaluate(saved=>applyPlayerBookmark(saved),saved);
+    await waitAudio(f,media=>media.every(value=>value.muted&&!value.paused));
+    await f.page.waitForTimeout(1100);
+    assert.ok(audibleMedia(await snapshot(f)).every(media=>media.muted),'the recovery pass must not restore the pre-bookmark audible state');
+    assert.ok(audibleMedia(await snapshot(f)).every(media=>media.volume===.46),'an all-silent bookmark does not invent a volume for unsaved tiles');
+    assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
+});
+
+test('bookmark saved audio is ignored without userscript while the saved tile arrangement still applies',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800}),keys=await f.page.evaluate(()=>fixture.keys);
+    const saved=await f.page.evaluate(()=>capturePlayerBookmark());assert.equal(Object.hasOwn(saved,'audio'),false,'plain website capture has no userscript-only sound data');
+    saved.audio={version:1,audible:[{key:keys[2],volume:.17}]};
+    saved.channels.reverse();const before=await snapshot(f);
+    assert.deepEqual(await f.page.evaluate(saved=>applyPlayerBookmark(saved),saved),{applied:5,missing:0});
+    assert.deepEqual(await f.page.evaluate(()=>fixture.order()),saved.channels.map(channel=>channel.key));
+    await assertContinuity(f,before);
+});
+
+test('bookmark saved audio refuses an unready player through the real save button and preserves existing bookmarks and sound',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true,lateAudioFrame:2});
+    await requireLayoutAudio(f);const existing=await bookmarkGeometryOnly(f),before=await snapshot(f);
+    const stored=await f.page.evaluate(existing=>{
+        const button=document.createElement('button');button.id='fixture-bookmark-button';button.textContent='書籤';document.body.appendChild(button);
+        const panel=document.createElement('section');panel.id='fixture-bookmark-panel';panel.style.cssText='position:fixed;left:8px;top:44px;width:420px;max-height:700px;overflow:auto;z-index:2147483647;background:#171b21';document.body.appendChild(panel);
+        window.fixtureBookmarkStore=LayoutBookmarks.createStore(localStorage);fixtureBookmarkStore.add('Existing layout',existing);
+        window.fixtureBookmarkMenu=LayoutBookmarks.mount({button,panel,store:fixtureBookmarkStore,capture:capturePlayerBookmark,apply:applyPlayerBookmark});
+        return localStorage.getItem('umininn.layoutBookmarks.v1');
+    },existing);
+    await f.page.locator('#fixture-bookmark-button').click();await f.page.locator('#fixture-bookmark-panel .layout-bookmarks-save').click();
+    await f.page.waitForFunction(()=>document.querySelector('#fixture-bookmark-panel .layout-bookmarks-status.is-error')?.hidden===false,null,{timeout:12000});
+    assert.equal(await f.page.evaluate(()=>localStorage.getItem('umininn.layoutBookmarks.v1')),stored,'an incomplete audio capture must not save an all-silent replacement or alter the existing bookmark');
+    assert.equal(await f.page.evaluate(()=>fixtureBookmarkStore.list().length),1);
+    assert.equal(await f.page.locator('#fixture-bookmark-panel').getAttribute('aria-busy'),'false','a failed capture releases the menu for another attempt');
+    await assertContinuity(f,before);
+});
+
+test('bookmark saved audio waits for a late foreign player and keeps saved volume through the bookmark recovery pass',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true,lateAudioFrame:2}),keys=await f.page.evaluate(()=>fixture.keys);
+    await requireLayoutAudio(f);await playBookmarkMedia(f);
+    const saved=await bookmarkGeometryOnly(f);saved.audio={version:1,audible:[{key:keys[2],volume:.18},{key:keys[4],volume:.52}]};
+    await replaceBookmarkSound(f,{muted:false,volume:.86});
+    await f.page.evaluate(saved=>{window.fixtureLateBookmark=Promise.resolve(applyPlayerBookmark(saved))},saved);
+    await f.page.waitForTimeout(180);
+    assert.ok((await snapshot(f)).main.every(media=>media.muted),'a saved native voice does not open before a previously unknown foreign peer can be safely muted');
+    await f.frames[0].evaluate(()=>fixtureStartLateUserscript());
+    await f.page.evaluate(()=>fixtureLateBookmark);
+    const expected=[{muted:true,volume:.86},{muted:true,volume:.86},{muted:false,volume:.52},{muted:false,volume:.18},{muted:true,volume:.86}];
+    await waitExactSound(f,expected);await f.page.waitForTimeout(1200);await waitExactSound(f,expected);
+    assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);
+});
+
+test('bookmark saved audio yields delayed restoration to a newer trusted global mute or explicit solo action',{skip:!enabled,timeout:120000},async t=>{
+    if(!optional(t))return;
+    for(const kind of ['global-mute','solo'])await t.test(kind,async st=>{
+        const f=await fixture(st,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+        await seedLayoutSound(f);const saved=await f.page.evaluate(()=>capturePlayerBookmark());
+        await replaceBookmarkSound(f);await playBookmarkMedia(f);const before=await snapshot(f);
+        await holdAudioReply(f,{action:'setVolume'});
+        await f.page.evaluate(saved=>{window.fixtureManualBookmark=Promise.resolve(applyPlayerBookmark(saved))},saved);await waitHeldAudioReply(f);
+        if(kind==='global-mute')await f.page.locator('#umininn-player-control-host #quick-mute').click();
+        else await actualMouseWindowAction(f,keys[1],'audio-focus');
+        await releaseAudioReply(f);await f.page.evaluate(()=>fixtureManualBookmark);
+        if(kind==='global-mute')await waitAudio(f,media=>media.every(value=>value.muted));
+        else await waitOnlyAudible(f,1);
+        await f.page.waitForTimeout(1200);
+        if(kind==='global-mute')assert.ok(audibleMedia(await snapshot(f)).every(media=>media.muted),'a saved voice cannot return after the newer all-mute command');
+        else await waitOnlyAudible(f,1);
+        await assertAudioContinuity(f,before);
+    });
+});
+
+test('bookmark saved audio keeps the last of two queued bookmarks when an ordinary layout fresh read is still pending',{skip:!enabled,timeout:60000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
+    await seedLayoutSound(f);await playBookmarkMedia(f);
+    const first=await f.page.evaluate(()=>capturePlayerBookmark()),second=structuredClone(first);
+    first.columns=3;first.focus={key:keys[0],row:0,column:0,span:2};first.audio={version:1,audible:[{key:keys[2],volume:.17}]};
+    second.channels.reverse();second.columns=3;second.focus={key:keys[4],row:0,column:0,span:2};second.audio={version:1,audible:[{key:keys[1],volume:.42}]};
+    const before=await snapshot(f);await holdAudioReply(f,{action:'getState',blockUpdates:true});
+    await f.page.evaluate(keys=>{window.fixtureQueuedAudioBookmarks=[Promise.resolve(swapPlayerPositions(keys[0],keys[4]))]},keys);await waitHeldAudioReply(f);
+    await f.page.evaluate(({first,second})=>{fixtureQueuedAudioBookmarks.push(Promise.resolve(applyPlayerBookmark(first)),Promise.resolve(applyPlayerBookmark(second)))},{first,second});
+    await releaseAudioReply(f);await f.page.evaluate(()=>{fixtureAudioGate.blockUpdates=false;return Promise.all(fixtureQueuedAudioBookmarks)});
+    await waitSpan(f,keys[4],2);await waitOnlyAudible(f,1,{volume:.42});
+    assert.deepEqual(await f.page.evaluate(()=>fixture.order()),second.channels.map(channel=>channel.key),'the last bookmark owns the final tile layout');
+    assert.equal((await geometry(f)).layout.columns,3);
+    await f.page.waitForTimeout(1200);await waitOnlyAudible(f,1,{volume:.42});
+    await assertAudioContinuity(f,before);
+});
+
+test('bookmark saved audio with no remaining catalog channels rejects without muting the current layout',{skip:!enabled,timeout:30000},async t=>{
+    if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true});
+    await seedLayoutSound(f);const before=await snapshot(f),arrangement=await readLayout(f);
+    const missing={channels:[{key:'at|removed-from-catalog',name:'已移除的台'}],columns:1,focus:null,aspectRatio:1.5,
+        audio:{version:1,audible:[{key:'at|removed-from-catalog',volume:.44}]}};
+    await assert.rejects(f.page.evaluate(missing=>applyPlayerBookmark(missing),missing),/移除/);
+    await f.page.waitForTimeout(450);
+    assert.deepEqual((await readLayout(f)).logical,arrangement.logical);await assertContinuity(f,before);
 });
 
 test('automatic bookmark and start recovery survives a real pane reflow during readiness and recovers each paused player once',{skip:!enabled,timeout:120000},async t=>{
@@ -3212,7 +3403,7 @@ test('automatic bookmark and start recovery survives a real pane reflow during r
                 });
             },true);
         });
-        if(reason==='bookmark')await f.page.evaluate(()=>applyPlayerBookmark(capturePlayerBookmark()));
+        if(reason==='bookmark')await f.page.evaluate(async()=>{const saved=await capturePlayerBookmark();delete saved.audio;return applyPlayerBookmark(saved)});
         else{
             await f.page.locator('#more-channels-btn').click();
             await f.page.locator('#fixture-watch-selected').click();

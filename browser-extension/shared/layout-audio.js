@@ -47,7 +47,7 @@
         function live(ctx, stage) { return alive(ctx) && ctx.stage === stage && !stage.stopped; }
         function summary(ctx, code) {
             const records = [...ctx.records.values()];
-            const failed = records.filter(item => ['failed', 'stale', 'timeout'].includes(item.status)).length + ctx.captureFailures + (ctx.focusFailure ? 1 : 0);
+            const failed = records.filter(item => ['failed', 'stale', 'timeout'].includes(item.status)).length + ctx.captureFailures + (ctx.focusFailure || ctx.bookmarkFailure ? 1 : 0);
             const pending = records.filter(item => !item.finished).length;
             const value = code || (pending ? 'PENDING' : failed || records.some(item => item.status === 'skipped') ? 'PARTIAL' : 'COMPLETE');
             return { ok: ['PREPARED', 'COMPLETE'].includes(value), code: value, ticket: ctx.ticket,
@@ -347,7 +347,7 @@
             return { target, peers };
         }
         function focusState(record, state) {
-            record.state = { ...sound(state), muteGuardActive: state?.muteGuardActive === true,
+            record.state = { ...sound(state), available: state?.available, muteGuardActive: state?.muteGuardActive === true,
                 focusRestorePending: state?.focusRestorePending === true };
             record.muteSatisfied = record.state.muted === record.desired.muted;
             record.volumeSatisfied = !own(record.desired, 'volume') || own(record.state, 'volume') &&
@@ -390,9 +390,9 @@
             if (!own(record.state, 'muted')) { record.failed = true; record.reason = 'mute-unsupported'; return false; }
             return true;
         }
-        async function focusWrite(ctx, stage, record, command) {
+        async function focusWrite(ctx, stage, record, command, permitted) {
             const opening = record.focusTarget && (command.action === 'setVolume' || command.action === 'setMuted' && command.value === false);
-            const outcome = await write(ctx, stage, record, command, opening ? () => focusSafe(ctx) : null);
+            const outcome = await write(ctx, stage, record, command, permitted || (opening ? () => focusSafe(ctx) : null));
             if (!live(ctx, stage)) return false;
             const hiddenGuard = command.action === 'setMuted' && command.value === true && command.guard === true &&
                 outcome.kind === 'result' && guardedHiddenPeer(record, record.lease, outcome.value);
@@ -509,6 +509,131 @@
                 else { target.status = 'waiting'; target.finished = false; }
             }
         }
+        function bookmarkCohort(ctx, refresh = false) {
+            const found = entries(), cohort = [];
+            ctx.bookmarkFailure = Boolean(found.ambiguous);
+            for (const item of found.values()) {
+                let record = ctx.records.get(item.key);
+                if (!record) { record = makeRecord(item.key, { muted: true }); ctx.records.set(item.key, record); }
+                const saved = ctx.bookmark.get(item.key);
+                // An opening lease binds only once media is ready. A readable
+                // loading frame may still be guarded before it has real media.
+                if (saved && !record.bookmarkLease && item.ready === true && !record.bookmarkRetired) record.bookmarkLease = { ...item };
+                record.bookmarkTarget = Boolean(saved && !record.bookmarkRetired &&
+                    (!record.bookmarkLease || same(record.bookmarkLease, item)));
+                record.focusTarget = false; // Hidden NO_MEDIA routes must also accept mute guards.
+                if (!record.lease || !same(record.lease, item)) {
+                    record.lease = { ...item }; record.state = null; record.guardConfirmed = false; record.bookmarkOpened = false;
+                }
+                if (ctx.bookmarkReset) record.bookmarkOpened = false;
+                record.desired = record.bookmarkTarget ? { muted: false, volume: saved } : { muted: true };
+                record.finished = false; record.status = 'waiting';
+                if (!refresh) { record.failed = false; record.partial = false; record.reason = ''; }
+                cohort.push(record);
+            }
+            for (const record of ctx.records.values()) if (!found.has(record.key)) {
+                record.bookmarkRetired = true; record.bookmarkOpened = false; finish(record, 'removed', 'removed');
+            }
+            ctx.bookmarkReset = false;
+            return cohort;
+        }
+        function bookmarkSafe(ctx) {
+            const found = entries();
+            if (found.ambiguous) return false;
+            for (const item of found.values()) {
+                const record = ctx.records.get(item.key);
+                if (!record || record.failed || !record.lease || !same(record.lease, item) || !current(record.lease)) return false;
+                if (record.bookmarkOpened && record.bookmarkTarget && record.bookmarkLease && same(record.bookmarkLease, item) &&
+                    !record.failed && record.state?.muted === false && record.volumeSatisfied) continue;
+                if (record.state?.muted !== true || !record.guardConfirmed) return false;
+            }
+            return true;
+        }
+        async function bookmarkWrite(ctx, stage, record, command) {
+            const opening = command.action === 'setVolume' || command.action === 'setMuted' && command.value === false;
+            return focusWrite(ctx, stage, record, command, opening ? () => bookmarkSafe(ctx) : null);
+        }
+        async function guardBookmarkCohort(ctx, stage, cohort) {
+            await each(cohort, async record => {
+                if (!await focusRead(ctx, stage, record) || !live(ctx, stage)) return;
+                if (record.bookmarkOpened && record.bookmarkTarget && record.state?.muted === false && record.volumeSatisfied) return;
+                record.bookmarkOpened = false;
+                if (record.state?.muted !== true || !record.guardConfirmed)
+                    await bookmarkWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true });
+            });
+        }
+        async function closeBookmarkTargets(ctx, stage, cohort) {
+            await each(cohort, async record => {
+                if (!live(ctx, stage) || !record.bookmarkTarget || record.state?.muted !== false) return;
+                record.bookmarkOpened = false;
+                await bookmarkWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true });
+            });
+        }
+        async function processBookmark(ctx, stage) {
+            let cohort = bookmarkCohort(ctx);
+            // Every current tile, including each saved audible target, must
+            // prove guarded silence before this policy may raise any volume.
+            await guardBookmarkCohort(ctx, stage, cohort);
+            if (!live(ctx, stage)) return;
+            if (!bookmarkSafe(ctx)) await closeBookmarkTargets(ctx, stage, cohort);
+            if (!live(ctx, stage)) return;
+            if (bookmarkSafe(ctx)) {
+                for (const record of cohort) {
+                    if (!live(ctx, stage)) return;
+                    if (!record.bookmarkTarget || record.failed || record.lease.ready !== true || !record.bookmarkLease ||
+                        !same(record.bookmarkLease, record.lease) || record.state?.available === false) continue;
+                    if (!record.volumeSatisfied || record.state.focusRestorePending) {
+                        await bookmarkWrite(ctx, stage, record, { action: 'setVolume', value: record.desired.volume, focus: true });
+                        if (!live(ctx, stage)) return;
+                        // Some SDKs clear mute while changing volume. Repair it
+                        // before considering another volume or any unmute.
+                        if ((!record.guardConfirmed || record.state?.muted !== true) && !record.bookmarkOpened)
+                            await bookmarkWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true });
+                    }
+                }
+                // Apply and confirm every saved volume while all targets are
+                // still guarded. Several saved targets may then open together.
+                for (const record of cohort) {
+                    if (!live(ctx, stage)) return;
+                    if (record.bookmarkTarget && !record.failed && record.volumeSatisfied && record.lease.ready === true &&
+                        record.bookmarkLease && same(record.bookmarkLease, record.lease) && record.state?.available !== false &&
+                        bookmarkSafe(ctx) && record.state?.muted !== false) {
+                        if (await bookmarkWrite(ctx, stage, record, { action: 'setMuted', value: false, focus: true })) record.bookmarkOpened = true;
+                    }
+                }
+            }
+            if (!live(ctx, stage)) return;
+            // Delayed ACKs may hide a newly arrived frame or a peer whose mute
+            // was cleared while a target opened. Re-read and guard that cohort.
+            cohort = bookmarkCohort(ctx, true);
+            await guardBookmarkCohort(ctx, stage, cohort);
+            if (!live(ctx, stage)) return;
+            if (!bookmarkSafe(ctx)) await closeBookmarkTargets(ctx, stage, cohort);
+            if (!live(ctx, stage)) return;
+            const safe = bookmarkSafe(ctx);
+            const waiting = cohort.some(record => !record.failed && (!record.state ||
+                record.bookmarkTarget && !record.bookmarkOpened && (!record.bookmarkLease || record.lease.ready !== true)));
+            for (const record of cohort) {
+                if (record.failed) finish(record, 'failed', record.reason);
+                else if (record.bookmarkTarget && record.bookmarkOpened && safe && record.volumeSatisfied) finish(record, 'restored');
+                else if (!record.bookmarkTarget && record.state?.muted === true && record.guardConfirmed) {
+                    const saved = ctx.bookmark.has(record.key);
+                    finish(record, saved ? 'stale' : 'restored', saved ? 'lease-changed' : '');
+                } else if (ctx.bookmarkFailure || !waiting && !safe) finish(record, 'failed', 'bookmark-unmute-withheld');
+                else { record.finished = false; record.status = 'waiting'; }
+            }
+            // A frame can renew during the last read or safety-close ACK.
+            // Retain a pending pass even when its earlier lease just failed;
+            // that pass may guard the new document but must never open it as
+            // the old saved target.
+            for (const item of entries().values()) {
+                let record = ctx.records.get(item.key);
+                if (record?.lease && same(record.lease, item)) continue;
+                if (!record) { record = makeRecord(item.key, { muted: true }); ctx.records.set(item.key, record); }
+                record.finished = false; record.status = 'waiting'; record.failed = false;
+                record.state = null; record.guardConfirmed = false; record.bookmarkOpened = false;
+            }
+        }
         function schedule(ctx, stage) {
             if (!live(ctx, stage) || ctx.poll !== null || ![...ctx.records.values()].some(record => !record.finished)) return;
             if (now() >= ctx.restoreDeadline) { timeout(ctx); closeStage(ctx); return; }
@@ -519,7 +644,7 @@
             if (now() >= ctx.restoreDeadline) { timeout(ctx); closeStage(ctx); return; }
             clearPoll(ctx);
             ctx.running = true;
-            try { if (ctx.focus) await processFocus(ctx, stage); else await process(ctx, stage, leaseRecords(ctx, stage)); }
+            try { if (ctx.bookmark) await processBookmark(ctx, stage); else if (ctx.focus) await processFocus(ctx, stage); else await process(ctx, stage, leaseRecords(ctx, stage)); }
             finally { ctx.running = false; }
             if (!live(ctx, stage)) return;
             completed(ctx, stage);
@@ -532,6 +657,7 @@
             closeStage(ctx);
             if (policy?.focus && (!ctx.focus || ctx.focus.key !== policy.focus.key || ctx.focus.identity !== policy.focus.identity ||
                 ctx.focus.element !== policy.focus.element)) {
+                ctx.bookmark = null;
                 ctx.focus = { ...policy.focus };
                 ctx.captureFailures = 0;
                 ctx.restoreDeadline = null;
@@ -546,6 +672,7 @@
                 return Promise.resolve(summary(ctx, 'TIMEOUT'));
             }
             if (ctx.focus) focusCohort(ctx);
+            if (ctx.bookmark) ctx.bookmarkReset = true;
             // Reuse after playback recovery checks the original snapshot again;
             // it does not extend the first round's deadline for loading players.
             for (const record of ctx.records.values()) if (!['removed', 'stale'].includes(record.status)) {
@@ -559,7 +686,8 @@
             ctx.initialPromise = (async () => {
                 const drained = await boundary(ctx, stage, writeTail.then(() => ({ kind: 'settled' })));
                 if (drained.kind === 'settled' && live(ctx, stage)) {
-                    if (ctx.focus) await processFocus(ctx, stage);
+                    if (ctx.bookmark) await processBookmark(ctx, stage);
+                    else if (ctx.focus) await processFocus(ctx, stage);
                     else await process(ctx, stage, leaseRecords(ctx, stage));
                 }
                 ctx.running = false; ctx.initialDone = true;
@@ -576,6 +704,26 @@
             })();
             return ctx.initialPromise;
         }
+        function bookmark(ticket, audible) {
+            const previous = active;
+            if (!previous || previous.cancelled || previous.ticket !== ticket || previous.phase === 'preparing')
+                return Promise.resolve({ ok: false, code: 'CANCELLED', ticket });
+            const saved = new Map();
+            if (!Array.isArray(audible) || audible.some(item => !item || typeof item !== 'object' || Array.isArray(item) ||
+                typeof item.key !== 'string' || !item.key.trim() || item.key.trim() !== item.key || saved.has(item.key) ||
+                !finiteVolume(item.volume) || item.volume <= 0 || (saved.set(item.key, item.volume), false))) {
+                cancel(); return Promise.resolve({ ok: false, code: 'INVALID_BOOKMARK_AUDIO', ticket });
+            }
+            stop(previous);
+            let resolveCancel;
+            const ctx = { ticket, records: new Map(), bookmark: saved, bookmarkReset: true,
+                cancelled: false, cancelledPromise: new Promise(done => { resolveCancel = done; }), resolveCancel,
+                stage: null, poll: null, phase: 'prepared', captureFailures: 0, captureSkipped: 0,
+                restoreDeadline: null, initialDone: false, running: false, initialPromise: null };
+            for (const [key, volume] of saved) ctx.records.set(key, makeRecord(key, { muted: false, volume }));
+            active = ctx;
+            return restore(ticket);
+        }
         function cancel() {
             const ctx = active;
             if (!ctx) return null;
@@ -588,8 +736,14 @@
             // read()/write() may synchronously publish new state and call us.
             // Those notifications cannot recursively restart their own pass.
             if (ctx?.phase === 'restoring' && ctx.initialDone && !ctx.running && ctx.stage && !ctx.stage.stopped) void pump(ctx, ctx.stage);
+            else if (ctx?.bookmark && ctx.phase === 'complete' && now() < ctx.restoreDeadline) {
+                const found = entries();
+                if (found.ambiguous || [...found.values()].some(item => ctx.records.get(item.key)?.status === 'removed' ||
+                    !same(ctx.records.get(item.key)?.lease, item)) ||
+                    [...ctx.records.values()].some(record => record.status !== 'removed' && !found.has(record.key))) void restore(ctx.ticket);
+            }
         }
-        return { prepare, restore, notify, cancel, settle: () => writeTail, focusSupported: true };
+        return { prepare, restore, bookmark, notify, cancel, settle: () => writeTail, focusSupported: true, bookmarkSupported: true };
     }
     const api = { createLayoutAudioFlow };
     root.UmininnLayoutAudio = api;

@@ -199,3 +199,53 @@ test('independent open tabs merge each mutation with the latest storage rather t
     assert.throws(() => tabA.rename(first.id, 'Deleted elsewhere'), Error);
     assert.deepEqual(createStore(storage).list().map(value => value.id), [second.id]);
 });
+
+test('audio snapshots distinguish legacy layout-only from explicit silence and retain only validated per-channel volumes in channel order', () => {
+    const legacy = normalizeSnapshot(snapshot());
+    assert.equal(Object.hasOwn(legacy, 'audio'), false);
+    assert.deepEqual(normalizeSnapshot(snapshot({ audio: { version: 1, audible: [] } })).audio, { version: 1, audible: [] });
+    const original = snapshot({ audio: { version: 1, audible: [
+        { key: 'at|another', volume: .35 }, { key: 'twitch|somebody', volume: 1 }
+    ] } });
+    const normalized = normalizeSnapshot(original);
+    assert.deepEqual(normalized.audio, { version: 1, audible: [
+        { key: 'twitch|somebody', volume: 1 }, { key: 'at|another', volume: .35 }
+    ] });
+    original.audio.audible[0].volume = .9;
+    assert.equal(normalized.audio.audible[1].volume, .35);
+    assert.deepEqual(normalizeSnapshot(normalized), normalized);
+    const malformed = [undefined, null, {}, { version: 2, audible: [] }, { version: 1, audible: null },
+        { version: 1, audible: [{ key: 'at|removed', volume: .2 }] },
+        { version: 1, audible: [{ key: 'at|another', volume: .2 }, { key: 'at|another', volume: .4 }] },
+        ...[0, -1, 1.1, NaN, Infinity, '0.5', null].map(volume => ({ version: 1, audible: [{ key: 'at|another', volume }] }))];
+    for (const audio of malformed) assert.throws(() => normalizeSnapshot(snapshot({ audio })), Error);
+});
+
+test('local audio survives CRUD and layout-only updates retain only surviving channels while explicit audio replaces it', () => {
+    const storage = memoryStorage(), store = createStore(storage);
+    const saved = store.add('With audio', snapshot({ audio: { version: 1, audible: [
+        { key: 'twitch|somebody', volume: .2 }, { key: 'at|another', volume: .75 }
+    ] } }));
+    store.rename(saved.id, 'Renamed');
+    const changed = snapshot({ channels: [{ key: 'at|another', name: '絕', color: 24 }, { key: 'at|new', name: '新台', color: 34 }], focus: null });
+    assert.deepEqual(store.update(saved.id, changed).snapshot.audio, { version: 1, audible: [{ key: 'at|another', volume: .75 }] });
+    store.remove(saved.id); store.undo();
+    assert.deepEqual(createStore(storage).list()[0].snapshot.audio, { version: 1, audible: [{ key: 'at|another', volume: .75 }] });
+    assert.deepEqual(store.update(saved.id, { ...changed, audio: { version: 1, audible: [] } }).snapshot.audio, { version: 1, audible: [] });
+    assert.deepEqual(store.update(saved.id, changed).snapshot.audio, { version: 1, audible: [] }, 'a non-userscript update preserves explicit silence');
+    const legacy = store.add('Legacy', snapshot());
+    assert.equal(Object.hasOwn(store.update(legacy.id, changed).snapshot, 'audio'), false);
+});
+
+test('malformed audio saves and imports cannot overwrite the existing local audio settings', () => {
+    const storage = memoryStorage(), store = createStore(storage);
+    const saved = store.add('Safe', snapshot({ audio: { version: 1, audible: [{ key: 'at|another', volume: .3 }] } }));
+    const before = storage.getItem(STORAGE_KEY), writes = storage.writes;
+    assert.throws(() => store.update(saved.id, snapshot({ audio: { version: 1, audible: [{ key: 'at|another', volume: 0 }] } })));
+    assert.throws(() => store.importLocal([{ ...saved, id: 'import-invalid', snapshot: snapshot({ audio: { version: 1, audible: [{ key: 'missing', volume: 1 }] } }) }]));
+    assert.equal(storage.getItem(STORAGE_KEY), before);
+    assert.equal(storage.writes, writes);
+    const imported = { ...saved, id: 'import-valid', name: 'Imported' };
+    assert.equal(store.importLocal([imported]), 1);
+    assert.deepEqual(createStore(storage).list().find(item => item.id === 'import-valid').snapshot.audio, saved.snapshot.audio);
+});

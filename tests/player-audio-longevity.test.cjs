@@ -261,11 +261,11 @@ test('longevity: native audio revisions are nonnegative safe integers on the aut
     f.dispose(); assert.equal(f.clock.timers.size, 0);
 });
 
-test('longevity: only the two explicit solo-opening commands may carry the focus capability flag', async () => {
+test('longevity: only valid opening volume and unmute commands may carry the focus capability flag', async () => {
     const f = connectedFixture(), video = f.add(); f.probe(); await flush();
     for (const [action, value, extra] of [
         ['getState', undefined, { focus: true }], ['recover', undefined, { focus: true }],
-        ['setVolume', 0.5, { focus: true }], ['setVolume', 1, { focus: false }],
+        ['setVolume', -0.5, { focus: true }], ['setVolume', 1.01, { focus: true }], ['setVolume', 1, { focus: false }],
         ['setMuted', true, { focus: true }], ['setMuted', false, { focus: false }],
         ['setMuted', true, { focus: true, guard: true }], ['setMuted', false, { focus: true, guard: true }],
         ['setVolume', 1, { focus: 'true' }], ['setMuted', false, { focus: null }]
@@ -275,6 +275,8 @@ test('longevity: only the two explicit solo-opening commands may carry the focus
         assert.equal(result.code, 'INVALID_COMMAND', `${action} ${String(value)} ${JSON.stringify(extra)} rejected`);
         assert.equal(video.writes.length, writes, 'malformed or non-opening focus flags never reach media');
     }
+    const saved = await f.command('setVolume', .37, { focus: true });
+    assert.equal(saved.ok, true); assert.equal(video.volume, .37);
     const result = await f.command('setVolume', 1, { focus: true });
     assert.equal(result.ok, true); assert.equal(video.volume, 1);
     assert.equal((await f.command('setMuted', false, { focus: true })).ok, true);

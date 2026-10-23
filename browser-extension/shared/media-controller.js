@@ -303,8 +303,8 @@
             if (command.action === 'setMuted' && typeof command.value !== 'boolean') return result(false, 'INVALID_VALUE', '靜音設定必須是布林值');
             if (command.guard !== undefined && (command.guard !== true || command.action !== 'setMuted' || command.value !== true)) return result(false, 'INVALID_VALUE', '靜音保護只支援全部靜音');
             if ('focus' in command && (command.focus !== true || 'guard' in command ||
-                !(command.action === 'setVolume' && command.value === 1 || command.action === 'setMuted' && command.value === false)))
-                return result(false, 'INVALID_VALUE', '單台開聲只支援音量 100% 及解除靜音');
+                !(command.action === 'setVolume' || command.action === 'setMuted' && command.value === false)))
+                return result(false, 'INVALID_VALUE', '開聲設定只支援有效音量及解除靜音');
             if (command.action === 'setMuted') {
                 // Re-arming and the explicit solo action retain ownership of
                 // earlier hidden routes; ordinary manual controls revoke it.

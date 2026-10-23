@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.27
+// @version      1.0.28
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -30,7 +30,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.27",
+        userscriptVersion: "1.0.28",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -406,8 +406,8 @@
             if (command.action === 'setMuted' && typeof command.value !== 'boolean') return result(false, 'INVALID_VALUE', '靜音設定必須是布林值');
             if (command.guard !== undefined && (command.guard !== true || command.action !== 'setMuted' || command.value !== true)) return result(false, 'INVALID_VALUE', '靜音保護只支援全部靜音');
             if ('focus' in command && (command.focus !== true || 'guard' in command ||
-                !(command.action === 'setVolume' && command.value === 1 || command.action === 'setMuted' && command.value === false)))
-                return result(false, 'INVALID_VALUE', '單台開聲只支援音量 100% 及解除靜音');
+                !(command.action === 'setVolume' || command.action === 'setMuted' && command.value === false)))
+                return result(false, 'INVALID_VALUE', '開聲設定只支援有效音量及解除靜音');
             if (command.action === 'setMuted') {
                 // Re-arming and the explicit solo action retain ownership of
                 // earlier hidden routes; ordinary manual controls revoke it.
@@ -859,7 +859,7 @@
         function live(ctx, stage) { return alive(ctx) && ctx.stage === stage && !stage.stopped; }
         function summary(ctx, code) {
             const records = [...ctx.records.values()];
-            const failed = records.filter(item => ['failed', 'stale', 'timeout'].includes(item.status)).length + ctx.captureFailures + (ctx.focusFailure ? 1 : 0);
+            const failed = records.filter(item => ['failed', 'stale', 'timeout'].includes(item.status)).length + ctx.captureFailures + (ctx.focusFailure || ctx.bookmarkFailure ? 1 : 0);
             const pending = records.filter(item => !item.finished).length;
             const value = code || (pending ? 'PENDING' : failed || records.some(item => item.status === 'skipped') ? 'PARTIAL' : 'COMPLETE');
             return { ok: ['PREPARED', 'COMPLETE'].includes(value), code: value, ticket: ctx.ticket,
@@ -1159,7 +1159,7 @@
             return { target, peers };
         }
         function focusState(record, state) {
-            record.state = { ...sound(state), muteGuardActive: state?.muteGuardActive === true,
+            record.state = { ...sound(state), available: state?.available, muteGuardActive: state?.muteGuardActive === true,
                 focusRestorePending: state?.focusRestorePending === true };
             record.muteSatisfied = record.state.muted === record.desired.muted;
             record.volumeSatisfied = !own(record.desired, 'volume') || own(record.state, 'volume') &&
@@ -1202,9 +1202,9 @@
             if (!own(record.state, 'muted')) { record.failed = true; record.reason = 'mute-unsupported'; return false; }
             return true;
         }
-        async function focusWrite(ctx, stage, record, command) {
+        async function focusWrite(ctx, stage, record, command, permitted) {
             const opening = record.focusTarget && (command.action === 'setVolume' || command.action === 'setMuted' && command.value === false);
-            const outcome = await write(ctx, stage, record, command, opening ? () => focusSafe(ctx) : null);
+            const outcome = await write(ctx, stage, record, command, permitted || (opening ? () => focusSafe(ctx) : null));
             if (!live(ctx, stage)) return false;
             const hiddenGuard = command.action === 'setMuted' && command.value === true && command.guard === true &&
                 outcome.kind === 'result' && guardedHiddenPeer(record, record.lease, outcome.value);
@@ -1321,6 +1321,131 @@
                 else { target.status = 'waiting'; target.finished = false; }
             }
         }
+        function bookmarkCohort(ctx, refresh = false) {
+            const found = entries(), cohort = [];
+            ctx.bookmarkFailure = Boolean(found.ambiguous);
+            for (const item of found.values()) {
+                let record = ctx.records.get(item.key);
+                if (!record) { record = makeRecord(item.key, { muted: true }); ctx.records.set(item.key, record); }
+                const saved = ctx.bookmark.get(item.key);
+                // An opening lease binds only once media is ready. A readable
+                // loading frame may still be guarded before it has real media.
+                if (saved && !record.bookmarkLease && item.ready === true && !record.bookmarkRetired) record.bookmarkLease = { ...item };
+                record.bookmarkTarget = Boolean(saved && !record.bookmarkRetired &&
+                    (!record.bookmarkLease || same(record.bookmarkLease, item)));
+                record.focusTarget = false; // Hidden NO_MEDIA routes must also accept mute guards.
+                if (!record.lease || !same(record.lease, item)) {
+                    record.lease = { ...item }; record.state = null; record.guardConfirmed = false; record.bookmarkOpened = false;
+                }
+                if (ctx.bookmarkReset) record.bookmarkOpened = false;
+                record.desired = record.bookmarkTarget ? { muted: false, volume: saved } : { muted: true };
+                record.finished = false; record.status = 'waiting';
+                if (!refresh) { record.failed = false; record.partial = false; record.reason = ''; }
+                cohort.push(record);
+            }
+            for (const record of ctx.records.values()) if (!found.has(record.key)) {
+                record.bookmarkRetired = true; record.bookmarkOpened = false; finish(record, 'removed', 'removed');
+            }
+            ctx.bookmarkReset = false;
+            return cohort;
+        }
+        function bookmarkSafe(ctx) {
+            const found = entries();
+            if (found.ambiguous) return false;
+            for (const item of found.values()) {
+                const record = ctx.records.get(item.key);
+                if (!record || record.failed || !record.lease || !same(record.lease, item) || !current(record.lease)) return false;
+                if (record.bookmarkOpened && record.bookmarkTarget && record.bookmarkLease && same(record.bookmarkLease, item) &&
+                    !record.failed && record.state?.muted === false && record.volumeSatisfied) continue;
+                if (record.state?.muted !== true || !record.guardConfirmed) return false;
+            }
+            return true;
+        }
+        async function bookmarkWrite(ctx, stage, record, command) {
+            const opening = command.action === 'setVolume' || command.action === 'setMuted' && command.value === false;
+            return focusWrite(ctx, stage, record, command, opening ? () => bookmarkSafe(ctx) : null);
+        }
+        async function guardBookmarkCohort(ctx, stage, cohort) {
+            await each(cohort, async record => {
+                if (!await focusRead(ctx, stage, record) || !live(ctx, stage)) return;
+                if (record.bookmarkOpened && record.bookmarkTarget && record.state?.muted === false && record.volumeSatisfied) return;
+                record.bookmarkOpened = false;
+                if (record.state?.muted !== true || !record.guardConfirmed)
+                    await bookmarkWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true });
+            });
+        }
+        async function closeBookmarkTargets(ctx, stage, cohort) {
+            await each(cohort, async record => {
+                if (!live(ctx, stage) || !record.bookmarkTarget || record.state?.muted !== false) return;
+                record.bookmarkOpened = false;
+                await bookmarkWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true });
+            });
+        }
+        async function processBookmark(ctx, stage) {
+            let cohort = bookmarkCohort(ctx);
+            // Every current tile, including each saved audible target, must
+            // prove guarded silence before this policy may raise any volume.
+            await guardBookmarkCohort(ctx, stage, cohort);
+            if (!live(ctx, stage)) return;
+            if (!bookmarkSafe(ctx)) await closeBookmarkTargets(ctx, stage, cohort);
+            if (!live(ctx, stage)) return;
+            if (bookmarkSafe(ctx)) {
+                for (const record of cohort) {
+                    if (!live(ctx, stage)) return;
+                    if (!record.bookmarkTarget || record.failed || record.lease.ready !== true || !record.bookmarkLease ||
+                        !same(record.bookmarkLease, record.lease) || record.state?.available === false) continue;
+                    if (!record.volumeSatisfied || record.state.focusRestorePending) {
+                        await bookmarkWrite(ctx, stage, record, { action: 'setVolume', value: record.desired.volume, focus: true });
+                        if (!live(ctx, stage)) return;
+                        // Some SDKs clear mute while changing volume. Repair it
+                        // before considering another volume or any unmute.
+                        if ((!record.guardConfirmed || record.state?.muted !== true) && !record.bookmarkOpened)
+                            await bookmarkWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true });
+                    }
+                }
+                // Apply and confirm every saved volume while all targets are
+                // still guarded. Several saved targets may then open together.
+                for (const record of cohort) {
+                    if (!live(ctx, stage)) return;
+                    if (record.bookmarkTarget && !record.failed && record.volumeSatisfied && record.lease.ready === true &&
+                        record.bookmarkLease && same(record.bookmarkLease, record.lease) && record.state?.available !== false &&
+                        bookmarkSafe(ctx) && record.state?.muted !== false) {
+                        if (await bookmarkWrite(ctx, stage, record, { action: 'setMuted', value: false, focus: true })) record.bookmarkOpened = true;
+                    }
+                }
+            }
+            if (!live(ctx, stage)) return;
+            // Delayed ACKs may hide a newly arrived frame or a peer whose mute
+            // was cleared while a target opened. Re-read and guard that cohort.
+            cohort = bookmarkCohort(ctx, true);
+            await guardBookmarkCohort(ctx, stage, cohort);
+            if (!live(ctx, stage)) return;
+            if (!bookmarkSafe(ctx)) await closeBookmarkTargets(ctx, stage, cohort);
+            if (!live(ctx, stage)) return;
+            const safe = bookmarkSafe(ctx);
+            const waiting = cohort.some(record => !record.failed && (!record.state ||
+                record.bookmarkTarget && !record.bookmarkOpened && (!record.bookmarkLease || record.lease.ready !== true)));
+            for (const record of cohort) {
+                if (record.failed) finish(record, 'failed', record.reason);
+                else if (record.bookmarkTarget && record.bookmarkOpened && safe && record.volumeSatisfied) finish(record, 'restored');
+                else if (!record.bookmarkTarget && record.state?.muted === true && record.guardConfirmed) {
+                    const saved = ctx.bookmark.has(record.key);
+                    finish(record, saved ? 'stale' : 'restored', saved ? 'lease-changed' : '');
+                } else if (ctx.bookmarkFailure || !waiting && !safe) finish(record, 'failed', 'bookmark-unmute-withheld');
+                else { record.finished = false; record.status = 'waiting'; }
+            }
+            // A frame can renew during the last read or safety-close ACK.
+            // Retain a pending pass even when its earlier lease just failed;
+            // that pass may guard the new document but must never open it as
+            // the old saved target.
+            for (const item of entries().values()) {
+                let record = ctx.records.get(item.key);
+                if (record?.lease && same(record.lease, item)) continue;
+                if (!record) { record = makeRecord(item.key, { muted: true }); ctx.records.set(item.key, record); }
+                record.finished = false; record.status = 'waiting'; record.failed = false;
+                record.state = null; record.guardConfirmed = false; record.bookmarkOpened = false;
+            }
+        }
         function schedule(ctx, stage) {
             if (!live(ctx, stage) || ctx.poll !== null || ![...ctx.records.values()].some(record => !record.finished)) return;
             if (now() >= ctx.restoreDeadline) { timeout(ctx); closeStage(ctx); return; }
@@ -1331,7 +1456,7 @@
             if (now() >= ctx.restoreDeadline) { timeout(ctx); closeStage(ctx); return; }
             clearPoll(ctx);
             ctx.running = true;
-            try { if (ctx.focus) await processFocus(ctx, stage); else await process(ctx, stage, leaseRecords(ctx, stage)); }
+            try { if (ctx.bookmark) await processBookmark(ctx, stage); else if (ctx.focus) await processFocus(ctx, stage); else await process(ctx, stage, leaseRecords(ctx, stage)); }
             finally { ctx.running = false; }
             if (!live(ctx, stage)) return;
             completed(ctx, stage);
@@ -1344,6 +1469,7 @@
             closeStage(ctx);
             if (policy?.focus && (!ctx.focus || ctx.focus.key !== policy.focus.key || ctx.focus.identity !== policy.focus.identity ||
                 ctx.focus.element !== policy.focus.element)) {
+                ctx.bookmark = null;
                 ctx.focus = { ...policy.focus };
                 ctx.captureFailures = 0;
                 ctx.restoreDeadline = null;
@@ -1358,6 +1484,7 @@
                 return Promise.resolve(summary(ctx, 'TIMEOUT'));
             }
             if (ctx.focus) focusCohort(ctx);
+            if (ctx.bookmark) ctx.bookmarkReset = true;
             // Reuse after playback recovery checks the original snapshot again;
             // it does not extend the first round's deadline for loading players.
             for (const record of ctx.records.values()) if (!['removed', 'stale'].includes(record.status)) {
@@ -1371,7 +1498,8 @@
             ctx.initialPromise = (async () => {
                 const drained = await boundary(ctx, stage, writeTail.then(() => ({ kind: 'settled' })));
                 if (drained.kind === 'settled' && live(ctx, stage)) {
-                    if (ctx.focus) await processFocus(ctx, stage);
+                    if (ctx.bookmark) await processBookmark(ctx, stage);
+                    else if (ctx.focus) await processFocus(ctx, stage);
                     else await process(ctx, stage, leaseRecords(ctx, stage));
                 }
                 ctx.running = false; ctx.initialDone = true;
@@ -1388,6 +1516,26 @@
             })();
             return ctx.initialPromise;
         }
+        function bookmark(ticket, audible) {
+            const previous = active;
+            if (!previous || previous.cancelled || previous.ticket !== ticket || previous.phase === 'preparing')
+                return Promise.resolve({ ok: false, code: 'CANCELLED', ticket });
+            const saved = new Map();
+            if (!Array.isArray(audible) || audible.some(item => !item || typeof item !== 'object' || Array.isArray(item) ||
+                typeof item.key !== 'string' || !item.key.trim() || item.key.trim() !== item.key || saved.has(item.key) ||
+                !finiteVolume(item.volume) || item.volume <= 0 || (saved.set(item.key, item.volume), false))) {
+                cancel(); return Promise.resolve({ ok: false, code: 'INVALID_BOOKMARK_AUDIO', ticket });
+            }
+            stop(previous);
+            let resolveCancel;
+            const ctx = { ticket, records: new Map(), bookmark: saved, bookmarkReset: true,
+                cancelled: false, cancelledPromise: new Promise(done => { resolveCancel = done; }), resolveCancel,
+                stage: null, poll: null, phase: 'prepared', captureFailures: 0, captureSkipped: 0,
+                restoreDeadline: null, initialDone: false, running: false, initialPromise: null };
+            for (const [key, volume] of saved) ctx.records.set(key, makeRecord(key, { muted: false, volume }));
+            active = ctx;
+            return restore(ticket);
+        }
         function cancel() {
             const ctx = active;
             if (!ctx) return null;
@@ -1400,8 +1548,14 @@
             // read()/write() may synchronously publish new state and call us.
             // Those notifications cannot recursively restart their own pass.
             if (ctx?.phase === 'restoring' && ctx.initialDone && !ctx.running && ctx.stage && !ctx.stage.stopped) void pump(ctx, ctx.stage);
+            else if (ctx?.bookmark && ctx.phase === 'complete' && now() < ctx.restoreDeadline) {
+                const found = entries();
+                if (found.ambiguous || [...found.values()].some(item => ctx.records.get(item.key)?.status === 'removed' ||
+                    !same(ctx.records.get(item.key)?.lease, item)) ||
+                    [...ctx.records.values()].some(record => record.status !== 'removed' && !found.has(record.key))) void restore(ctx.ticket);
+            }
         }
-        return { prepare, restore, notify, cancel, settle: () => writeTail, focusSupported: true };
+        return { prepare, restore, bookmark, notify, cancel, settle: () => writeTail, focusSupported: true, bookmarkSupported: true };
     }
     const api = { createLayoutAudioFlow };
     root.UmininnLayoutAudio = api;
@@ -2353,6 +2507,7 @@
         const layoutFocusCandidates = new Map();
         let layoutCompletion = Promise.resolve(), finishLayoutCompletion = null;
         let automaticRecoveryReason = null;
+        const bookmarkCaptures = new Set();
         let preparation = null, preparedCohort = new Set(), watchStartTimer = null, unreadyWrappers = 0;
         let recoveryStartGeneration = 0;
         let preparationWaiting = '', lastRecoveryStatus = null;
@@ -3082,6 +3237,70 @@
                 (item.entry ? entries.get(item.element) === item.entry &&
                     item.version === layoutAudioVersion(item.entry) : !entries.has(item.element));
         }
+        function onBookmarkAudioIntent(event) {
+            if (disposed || !layoutAudioFlow?.bookmark || event.target !== doc.getElementById('multi-stream-container')) return;
+            if (layoutAudioPhase === 'preparing' && layoutTicket !== null) {
+                // This request joins the page's still-preparing batch. Keep its
+                // handshake alive while superseding any earlier sound policy.
+                publishAudioIntent(); clearAudioIntent(); layoutFocusCandidates.clear();
+                automaticRecoveryReason = null;
+            } else invalidateLayoutAudio();
+            cancelPendingRecovery(); recoveryFlow?.cancel(); clearPreparation();
+            globalMuted = true;
+            win.postMessage(envelope('site:audio-preference', { muted: true }), win.location.origin);
+            muteImmediately(true);
+        }
+        function onBookmarkAudioCapture(event) {
+            const request = event.target;
+            if (disposed || !layoutAudioFlow?.bookmark || request?.tagName !== 'SPAN' || !request.isConnected ||
+                request.parentElement !== doc.body || !/^\d{1,16}$/.test(request.getAttribute('data-umininn-bookmark-audio-request') || '')) return;
+            let keys;
+            try { keys = JSON.parse(request.getAttribute('data-umininn-bookmark-audio-keys') || 'null'); } catch (_) {}
+            if (!Array.isArray(keys) || !keys.length || keys.length > 256 || new Set(keys).size !== keys.length ||
+                keys.some(key => typeof key !== 'string' || !key || key.length > 4096)) return;
+            const pane = doc.getElementById('multi-stream-container'), epoch = layoutUserEpoch, generation = audioControlGeneration;
+            const snapshot = layoutAudioEntries();
+            const selected = keys.map(key => snapshot.filter(item => item.key === key));
+            let closed = false, timer;
+            const finish = (error, audio) => {
+                if (closed) return;
+                closed = true; win.clearTimeout(timer); bookmarkCaptures.delete(finish);
+                if (!request.isConnected) return;
+                if (error) request.setAttribute('data-umininn-bookmark-audio-error', error);
+                else request.setAttribute('data-umininn-bookmark-audio-result', JSON.stringify(audio));
+                request.dispatchEvent(new win.Event('umininn-player-bookmark-audio-result', { bubbles: true }));
+            };
+            bookmarkCaptures.add(finish);
+            timer = win.setTimeout(() => finish('讀取聲音逾時，書籤未有儲存；請等播放器連線後再試。'), 4000);
+            const unchanged = () => !closed && !disposed && pane === doc.getElementById('multi-stream-container') &&
+                epoch === layoutUserEpoch && generation === audioControlGeneration;
+            void (async () => {
+                try {
+                    await Promise.all([layoutCompletion, manualAudioTail, layoutAudioFlow.settle(), ...urgentAudioTasks]);
+                    if (!unchanged()) return finish('聲音或佈局已改變，書籤未有儲存；請重新儲存。');
+                    if (selected.some(matches => matches.length !== 1 || !matches[0].entry || !layoutAudioCurrent(matches[0])))
+                        return finish('部分台未能確認聲音，書籤未有儲存；請等播放器連線後再試。');
+                    const items = selected.map(matches => matches[0]), values = new Map();
+                    let cursor = 0;
+                    await Promise.all(Array.from({ length: Math.min(4, items.length) }, async () => {
+                        while (cursor < items.length && unchanged()) {
+                            const item = items[cursor++];
+                            const result = await execute(item.entry, { action: 'getState' });
+                            const state = result?.state;
+                            if (!result?.ok || !layoutAudioCurrent(item) || state?.available !== true ||
+                                state.muteSupported === false || state.volumeSupported === false ||
+                                typeof state.muted !== 'boolean' || typeof state.volume !== 'number' ||
+                                !Number.isFinite(state.volume) || state.volume < 0 || state.volume > 1)
+                                throw new Error('部分台未能確認聲音，書籤未有儲存；請等播放器連線後再試。');
+                            if (state.muted === false && state.volume > 0) values.set(item.key, { key: item.key, volume: state.volume });
+                        }
+                    }));
+                    if (!unchanged() || items.some(item => !layoutAudioCurrent(item)))
+                        return finish('聲音或佈局已改變，書籤未有儲存；請重新儲存。');
+                    finish(null, { version: 1, audible: keys.filter(key => values.has(key)).map(key => values.get(key)) });
+                } catch (error) { finish(error.message || '未能讀取聲音，書籤未有儲存。'); }
+            })();
+        }
         function layoutEvent(event) {
             const pane = doc.getElementById('multi-stream-container');
             const ticket = pane?.getAttribute('data-umininn-layout-audio-ticket');
@@ -3130,6 +3349,16 @@
                     scan();
                     if (layoutTicket === ticket) {
                         layoutAudioPhase = 'restoring';
+                        const savedAudio = pane.getAttribute('data-umininn-layout-bookmark-audio');
+                        if (savedAudio && layoutAudioFlow.bookmark) {
+                            let audio;
+                            try { audio = JSON.parse(savedAudio); } catch (_) {}
+                            clearAudioIntent(); layoutFocusCandidates.clear();
+                            await Promise.all([manualAudioTail, layoutAudioFlow.settle(), ...urgentAudioTasks]);
+                            if (!disposed && layoutTicket === ticket)
+                                await layoutAudioFlow.bookmark(ticket, audio?.version === 1 ? audio.audible : null);
+                            return;
+                        }
                         let intent = audioFocusIntent;
                         const committed = pane.getAttribute('data-umininn-layout-audio-focus');
                         const requests = (pane.getAttribute('data-umininn-layout-audio-focus-requests') || '').split(',');
@@ -3165,6 +3394,7 @@
             finishLayoutCompletion?.(); finishLayoutCompletion = null;
         }
         function onLayoutPageHide() {
+            for (const finish of [...bookmarkCaptures]) finish('頁面已離開，書籤未有儲存。');
             invalidateLayoutAudio(); layoutTicket = null;
             finishLayoutCompletion?.(); finishLayoutCompletion = null;
         }
@@ -3608,8 +3838,11 @@
                     doc.addEventListener('umininn-player-layout-before', onLayoutBefore, true);
                     doc.addEventListener('umininn-player-layout-after', onLayoutAfter, true);
                     doc.addEventListener('umininn-player-layout-abort', onLayoutAbort, true);
+                    doc.addEventListener('umininn-player-bookmark-audio-intent', onBookmarkAudioIntent, true);
+                    doc.addEventListener('umininn-player-bookmark-audio-capture', onBookmarkAudioCapture, true);
                     win.addEventListener('pagehide', onLayoutPageHide);
                     doc.documentElement.setAttribute('data-umininn-player-layout-audio-ready', '');
+                    if (layoutAudioFlow.bookmark) doc.documentElement.setAttribute('data-umininn-player-bookmark-audio-ready', '');
                     if (layoutAudioFlow.focusSupported) {
                         doc.addEventListener('umininn-player-layout-focus-request', onLayoutFocusRequest, true);
                         doc.documentElement.setAttribute('data-umininn-player-unified-audio-ready', '');
@@ -3638,12 +3871,15 @@
             doc.documentElement.removeAttribute('data-umininn-player-audio-focus-ready');
             doc.documentElement.removeAttribute('data-umininn-player-audio-intent');
             doc.documentElement.removeAttribute('data-umininn-player-layout-audio-ready');
+            doc.documentElement.removeAttribute('data-umininn-player-bookmark-audio-ready');
             doc.documentElement.removeAttribute('data-umininn-player-unified-audio-ready');
             doc.removeEventListener('umininn-player-layout-focus-request', onLayoutFocusRequest, true);
             onLayoutPageHide();
             doc.removeEventListener('umininn-player-layout-before', onLayoutBefore, true);
             doc.removeEventListener('umininn-player-layout-after', onLayoutAfter, true);
             doc.removeEventListener('umininn-player-layout-abort', onLayoutAbort, true);
+            doc.removeEventListener('umininn-player-bookmark-audio-intent', onBookmarkAudioIntent, true);
+            doc.removeEventListener('umininn-player-bookmark-audio-capture', onBookmarkAudioCapture, true);
             win.removeEventListener('pagehide', onLayoutPageHide);
             audioFocusIntent = null;
             if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
@@ -3712,7 +3948,7 @@
         if (!object(value) || Object.keys(value).some(key => !['action', 'value', 'guard', 'focus'].includes(key))) return false;
         if ('guard' in value && (value.action !== 'setMuted' || value.value !== true || value.guard !== true)) return false;
         if ('focus' in value && (value.focus !== true || 'guard' in value ||
-            !(value.action === 'setVolume' && value.value === 1 || value.action === 'setMuted' && value.value === false))) return false;
+            !(value.action === 'setVolume' || value.action === 'setMuted' && value.value === false))) return false;
         if (value.action === 'setVolume') return typeof value.value === 'number' && Number.isFinite(value.value) && value.value >= 0 && value.value <= 1;
         if (value.action === 'setMuted') return typeof value.value === 'boolean';
         return ['getState', 'recover'].includes(value.action) && value.value === undefined;

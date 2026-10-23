@@ -7,7 +7,7 @@
     const MAX_BYTES = 850 * 1024;
     const copy = value => JSON.parse(JSON.stringify(value));
     const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
-    const layoutIdentity = snapshot => ({ keys: snapshot.channels.map(channel => channel.key), columns: snapshot.columns, focus: snapshot.focus });
+    const layoutIdentity = snapshot => ({ keys: snapshot.channels.map(channel => channel.key), columns: snapshot.columns, focus: snapshot.focus, audio: snapshot.audio });
     class SharedBookmarkError extends Error {
         constructor(code, message, details = {}) { super(message); this.name = 'SharedBookmarkError'; this.code = code; Object.assign(this, details); }
     }
@@ -203,7 +203,7 @@
                     const colors = new Map(expected.snapshot.channels.map(channel => [channel.key, channel.color]));
                     const candidate = captured && Array.isArray(captured.channels) ? { ...captured, channels: captured.channels.map(channel =>
                         channel && colors.has(channel.key) ? { ...channel, color: colors.get(channel.key) } : channel) } : captured;
-                    const normalized = layouts.normalizeSnapshot(candidate);
+                    const normalized = layouts.normalizeSnapshot(layouts.preserveAudioOnUpdate(candidate, expected.snapshot));
                     return mutate(latest => {
                         const index = findExpected(latest, expected, ['snapshot']);
                         latest[index] = { ...latest[index], snapshot: normalized, updatedAt: now() };

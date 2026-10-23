@@ -314,3 +314,67 @@ test('continuous confirmed CAS conflicts stop after three attempts without chang
     assert.equal(a.list()[0].name, 'a');
     assert.equal(server.current().document.bookmarks[0].name, 'a');
 });
+
+test('shared audio survives persistence, cache, rename, undo and layout-only updates without adding removed or new channel audio', async () => {
+    const server = backend(), cache = storage(), a = client(server, { cacheStorage: cache });
+    await a.reload();
+    const initial = { ...snapshot(), audio: { version: 1, audible: [{ key: 'at|one', volume: .45 }] } };
+    const saved = await a.add('Sound', initial);
+    initial.audio.audible[0].volume = .9;
+    assert.equal(client(server, { cacheStorage: cache }).list()[0].snapshot.audio.audible[0].volume, .45);
+    await a.rename(saved.id, 'Sound renamed');
+    await a.update(saved.id, { ...snapshot(), channels: [...snapshot().channels, { key: 'at|new', name: 'New', color: 40 }] });
+    assert.deepEqual(a.list()[0].snapshot.audio, { version: 1, audible: [{ key: 'at|one', volume: .45 }] });
+    await a.remove(saved.id); await a.undo();
+    assert.deepEqual(a.list()[0].snapshot.audio, { version: 1, audible: [{ key: 'at|one', volume: .45 }] });
+    await a.update(saved.id, snapshot('at|new'));
+    assert.deepEqual(a.list()[0].snapshot.audio, { version: 1, audible: [] });
+    await a.update(saved.id, { ...snapshot('at|new'), audio: { version: 1, audible: [{ key: 'at|new', volume: 1 }] } });
+    assert.deepEqual(a.list()[0].snapshot.audio, { version: 1, audible: [{ key: 'at|new', volume: 1 }] });
+    await a.update(saved.id, { ...snapshot('at|new'), audio: { version: 1, audible: [] } });
+    assert.deepEqual(server.current().document.bookmarks[0].snapshot.audio, { version: 1, audible: [] });
+});
+
+test('concurrent audio-only edits conflict with stale layout updates and deletion while independent renames retain the latest audio', async () => {
+    const server = backend([entry('a')]), a = client(server), b = client(server);
+    await Promise.all([a.reload(), b.reload()]);
+    await a.update('a', { ...snapshot(), audio: { version: 1, audible: [{ key: 'at|one', volume: .25 }] } });
+    await assert.rejects(b.update('a', snapshot('at|replacement')), error => error.code === 'conflict');
+    await assert.rejects(b.remove('a'), error => error.code === 'conflict');
+    await b.rename('a', 'Independent name');
+    assert.deepEqual(server.current().document.bookmarks[0].snapshot.audio, { version: 1, audible: [{ key: 'at|one', volume: .25 }] });
+    await b.update('a', { ...snapshot(), audio: { version: 1, audible: [] } });
+    await assert.rejects(a.update('a', snapshot()), error => error.code === 'conflict');
+    assert.deepEqual(server.current().document.bookmarks[0].snapshot.audio, { version: 1, audible: [] });
+});
+
+test('shared import identity distinguishes no audio, silence and different volumes but canonical audio ordering deduplicates equivalent layouts', async () => {
+    const both = { ...snapshot(), channels: [...snapshot().channels, { key: 'at|two', name: 'Two', color: 30 }], columns: 2 };
+    const make = (id, audio) => ({ ...entry(id, 'Same layout'), snapshot: { ...both, ...(audio === undefined ? {} : { audio }) } });
+    const audible = [{ key: 'at|one', volume: .3 }, { key: 'at|two', volume: .6 }];
+    const server = backend([make('legacy')]), a = client(server); await a.reload();
+    const imported = await a.importLocal([
+        make('silent', { version: 1, audible: [] }),
+        make('sound', { version: 1, audible }),
+        make('same-sound', { version: 1, audible: [...audible].reverse() }),
+        make('different-volume', { version: 1, audible: [{ key: 'at|one', volume: .8 }] })
+    ]);
+    assert.equal(imported, 3);
+    assert.deepEqual(ids(a), ['legacy', 'silent', 'sound', 'different-volume']);
+    assert.deepEqual(a.list().find(item => item.id === 'sound').snapshot.audio.audible, audible);
+    const before = server.current().document, writes = server.writes;
+    await assert.rejects(a.importLocal([make('invalid-volume', { version: 1, audible: [{ key: 'at|one', volume: -1 }] })]));
+    assert.deepEqual(server.current().document, before); assert.equal(server.writes, writes);
+});
+
+test('queued shared writes freeze captured audio before awaiting other operations', async () => {
+    const server = backend([entry('a')]), a = client(server); await a.reload();
+    const gate = deferred(), reached = deferred();
+    server.readHook = async value => { server.readHook = null; reached.resolve(); await gate.promise; return value; };
+    const reload = a.reload(); await reached.promise;
+    const captured = { ...snapshot(), audio: { version: 1, audible: [{ key: 'at|one', volume: .4 }] } };
+    const updating = a.update('a', captured);
+    captured.audio.audible[0].volume = .9;
+    gate.resolve(); await Promise.all([reload, updating]);
+    assert.equal(server.current().document.bookmarks[0].snapshot.audio.audible[0].volume, .4);
+});

@@ -302,6 +302,7 @@
         const layoutFocusCandidates = new Map();
         let layoutCompletion = Promise.resolve(), finishLayoutCompletion = null;
         let automaticRecoveryReason = null;
+        const bookmarkCaptures = new Set();
         let preparation = null, preparedCohort = new Set(), watchStartTimer = null, unreadyWrappers = 0;
         let recoveryStartGeneration = 0;
         let preparationWaiting = '', lastRecoveryStatus = null;
@@ -1031,6 +1032,70 @@
                 (item.entry ? entries.get(item.element) === item.entry &&
                     item.version === layoutAudioVersion(item.entry) : !entries.has(item.element));
         }
+        function onBookmarkAudioIntent(event) {
+            if (disposed || !layoutAudioFlow?.bookmark || event.target !== doc.getElementById('multi-stream-container')) return;
+            if (layoutAudioPhase === 'preparing' && layoutTicket !== null) {
+                // This request joins the page's still-preparing batch. Keep its
+                // handshake alive while superseding any earlier sound policy.
+                publishAudioIntent(); clearAudioIntent(); layoutFocusCandidates.clear();
+                automaticRecoveryReason = null;
+            } else invalidateLayoutAudio();
+            cancelPendingRecovery(); recoveryFlow?.cancel(); clearPreparation();
+            globalMuted = true;
+            win.postMessage(envelope('site:audio-preference', { muted: true }), win.location.origin);
+            muteImmediately(true);
+        }
+        function onBookmarkAudioCapture(event) {
+            const request = event.target;
+            if (disposed || !layoutAudioFlow?.bookmark || request?.tagName !== 'SPAN' || !request.isConnected ||
+                request.parentElement !== doc.body || !/^\d{1,16}$/.test(request.getAttribute('data-umininn-bookmark-audio-request') || '')) return;
+            let keys;
+            try { keys = JSON.parse(request.getAttribute('data-umininn-bookmark-audio-keys') || 'null'); } catch (_) {}
+            if (!Array.isArray(keys) || !keys.length || keys.length > 256 || new Set(keys).size !== keys.length ||
+                keys.some(key => typeof key !== 'string' || !key || key.length > 4096)) return;
+            const pane = doc.getElementById('multi-stream-container'), epoch = layoutUserEpoch, generation = audioControlGeneration;
+            const snapshot = layoutAudioEntries();
+            const selected = keys.map(key => snapshot.filter(item => item.key === key));
+            let closed = false, timer;
+            const finish = (error, audio) => {
+                if (closed) return;
+                closed = true; win.clearTimeout(timer); bookmarkCaptures.delete(finish);
+                if (!request.isConnected) return;
+                if (error) request.setAttribute('data-umininn-bookmark-audio-error', error);
+                else request.setAttribute('data-umininn-bookmark-audio-result', JSON.stringify(audio));
+                request.dispatchEvent(new win.Event('umininn-player-bookmark-audio-result', { bubbles: true }));
+            };
+            bookmarkCaptures.add(finish);
+            timer = win.setTimeout(() => finish('讀取聲音逾時，書籤未有儲存；請等播放器連線後再試。'), 4000);
+            const unchanged = () => !closed && !disposed && pane === doc.getElementById('multi-stream-container') &&
+                epoch === layoutUserEpoch && generation === audioControlGeneration;
+            void (async () => {
+                try {
+                    await Promise.all([layoutCompletion, manualAudioTail, layoutAudioFlow.settle(), ...urgentAudioTasks]);
+                    if (!unchanged()) return finish('聲音或佈局已改變，書籤未有儲存；請重新儲存。');
+                    if (selected.some(matches => matches.length !== 1 || !matches[0].entry || !layoutAudioCurrent(matches[0])))
+                        return finish('部分台未能確認聲音，書籤未有儲存；請等播放器連線後再試。');
+                    const items = selected.map(matches => matches[0]), values = new Map();
+                    let cursor = 0;
+                    await Promise.all(Array.from({ length: Math.min(4, items.length) }, async () => {
+                        while (cursor < items.length && unchanged()) {
+                            const item = items[cursor++];
+                            const result = await execute(item.entry, { action: 'getState' });
+                            const state = result?.state;
+                            if (!result?.ok || !layoutAudioCurrent(item) || state?.available !== true ||
+                                state.muteSupported === false || state.volumeSupported === false ||
+                                typeof state.muted !== 'boolean' || typeof state.volume !== 'number' ||
+                                !Number.isFinite(state.volume) || state.volume < 0 || state.volume > 1)
+                                throw new Error('部分台未能確認聲音，書籤未有儲存；請等播放器連線後再試。');
+                            if (state.muted === false && state.volume > 0) values.set(item.key, { key: item.key, volume: state.volume });
+                        }
+                    }));
+                    if (!unchanged() || items.some(item => !layoutAudioCurrent(item)))
+                        return finish('聲音或佈局已改變，書籤未有儲存；請重新儲存。');
+                    finish(null, { version: 1, audible: keys.filter(key => values.has(key)).map(key => values.get(key)) });
+                } catch (error) { finish(error.message || '未能讀取聲音，書籤未有儲存。'); }
+            })();
+        }
         function layoutEvent(event) {
             const pane = doc.getElementById('multi-stream-container');
             const ticket = pane?.getAttribute('data-umininn-layout-audio-ticket');
@@ -1079,6 +1144,16 @@
                     scan();
                     if (layoutTicket === ticket) {
                         layoutAudioPhase = 'restoring';
+                        const savedAudio = pane.getAttribute('data-umininn-layout-bookmark-audio');
+                        if (savedAudio && layoutAudioFlow.bookmark) {
+                            let audio;
+                            try { audio = JSON.parse(savedAudio); } catch (_) {}
+                            clearAudioIntent(); layoutFocusCandidates.clear();
+                            await Promise.all([manualAudioTail, layoutAudioFlow.settle(), ...urgentAudioTasks]);
+                            if (!disposed && layoutTicket === ticket)
+                                await layoutAudioFlow.bookmark(ticket, audio?.version === 1 ? audio.audible : null);
+                            return;
+                        }
                         let intent = audioFocusIntent;
                         const committed = pane.getAttribute('data-umininn-layout-audio-focus');
                         const requests = (pane.getAttribute('data-umininn-layout-audio-focus-requests') || '').split(',');
@@ -1114,6 +1189,7 @@
             finishLayoutCompletion?.(); finishLayoutCompletion = null;
         }
         function onLayoutPageHide() {
+            for (const finish of [...bookmarkCaptures]) finish('頁面已離開，書籤未有儲存。');
             invalidateLayoutAudio(); layoutTicket = null;
             finishLayoutCompletion?.(); finishLayoutCompletion = null;
         }
@@ -1557,8 +1633,11 @@
                     doc.addEventListener('umininn-player-layout-before', onLayoutBefore, true);
                     doc.addEventListener('umininn-player-layout-after', onLayoutAfter, true);
                     doc.addEventListener('umininn-player-layout-abort', onLayoutAbort, true);
+                    doc.addEventListener('umininn-player-bookmark-audio-intent', onBookmarkAudioIntent, true);
+                    doc.addEventListener('umininn-player-bookmark-audio-capture', onBookmarkAudioCapture, true);
                     win.addEventListener('pagehide', onLayoutPageHide);
                     doc.documentElement.setAttribute('data-umininn-player-layout-audio-ready', '');
+                    if (layoutAudioFlow.bookmark) doc.documentElement.setAttribute('data-umininn-player-bookmark-audio-ready', '');
                     if (layoutAudioFlow.focusSupported) {
                         doc.addEventListener('umininn-player-layout-focus-request', onLayoutFocusRequest, true);
                         doc.documentElement.setAttribute('data-umininn-player-unified-audio-ready', '');
@@ -1587,12 +1666,15 @@
             doc.documentElement.removeAttribute('data-umininn-player-audio-focus-ready');
             doc.documentElement.removeAttribute('data-umininn-player-audio-intent');
             doc.documentElement.removeAttribute('data-umininn-player-layout-audio-ready');
+            doc.documentElement.removeAttribute('data-umininn-player-bookmark-audio-ready');
             doc.documentElement.removeAttribute('data-umininn-player-unified-audio-ready');
             doc.removeEventListener('umininn-player-layout-focus-request', onLayoutFocusRequest, true);
             onLayoutPageHide();
             doc.removeEventListener('umininn-player-layout-before', onLayoutBefore, true);
             doc.removeEventListener('umininn-player-layout-after', onLayoutAfter, true);
             doc.removeEventListener('umininn-player-layout-abort', onLayoutAbort, true);
+            doc.removeEventListener('umininn-player-bookmark-audio-intent', onBookmarkAudioIntent, true);
+            doc.removeEventListener('umininn-player-bookmark-audio-capture', onBookmarkAudioCapture, true);
             win.removeEventListener('pagehide', onLayoutPageHide);
             audioFocusIntent = null;
             if (audioReconcileTimer !== null) win.clearTimeout(audioReconcileTimer);
