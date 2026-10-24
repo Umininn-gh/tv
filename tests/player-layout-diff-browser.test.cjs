@@ -33,9 +33,9 @@ async function setup(t, options = {}) {
     return f;
 }
 async function settle(f) {
-    await f.page.waitForFunction(() => playerAudioLayoutBatch === null && playerAudioLayoutQueue.length === 0);
+    await f.page.waitForFunction(() => playerAudioBridge.batch === null && playerAudioBridge.queueLength === 0);
     await f.page.waitForTimeout(260);
-    await f.page.waitForFunction(() => playerAudioLayoutBatch === null && playerAudioLayoutQueue.length === 0);
+    await f.page.waitForFunction(() => playerAudioBridge.batch === null && playerAudioBridge.queueLength === 0);
     await f.page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 async function readGeometry(f) {

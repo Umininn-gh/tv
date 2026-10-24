@@ -406,6 +406,8 @@ const RENDERERS = {
                     }
                 });
                 hls.loadSource(streamUrl);
+                // A synchronous fatal SDK event may already have retired it.
+                if (resource.disposed || resource.failed || resource.hls !== hls || !video.isConnected) return;
                 hls.attachMedia(video);
             } catch (error) {
                 if (resource.hls) {
@@ -527,8 +529,14 @@ let channelOptionSequence = 0;
 let currentHLSInstances = [];
 let currentFLVInstances = [];
 let currentDisplayChannel = null;
-const activePlayers = new Map();
 const playerResources = new WeakMap();
+// Playback owns connected instances; layout only owns cells and projects CSS.
+const playerRegistry = PlayerLifecycle.create({
+    render: renderChannelElement,
+    getResource: element => playerResources.get(element),
+    dispose: disposePlayerResource
+});
+const activePlayers = playerRegistry.entries;
 const PLAYER_POSITION_STORAGE_KEY = 'playerPositionOrder';
 const PLAYER_ENLARGEMENT_STORAGE_KEY = 'playerEnlargementLayout';
 // Shared duration for the viewing page's temporary menus and editing overlays.
@@ -656,9 +664,10 @@ function getGoshMetadata(channel) {
 
 function replacePlayerWithError(resource, message) {
     if (resource.disposed || resource.errorShown || !resource.element.isConnected) return;
+    const lease = playerRegistry.leaseForResource(resource);
+    if (!lease) return;
     const error = buildErrorDiv(message);
-    resource.element.replaceWith(error);
-    resource.element = error;
+    if (!playerRegistry.replaceElement(lease, error)) return;
     resource.failed = true;
     resource.errorShown = true;
     projectPlayerLayout();
@@ -692,6 +701,11 @@ function resolvePlatform(raw) {
 
 /* ------------------------ 核心播放銷毀 ------------------------ */
 function disposePlayer(entry) {
+    const lease = playerRegistry.lease(entry);
+    return lease ? playerRegistry.remove(lease.key, entry) : false;
+}
+
+function disposePlayerResource(entry) {
     const resource = entry.resource;
     const element = resource ? resource.element : entry.element;
     if (resource) {
@@ -720,8 +734,7 @@ function disposePlayer(entry) {
 
 function destroyAllHLSInstances() {
     playerPositionEditor?.close(false);
-    activePlayers.forEach(disposePlayer);
-    activePlayers.clear();
+    playerRegistry.clear();
     playerLayoutState.setOrder([]);
     currentHLSInstances.forEach(instance => { try { instance.destroy(); } catch (error) {} });
     currentFLVInstances.forEach(instance => { try { instance.destroy(); } catch (error) {} });
@@ -739,7 +752,7 @@ function renderChannelElement(channel, muted, wrapperClass) {
 
 /* ------------------------ 單台觀看 ------------------------ */
 function getPlayerElement(entry) {
-    return entry.resource ? entry.resource.element : entry.element;
+    return playerRegistry.element(entry);
 }
 
 function projectPlayerLayout() {
@@ -857,7 +870,7 @@ function closePlayer(key) {
     const initial = key === 'initial-player' && !activePlayers.size && pane?.querySelector('#MyFrame');
     if (!entry && !initial) return false;
     const muted = getGlobalMuted();
-    if (entry) { disposePlayer(entry); activePlayers.delete(key); }
+    if (entry) disposePlayer(entry);
     else initial.remove();
     playerLayoutState.setOrder(playerLayoutState.order.filter(value => activePlayers.has(value)));
     // A close must not re-render retained players or apply the 2-to-1 audio rule.
@@ -959,7 +972,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     const previousGeometry = playerLayoutState.geometry;
     let presentationChanged = false;
     for (const [key, entry] of activePlayers) {
-        if (!desired.has(key)) { disposePlayer(entry); activePlayers.delete(key); presentationChanged = true; }
+        if (!desired.has(key)) { disposePlayer(entry); presentationChanged = true; }
     }
     playerLayoutState.setOrder(selected.map(ChannelList.channelKey));
     const layoutChanged = PlayerLayout.compare(previousGeometry, playerLayoutState.geometry).changed;
@@ -984,22 +997,20 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     const unsyncedAudio = [];
     selected.forEach((channel, index) => {
         const key = ChannelList.channelKey(channel);
-        let entry = activePlayers.get(key);
-        const nativePlayer = entry && entry.resource;
-        const element = entry && (nativePlayer ? nativePlayer.element : entry.element);
         const hasUrlAudioControl = ['twitch', 'kick', 'ok', 'youtube'].includes(channel.platform);
-        const reusable = entry && element.isConnected && !entry.failed && !(nativePlayer && nativePlayer.failed) && (preserveAudio || nativePlayer || entry.muted === muted || !hasUrlAudioControl);
-        if (!reusable) {
+        const initialMuted = preserveAudio ? true : muted;
+        const { entry, created } = playerRegistry.ensure(key, channel, {
+            muted: initialMuted,
+            wrapperClass: count === 1 ? 'full-screen-video' : 'video',
+            reusable: current => getPlayerElement(current).isConnected && !current.failed && !current.resource?.failed &&
+                (preserveAudio || current.resource || current.muted === muted || !hasUrlAudioControl),
+            failed: (element, resource) => !resource && ['hls', 'flv'].includes(getPlatform(channel.platform)?.type)
+        });
+        if (!entry) return;
+        if (created) {
             presentationChanged = true;
-            if (entry) disposePlayer(entry);
-            const initialMuted = preserveAudio ? true : muted;
-            const rendered = renderChannelElement(channel, initialMuted, count === 1 ? 'full-screen-video' : 'video');
-            const resource = playerResources.get(rendered);
-            const type = getPlatform(channel.platform)?.type;
-            entry = { channel, element: rendered, resource, muted: initialMuted, failed: !resource && (type === 'hls' || type === 'flv') };
-            activePlayers.set(key, entry);
-            container.appendChild(rendered);
-            if (globalMutedPreference !== null && !resource && !entry.failed && !['twitch', 'kick', 'ok'].includes(channel.platform)) unsyncedAudio.push(channel.name);
+            container.appendChild(getPlayerElement(entry));
+            if (globalMutedPreference !== null && !entry.resource && !entry.failed && !['twitch', 'kick', 'ok'].includes(channel.platform)) unsyncedAudio.push(channel.name);
         } else {
             // Preserve manual mute, volume and pause changes within the same mode.
             if (!preserveAudio && entry.resource && entry.muted !== muted) {
@@ -1108,12 +1119,16 @@ function setChannelSelectionVisible(visible) {
     channelSelectionIdleTimer.setVisible(visible);
 }
 
-// Layout mutations share one preparation/commit/restore transaction. The
-// userscript reads foreign players before this page changes their layout;
-// callbacks stay synchronous inside the transaction, including nested calls.
-let playerAudioLayoutDepth = 0, playerAudioLayoutSequence = 0, playerAudioFocusSequence = 0, playerBookmarkAudioSequence = 0;
-let playerAudioLayoutBatch = null;
-const playerAudioLayoutQueue = [];
+// The bridge owns audio transactions and their lifecycle. Geometry operations
+// remain synchronous and never call platform sound/playback APIs themselves.
+const playerAudioBridge = PlayerAudioBridge.create({
+    document, window,
+    getPane: () => document.getElementById('multi-stream-container'),
+    available: playerLayoutAudioAvailable,
+    getIntent: () => document.documentElement.getAttribute('data-umininn-player-audio-intent'),
+    isFocusCurrent: focus => playerRegistry.isCurrent(focus.lease || focus.entry) &&
+        getPlayerElement(focus.entry) === focus.target && playerLayoutState.focus?.key === focus.key
+});
 function playerLayoutAudioAvailable() {
     return document.documentElement.hasAttribute('data-umininn-player-userscript') &&
         document.documentElement.hasAttribute('data-umininn-player-layout-audio-ready');
@@ -1121,145 +1136,9 @@ function playerLayoutAudioAvailable() {
 function playerBookmarkAudioAvailable() {
     return playerLayoutAudioAvailable() && document.documentElement.hasAttribute('data-umininn-player-bookmark-audio-ready');
 }
-function readPlayerBookmarkAudio(keys) {
-    const request = document.createElement('span');
-    request.hidden = true;
-    request.setAttribute('data-umininn-bookmark-audio-request', String(++playerBookmarkAudioSequence));
-    request.setAttribute('data-umininn-bookmark-audio-keys', JSON.stringify(keys));
-    return new Promise((resolve, reject) => {
-        let timer;
-        const cleanup = () => {
-            clearTimeout(timer);
-            request.removeEventListener('umininn-player-bookmark-audio-result', done);
-            window.removeEventListener('pagehide', cancelled);
-            request.remove();
-        };
-        const cancelled = () => { cleanup(); reject(new Error('頁面已離開，書籤未有儲存。')); };
-        const done = event => {
-            if (event.target !== request) return;
-            const error = request.getAttribute('data-umininn-bookmark-audio-error');
-            let audio;
-            try { audio = JSON.parse(request.getAttribute('data-umininn-bookmark-audio-result') || 'null'); }
-            catch (_) {}
-            cleanup();
-            if (error || !audio) reject(new Error(error || '未能確認各台聲音，書籤未有儲存。'));
-            else resolve(audio);
-        };
-        request.addEventListener('umininn-player-bookmark-audio-result', done);
-        window.addEventListener('pagehide', cancelled);
-        timer = setTimeout(() => { cleanup(); reject(new Error('讀取聲音逾時，書籤未有儲存；請稍後重試。')); }, 5500);
-        document.body.appendChild(request);
-        request.dispatchEvent(new Event('umininn-player-bookmark-audio-capture', { bubbles: true }));
-    });
-}
-function withPlayerAudioLayout(action, options = {}) {
-    if (playerAudioLayoutDepth) return action();
-    if (!playerLayoutAudioAvailable()) return action();
-    // Only bypass an idle queue. An apparently blocked step/reset may become
-    // meaningful after an earlier queued operation has changed the cells.
-    if (!playerAudioLayoutBatch && !playerAudioLayoutQueue.length && !options.focus && !options.bookmarkAudio &&
-        typeof options.requiresLayout === 'function' && !options.requiresLayout()) return action();
-    return new Promise((resolve, reject) => {
-        playerAudioLayoutQueue.push({ action, resolve, reject, focus: options.focus,
-            bookmarkAudio: options.bookmarkAudio, audioIntent: options.audioIntent, requiresLayout: options.requiresLayout });
-        startPlayerAudioLayout();
-    });
-}
-function startPlayerAudioLayout() {
-    if (playerAudioLayoutBatch || !playerAudioLayoutQueue.length) return;
-    const pane = document.getElementById('multi-stream-container');
-    const batch = playerAudioLayoutBatch = { pane, ticket: String(++playerAudioLayoutSequence), phase: 'prepare', results: [] };
-    if (!pane || !playerLayoutAudioAvailable()) { commitPlayerAudioLayout(batch, false); return; }
-    pane.setAttribute('data-umininn-layout-audio-ticket', batch.ticket);
-    pane.removeAttribute('data-umininn-layout-audio-focus');
-    pane.removeAttribute('data-umininn-layout-audio-focus-requests');
-    pane.removeAttribute('data-umininn-layout-bookmark-audio');
-    batch.timer = setTimeout(() => commitPlayerAudioLayout(batch, false), 6500);
-    pane.dispatchEvent(new Event('umininn-player-layout-before', { bubbles: true }));
-}
-function commitPlayerAudioLayout(batch, restore) {
-    if (playerAudioLayoutBatch !== batch || batch.phase !== 'prepare') return;
-    clearTimeout(batch.timer);
-    batch.phase = 'commit';
-    if (!restore) batch.pane?.dispatchEvent(new Event('umininn-player-layout-abort', { bubbles: true }));
-    playerAudioLayoutDepth++;
-    try {
-        for (const request of playerAudioLayoutQueue.splice(0)) {
-            try { batch.results.push({ request, value: request.action() }); }
-            catch (error) { batch.results.push({ request, error }); }
-        }
-    } finally { playerAudioLayoutDepth--; }
-    batch.phase = 'restore';
-    if (!restore) { finishPlayerAudioLayout(batch); return; }
-    // Commit the final sound policy with the geometry, before any old sound
-    // can be restored. Newer manual sound input invalidates this request.
-    batch.pane.setAttribute('data-umininn-layout-audio-focus-requests',
-        batch.results.map(result => result.request.focus?.id).filter(Boolean).join(','));
-    for (const { request, value, error } of batch.results) {
-        if (!error && value?.applied && request.bookmarkAudio &&
-            document.documentElement.getAttribute('data-umininn-player-audio-intent') === request.audioIntent) {
-            batch.pane.setAttribute('data-umininn-layout-bookmark-audio', JSON.stringify(request.bookmarkAudio));
-            batch.pane.removeAttribute('data-umininn-layout-audio-focus');
-        }
-        const focus = request.focus;
-        if (!error && value === true && focus && focus.target?.isConnected &&
-            activePlayers.get(focus.key) === focus.entry && getPlayerElement(focus.entry) === focus.target && playerLayoutState.focus?.key === focus.key &&
-            document.documentElement.getAttribute('data-umininn-player-audio-intent') === focus.intent) {
-            batch.pane.setAttribute('data-umininn-layout-audio-focus', focus.id);
-            batch.pane.removeAttribute('data-umininn-layout-bookmark-audio');
-        }
-    }
-    batch.timer = setTimeout(() => {
-        batch.pane.dispatchEvent(new Event('umininn-player-layout-abort', { bubbles: true }));
-        finishPlayerAudioLayout(batch);
-    }, 10000);
-    batch.pane.dispatchEvent(new Event('umininn-player-layout-after', { bubbles: true }));
-}
-function finishPlayerAudioLayout(batch) {
-    if (playerAudioLayoutBatch !== batch) return;
-    clearTimeout(batch.timer);
-    if (batch.pane?.getAttribute('data-umininn-layout-audio-ticket') === batch.ticket) {
-        batch.pane.removeAttribute('data-umininn-layout-audio-ticket');
-        batch.pane.removeAttribute('data-umininn-layout-audio-ack');
-        batch.pane.removeAttribute('data-umininn-layout-audio-focus');
-        batch.pane.removeAttribute('data-umininn-layout-audio-focus-requests');
-        batch.pane.removeAttribute('data-umininn-layout-bookmark-audio');
-    }
-    playerAudioLayoutBatch = null;
-    for (const { request, value, error } of batch.results) {
-        if (error) request.reject(error); else request.resolve(value);
-    }
-    if (playerAudioLayoutQueue.length) queueMicrotask(startPlayerAudioLayout);
-}
-document.addEventListener('umininn-player-layout-ready', event => {
-    const batch = playerAudioLayoutBatch;
-    if (batch && event.target === batch.pane && batch.pane.getAttribute('data-umininn-layout-audio-ack') === batch.ticket)
-        commitPlayerAudioLayout(batch, true);
-});
-document.addEventListener('umininn-player-layout-restored', event => {
-    const batch = playerAudioLayoutBatch;
-    if (batch?.phase === 'restore' && event.target === batch.pane && batch.pane.getAttribute('data-umininn-layout-audio-ack') === batch.ticket)
-        finishPlayerAudioLayout(batch);
-});
-window.addEventListener('pagehide', () => {
-    const batch = playerAudioLayoutBatch;
-    if (batch) {
-        batch.pane?.dispatchEvent(new Event('umininn-player-layout-abort', { bubbles: true }));
-        for (const { request } of batch.results) request.resolve(false);
-        batch.results = [];
-        finishPlayerAudioLayout(batch);
-    }
-    for (const request of playerAudioLayoutQueue.splice(0)) request.resolve(false);
-});
-function guardPlayerAudioLayout(action, requiresLayout) {
-    const guarded = function (...args) {
-        return withPlayerAudioLayout(() => action.apply(this, args), {
-            requiresLayout: typeof requiresLayout === 'function' ? () => requiresLayout(...args) : undefined
-        });
-    };
-    guarded.requiresLayout = requiresLayout;
-    return guarded;
-}
+function readPlayerBookmarkAudio(keys) { return playerAudioBridge.captureBookmark(keys); }
+function withPlayerAudioLayout(action, options = {}) { return playerAudioBridge.run(action, options); }
+function guardPlayerAudioLayout(action, requiresLayout) { return playerAudioBridge.guard(action, requiresLayout); }
 applyPlayerSize = guardPlayerAudioLayout(applyPlayerSize, (next, { optimize = true } = {}) =>
     optimize || PlayerLayout.compare(getCurrentPlayerGeometry(), next).changed);
 enlargePlayer = guardPlayerAudioLayout(enlargePlayer, key => activePlayers.size > 1 && activePlayers.has(key) &&
@@ -1741,9 +1620,7 @@ function applyPlayerBookmark(value) {
             if (!snapshot.channels.some(channel => available.has(channel.key)))
                 throw new Error('這個書籤的台已從頻道列表移除；目前播放保持不變。');
             bookmarkAudio = snapshot.audio;
-            document.getElementById('multi-stream-container')?.dispatchEvent(
-                new Event('umininn-player-bookmark-audio-intent', { bubbles: true }));
-            audioIntent = document.documentElement.getAttribute('data-umininn-player-audio-intent');
+            audioIntent = playerAudioBridge.bookmarkIntent();
         }
         return withPlayerAudioLayout(() => applyLayout(snapshot), { bookmarkAudio, audioIntent,
             requiresLayout() {
@@ -2867,14 +2744,8 @@ function applyPlayerBookmark(value) {
             const entry = activePlayers.get(key);
             if (!entry || activePlayers.size < 2 || playerLayoutState.focus?.key === key && playerLayoutState.focus.span >= 256) return;
             const target = getPlayerElement(entry);
-            let focus;
-            if (target && document.documentElement.hasAttribute('data-umininn-player-unified-audio-ready')) {
-                const id = String(++playerAudioFocusSequence);
-                target.setAttribute('data-umininn-player-layout-focus-request', id);
-                target.dispatchEvent(new Event('umininn-player-layout-focus-request', { bubbles: true }));
-                focus = { id, target, entry, key,
-                    intent: document.documentElement.getAttribute('data-umininn-player-audio-intent') };
-            }
+            const focus = playerAudioBridge.beginFocus(key, entry, target);
+            if (focus) focus.lease = playerRegistry.lease(entry);
             await withPlayerAudioLayout(() => enlargePlayer(key), { focus });
         }
         else if (button.dataset.playerAction === 'audio-focus') {

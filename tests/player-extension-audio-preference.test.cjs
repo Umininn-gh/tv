@@ -6,6 +6,8 @@ const vm = require('node:vm');
 const ChannelList = require('../channel-list.js');
 const StreamPerformance = require('../stream-performance.js');
 const PlayerLayout = require('../player-layout.js');
+const PlayerLifecycle = require('../player-lifecycle.js');
+const PlayerAudioBridge = require('../player-audio-bridge.js');
 const PlayerGeometry = require('../player-geometry.js');
 
 const root = path.join(__dirname, '..');
@@ -56,7 +58,7 @@ function siteFixture(admin = false) {
     }
     const context = vm.createContext({ window, location: { hostname: 'umininn-gh.github.io', origin: 'https://umininn-gh.github.io' },
         document: { getElementById: id => id === 'multi-stream-container' ? pane : id === 'channel-selection' ? selection : null,
-            createElement: tag => new Element(tag), addEventListener() {}, documentElement: { hasAttribute() { return false; } } }, Hls, ChannelList, StreamPerformance, PlayerLayout, PlayerGeometry, queueMicrotask, console, URL });
+            createElement: tag => new Element(tag), addEventListener() {}, documentElement: { hasAttribute() { return false; } } }, Hls, ChannelList, StreamPerformance, PlayerLayout, PlayerGeometry, PlayerLifecycle, PlayerAudioBridge, queueMicrotask, console, URL });
     let source = read(admin ? 'admin.html' : 'tv-app.js');
     source = admin
         ? source.slice(source.indexOf('        // ======================== 全域變數'), source.indexOf('        // ======================== 載入 Twitch 憑證'))

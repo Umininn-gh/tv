@@ -31,9 +31,9 @@ test.before(async () => {
     browser = await playwright[engine].launch({ headless: true, ...launch });
     const html = read('index.html'), source = read('tv-app.js');
     css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match => match[1]).join('\n') + '\n' + read('layout-bookmarks.css');
-    modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'menu-dismiss', 'layout-bookmarks', 'shared-bookmarks']
+    modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'player-lifecycle', 'menu-dismiss', 'layout-bookmarks', 'shared-bookmarks']
         .map(name => ['/tv/' + name + '.js', read('' + name + '.js')]));
-    appScript = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'projectPlayerLayout', 'calculatePlayerLayout', 'updatePlayerLayout',
+    appScript = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'disposePlayerResource', 'projectPlayerLayout', 'calculatePlayerLayout', 'updatePlayerLayout',
         'playerGridArea', 'getCurrentPlayerGeometry', 'savePlayerEnlargement', 'getPlayerPositionKeys', 'syncActivePlayers',
         'playerLayoutAudioAvailable', 'playerBookmarkAudioAvailable', 'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible']
         .map(name => productionFunction(source, name)).join('\n');
@@ -55,7 +55,9 @@ function htmlFixture({ width = 1100, height = 600 } = {}) {
     ${Object.keys(modules).map(src => '<script src="' + src + '"></script>').join('')}
     <script>${instrument}
     const channels=[{id:'one',platform:'m3u8',name:'劇集一台'},{id:'two',platform:'at',name:'直播二台'},{id:'three',platform:'at',name:'新聞三台'},{id:'four',platform:'m3u8',name:'劇集四台'}];
-    const activePlayers=new Map(),playerResources=new WeakMap(),PLAYER_POSITION_STORAGE_KEY='playerPositionOrder',PLAYER_ENLARGEMENT_STORAGE_KEY='playerEnlargementLayout';
+    const playerResources=new WeakMap(),PLAYER_POSITION_STORAGE_KEY='playerPositionOrder',PLAYER_ENLARGEMENT_STORAGE_KEY='playerEnlargementLayout';
+    const playerRegistry=PlayerLifecycle.create({render:renderChannelElement,getResource:element=>playerResources.get(element),dispose:disposePlayerResource});
+    const activePlayers=playerRegistry.entries;
     const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});
     const playerLayoutOperations=PlayerLayout.createOperations({geometry:PlayerGeometry});let playerGrid=null;
     let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[],layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null;

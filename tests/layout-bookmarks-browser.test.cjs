@@ -35,9 +35,9 @@ function loadProduction() {
     const html = read('index.html'), source = read('tv-app.js');
     css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match => match[1]).join('\n');
     bookmarkCss = read('layout-bookmarks.css');
-    modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'menu-dismiss', 'layout-bookmarks']
+    modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'player-lifecycle', 'menu-dismiss', 'layout-bookmarks']
         .map(name => ['/tv/' + name + '.js', read('' + name + '.js')]));
-    const names = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'projectPlayerLayout', 'calculatePlayerLayout', 'updatePlayerLayout',
+    const names = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'disposePlayerResource', 'projectPlayerLayout', 'calculatePlayerLayout', 'updatePlayerLayout',
         'playerGridArea', 'getCurrentPlayerGeometry', 'savePlayerEnlargement', 'getPlayerPositionKeys', 'syncActivePlayers',
         'playerBookmarkAudioAvailable', 'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible'];
     appScript = names.map(name => productionFunction(source, name)).join('\n') + '\n' + productionIife(source, 'initLayoutBookmarks')
@@ -90,7 +90,9 @@ function fixtureDocument({ width = 1100, height = 600, framePlatform = 'at' } = 
     ${Object.keys(modules).map(src => '<script src="' + src + '"></script>').join('')}
     <script>${instrument}
     let channels=[{id:'one',platform:'m3u8',name:'劇集一台'},{id:'two',platform:'${framePlatform}',name:'劇集二台'},{id:'three',platform:'${framePlatform}',name:'直播三台'},{id:'four',platform:'m3u8',name:'新聞四台'}];
-    const activePlayers=new Map(),playerResources=new WeakMap();
+    const playerResources=new WeakMap();
+    const playerRegistry=PlayerLifecycle.create({render:renderChannelElement,getResource:element=>playerResources.get(element),dispose:disposePlayerResource});
+    const activePlayers=playerRegistry.entries;
     const PLAYER_POSITION_STORAGE_KEY='playerPositionOrder',PLAYER_ENLARGEMENT_STORAGE_KEY='playerEnlargementLayout';
     const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});
     const playerLayoutOperations=PlayerLayout.createOperations({geometry:PlayerGeometry});let playerGrid=null;

@@ -8,6 +8,8 @@ const vm = require('node:vm');
 const ChannelList = require('../channel-list.js');
 const StreamPerformance = require('../stream-performance.js');
 const PlayerLayout = require('../player-layout.js');
+const PlayerLifecycle = require('../player-lifecycle.js');
+const PlayerAudioBridge = require('../player-audio-bridge.js');
 const PlayerGeometry = require('../player-geometry.js');
 const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const app = read('tv-app.js');
@@ -64,20 +66,20 @@ function fixture({ nativeHls = false } = {}) {
         location: { hostname: 'site.invalid', origin: 'https://site.invalid' },
         sessionStorage: { getItem() { return null; } }, localStorage: { setItem() {}, removeItem() {} },
         TV_LOGIN_CONFIG: { passwordHash: '0'.repeat(64), passwordSalt: 'fixture', storageKey: 'fixture' },
-        ChannelList, StreamPerformance, PlayerLayout, PlayerGeometry, queueMicrotask, URL,
+        ChannelList, StreamPerformance, PlayerLayout, PlayerGeometry, PlayerLifecycle, PlayerAudioBridge, queueMicrotask, URL,
         console: { warn: (...args) => warnings.push(args), error() {} }, addEventListener() {}
     });
     context.window = context;
     vm.runInContext(read('login.js'), context);
     vm.runInContext(app.slice(0, coreEnd), context);
-    function installHls({ throwOnAttach = false } = {}) {
+    function installHls({ throwOnAttach = false, fatalOnSource = false } = {}) {
         context.Hls = class {
             static Events = { MANIFEST_PARSED: 'manifest', ERROR: 'error' };
             static isSupported() { return true; }
-            constructor(config) { this.config = config; this.events = new Map(); this.destroyCalls = 0; hlsPlayers.push(this); }
+            constructor(config) { this.config = config; this.events = new Map(); this.destroyCalls = 0; this.attachCalls = 0; hlsPlayers.push(this); }
             on(event, fn) { this.events.set(event, fn); }
-            loadSource(src) { this.src = src; }
-            attachMedia(media) { this.media = media; if (throwOnAttach) throw new Error('fixture attach error'); }
+            loadSource(src) { this.src = src; if (fatalOnSource) this.emit('error', { fatal: true }); }
+            attachMedia(media) { this.attachCalls++; this.media = media; if (throwOnAttach) throw new Error('fixture attach error'); }
             emit(event, data) { this.events.get(event)?.(event, data); }
             destroy() { this.destroyCalls++; }
         };
@@ -154,6 +156,22 @@ test('native HLS avoids a download and its one-time JS fallback preserves the sa
     assert.equal(entry.resource.failed, false); f.sync([]);
 });
 
+test('a synchronous fatal HLS source event cannot attach a destroyed SDK and a fresh selection can retry', async () => {
+    const f = fixture(), selected = channel('fatal-source');
+    f.sync([selected]); await flush();
+    f.installHls({ fatalOnSource: true }); f.settle(); await flush();
+    const failedEntry = f.entry(selected), failedSdk = f.hlsPlayers[0];
+    assert.equal(failedSdk.destroyCalls, 1);
+    assert.equal(failedSdk.attachCalls, 0, 'fatal loadSource must stop before attachMedia');
+    assert.equal(failedEntry.resource.failed, true);
+    assert.equal(failedEntry.resource.element.tagName, 'DIV');
+    f.installHls(); f.sync([selected]); await flush();
+    assert.notEqual(f.entry(selected), failedEntry);
+    assert.equal(failedEntry.resource.disposed, true);
+    assert.equal(f.hlsPlayers[1].attachCalls, 1);
+    f.sync([]);
+});
+
 test('closing while a dynamic HLS URL is pending avoids even requesting the library', async () => {
     const f = fixture(); let finish;
     f.context.fixtureMetadata = () => new Promise(resolve => { finish = resolve; });
@@ -162,7 +180,7 @@ test('closing while a dynamic HLS URL is pending avoids even requesting the libr
         document.getElementById('multi-stream-container').appendChild(video);
         return { element: video, resource: playerResources.get(video) };
     })()`);
-    await flush(); f.context.fixtureEntry = entry; f.run('disposePlayer(fixtureEntry)');
+    await flush(); f.context.fixtureEntry = entry; f.run('disposePlayerResource(fixtureEntry)');
     finish('https://media.invalid/late.m3u8'); await flush();
     assert.equal(f.requests.length, 0); assert.equal(entry.resource.disposed, true);
 });

@@ -288,6 +288,8 @@ for (const admin of [false, true]) {
             await page.addScriptTag({ content: read('site/assets/js/stream-performance.js') });
             await page.addScriptTag({ content: read('site/assets/js/player-geometry.js') });
             await page.addScriptTag({ content: read('site/assets/js/player-layout.js') });
+            await page.addScriptTag({ content: read('site/assets/js/player-lifecycle.js') });
+            await page.addScriptTag({ content: read('site/assets/js/player-audio-bridge.js') });
             await page.addScriptTag({ content: `window.Hls = class {
                 static Events = {MANIFEST_PARSED: 'manifest', ERROR: 'error'};
                 static isSupported() { return true; }
