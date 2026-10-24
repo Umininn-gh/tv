@@ -2976,15 +2976,33 @@ test('layout audio preserves each current channel through trusted enlarge, shrin
     if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
     const before=await seedLayoutSound(f),sound=exactSound(before);
     const operations=[
-        async()=>{await f.page.evaluate(key=>enlargePlayer(key),keys[0]);await waitSpan(f,keys[0],2)},
-        async()=>{await actualMouseWindowAction(f,keys[0],'shrink');await waitSingleCells(f)},
-        async()=>{await f.page.locator('#enlarge-player').click();await positionCell(f,keys[1]).click();await waitSpan(f,keys[1],2);await f.page.keyboard.press('Escape')},
-        async()=>{await actualMouseWindowAction(f,keys[1],'shrink');await waitSingleCells(f)},
-        async()=>{const old=await f.page.evaluate(()=>fixture.order());await f.page.locator('#adjust-player-positions').click();await positionCell(f,keys[0]).click();await positionCell(f,keys[1]).click();await f.page.waitForFunction(old=>JSON.stringify(fixture.order())!==JSON.stringify(old),old);await f.page.keyboard.press('Escape')},
-        ()=>f.page.locator('#reset-player-positions').click(),
-        ()=>f.page.evaluate(()=>fixture.resize(330,1000))
+        ['direct enlarge',true,async()=>{await f.page.evaluate(key=>enlargePlayer(key),keys[0]);await waitSpan(f,keys[0],2)}],
+        ['direct shrink',true,async()=>{await actualMouseWindowAction(f,keys[0],'shrink');await waitSingleCells(f)}],
+        ['editor enlarge',true,async()=>{await f.page.locator('#enlarge-player').click();await positionCell(f,keys[1]).click();await waitSpan(f,keys[1],2);await f.page.keyboard.press('Escape')}],
+        ['editor-grown tile shrink',true,async()=>{await actualMouseWindowAction(f,keys[1],'shrink');await waitSingleCells(f)}],
+        ['editor exchange to a non-default order',true,async()=>{const old=await f.page.evaluate(()=>fixture.order());await f.page.locator('#adjust-player-positions').click();await positionCell(f,keys[0]).click();await positionCell(f,keys[4]).click();await f.page.waitForFunction(old=>JSON.stringify(fixture.order())!==JSON.stringify(old),old);await f.page.keyboard.press('Escape')}],
+        ['reset changed arrangement',true,()=>f.page.locator('#reset-player-positions').click()],
+        ['already-default reset',false,()=>f.page.locator('#reset-player-positions').click()],
+        ['automatic portrait reflow',true,()=>f.page.evaluate(()=>fixture.resize(330,1000))]
     ];
-    for(const operation of operations){await layoutAction(f,operation);await waitExactSound(f,sound);await assertAudioContinuity(f,before)}
+    for(const [name,changesLayout,operation]of operations){
+        const previousCount=await f.page.evaluate(()=>fixtureLayoutEvents.length),prior=(await readLayout(f)).logical;
+        await operation();
+        if(changesLayout){
+            await waitLayoutAudio(f,previousCount);
+            assert.notDeepEqual((await readLayout(f)).logical,prior,name+' must perform its expected real layout change');
+            const types=await f.page.evaluate(previousCount=>fixtureLayoutEvents.slice(previousCount).map(event=>event.type),previousCount);
+            for(const type of Object.values(layoutAudioEvents))assert.ok(types.includes(type),name+' must complete '+type);
+        }else{
+            // The previous reset has already restored the default order.
+            // Phase 3 correctly avoids an unnecessary sound transaction here.
+            assert.deepEqual(prior.order,keys,name+' starts with the default sequence');
+            await f.page.waitForTimeout(240);
+            assert.deepEqual((await readLayout(f)).logical,prior,name+' preserves all cells');
+            assert.deepEqual(await f.page.evaluate(previousCount=>fixtureLayoutEvents.slice(previousCount),previousCount),[],name+' must not capture or restore sound');
+        }
+        await waitExactSound(f,sound);await assertAudioContinuity(f,before);
+    }
     assert.equal(sound[0].muted,false);assert.equal(sound[0].volume,0,'unmuted zero volume is distinct from mute');
 });
 

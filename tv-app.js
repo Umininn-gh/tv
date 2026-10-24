@@ -745,21 +745,24 @@ function getPlayerElement(entry) {
 function projectPlayerLayout() {
     const geometry = playerLayoutState.geometry;
     const positions = new Map(geometry.items.map(item => [item.key, item]));
+    let changed = false;
     playerLayoutState.order.forEach((key, index) => {
         const entry = activePlayers.get(key);
         if (!entry) return;
         const element = getPlayerElement(entry);
         const item = positions.get(key);
-        element.style.order = String(index);
-        element.style.gridArea = item ? playerGridArea(item) : '';
+        const order = String(index), area = item ? playerGridArea(item) : '';
+        if (element.style.order !== order) { element.style.order = order; changed = true; }
+        if (element.style.gridArea !== area) { element.style.gridArea = area; changed = true; }
     });
+    return changed;
 }
 
 function updatePlayerLayout({ force = false } = {}) {
     const pane = document.getElementById('multi-stream-container');
     if (!pane) return;
     if (!playerGrid) playerGrid = PlayerLayout.observe(pane, {
-        runUpdate: action => withPlayerAudioLayout(action, false),
+        runUpdate: (action, requiresLayout) => withPlayerAudioLayout(action, { requiresLayout }),
         stabilizeResize: true,
         getResizeStability: () => activePlayers.size > 1 && activePlayers.has(playerLayoutState.focus?.key),
         getCount: () => activePlayers.size,
@@ -769,6 +772,9 @@ function updatePlayerLayout({ force = false } = {}) {
                 focus ? Math.max(playerLayoutState.pending?.columns || 0, playerLayoutState.enlargedGeometry?.columns || 0) : 1);
         },
         calculate(options) {
+            return calculatePlayerLayout(options, false);
+        },
+        onCommit(next, options) {
             return playerLayoutState.commit(calculatePlayerLayout(options));
         },
         onChange() {
@@ -782,17 +788,18 @@ function updatePlayerLayout({ force = false } = {}) {
     const previousFocus = playerLayoutState.enlargedGeometry?.items.find(item => item.span > 1);
     const activeFocus = activePlayers.size > 1 && activePlayers.has(playerLayoutState.focus?.key) ? playerLayoutState.focus : null;
     const contextChanged = previousFocus?.key !== activeFocus?.key || previousFocus?.span !== activeFocus?.span;
-    playerGrid.update({ force: force || contextChanged || playerLayoutState.pending?.intent === 'bookmark' });
+    const result = playerGrid.update({ force: force || contextChanged || playerLayoutState.pending?.intent === 'bookmark' });
     // A retry may replace one player while keeping exactly the same geometry.
-    projectPlayerLayout();
-    playerWindowControls?.refresh();
+    if (projectPlayerLayout()) playerWindowControls?.refresh();
+    return result;
 }
 
-function calculatePlayerLayout(options) {
+function calculatePlayerLayout(options, commit = true) {
     const plan = playerLayoutOperations.reflow({ keys: getPlayerPositionKeys(),
         focus: playerLayoutState.focus, pending: playerLayoutState.pending }, options);
-    playerLayoutState.setPending(plan.pending);
-    return plan.next;
+    if (commit) playerLayoutState.setPending(plan.pending);
+    return plan.next.items ? plan.next : { ...plan.next,
+        ...PlayerGeometry.build({ keys: getPlayerPositionKeys(), columns: plan.next.columns }) };
 }
 
 function playerGridArea(item) {
@@ -813,6 +820,11 @@ function savePlayerEnlargement() {
 }
 
 function applyPlayerSize(next, { optimize = true } = {}) {
+    const nextFocus = next.items.find(item => item.span > 1) || null;
+    const sameFocus = nextFocus?.key === playerLayoutState.focus?.key && nextFocus?.row === playerLayoutState.focus?.row &&
+        nextFocus?.column === playerLayoutState.focus?.column && nextFocus?.span === playerLayoutState.focus?.span;
+    if (!optimize && !PlayerLayout.compare(playerLayoutState.geometry, next).changed &&
+        !playerLayoutState.geometry.deferredFocus && !playerLayoutState.pending && sameFocus) return false;
     // Capture the reflowed order before the final shrink returns to normal tracks.
     playerLayoutState.commit(next);
     playerLayoutState.setFocus(next.items.find(item => item.span > 1) || null);
@@ -900,6 +912,7 @@ function applyPlayerPlacement(plan) {
     // Project cells without moving connected iframe nodes or restarting playback.
     projectPlayerLayout();
     if (playerLayoutState.pending) { updatePlayerLayout({ force: true }); savePlayerEnlargement(); }
+    else playerGrid?.adopt(playerLayoutState.geometry);
     playerLayoutState.rememberOrder();
     try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(playerLayoutState.preferredOrder)); } catch (_) {}
     playerPositionEditor?.refresh();
@@ -925,10 +938,11 @@ function resetPlayerPositions() {
     const keys = getPlayerPositionKeys();
     keys.sort((a, b) => (defaultRanks.get(a) ?? Infinity) - (defaultRanks.get(b) ?? Infinity));
     // Keep each live player connected, including players showing a playback error.
-    playerLayoutState.commit({ ...PlayerGeometry.build({ keys, columns: playerLayoutState.geometry.columns }), count: keys.length });
+    const next = { ...PlayerGeometry.build({ keys, columns: playerLayoutState.geometry.columns }), count: keys.length };
+    const changed = PlayerLayout.compare(playerLayoutState.geometry, next).changed;
+    playerLayoutState.commit(next);
     updatePlayerLayout({ force: hadVisibleEnlargement });
-    playerPositionEditor?.refresh();
-    playerNameOverlay?.refresh();
+    if (changed) { playerPositionEditor?.refresh(); playerNameOverlay?.refresh(); }
 }
 
 function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
@@ -942,14 +956,19 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     const previousFocus = playerLayoutState.enlargedGeometry?.items.find(item => item.span > 1);
     const selectedFocus = selected.length > 1 && desired.has(playerLayoutState.focus?.key) ? playerLayoutState.focus : null;
     const layoutContextChanged = previousFocus?.key !== selectedFocus?.key || previousFocus?.span !== selectedFocus?.span;
+    const previousGeometry = playerLayoutState.geometry;
+    let presentationChanged = false;
     for (const [key, entry] of activePlayers) {
-        if (!desired.has(key)) { disposePlayer(entry); activePlayers.delete(key); }
+        if (!desired.has(key)) { disposePlayer(entry); activePlayers.delete(key); presentationChanged = true; }
     }
     playerLayoutState.setOrder(selected.map(ChannelList.channelKey));
+    const layoutChanged = PlayerLayout.compare(previousGeometry, playerLayoutState.geometry).changed;
     // Remove the initial placeholder without disconnecting retained players.
     const retained = new Set(Array.from(activePlayers.values(), entry => entry.resource ? entry.resource.element : entry.element));
+    const emptyNode = !selected.length && container.children.length === 1 &&
+        container.firstElementChild?.textContent === emptyMessage ? container.firstElementChild : null;
     for (const child of Array.from(container.children)) {
-        if (!retained.has(child)) child.remove();
+        if (!retained.has(child) && child !== emptyNode) { child.remove(); presentationChanged = true; }
     }
     const count = selected.length;
     const muted = getGlobalMuted(count);
@@ -957,10 +976,9 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     currentDisplayChannel = count === 1 ? selected[0] : null;
     updateGlobalAudioButton();
     if (!count) {
-        container.innerHTML = `<div style="color:var(--label-2); text-align:center; padding:2rem;">${emptyMessage}</div>`;
+        if (!emptyNode) container.innerHTML = `<div style="color:var(--label-2); text-align:center; padding:2rem;">${emptyMessage}</div>`;
         updatePlayerLayout({ force: layoutContextChanged });
-        playerPositionEditor?.refresh();
-        playerNameOverlay?.refresh();
+        if (layoutChanged || presentationChanged) { playerPositionEditor?.refresh(); playerNameOverlay?.refresh(); }
         return;
     }
     const unsyncedAudio = [];
@@ -972,6 +990,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
         const hasUrlAudioControl = ['twitch', 'kick', 'ok', 'youtube'].includes(channel.platform);
         const reusable = entry && element.isConnected && !entry.failed && !(nativePlayer && nativePlayer.failed) && (preserveAudio || nativePlayer || entry.muted === muted || !hasUrlAudioControl);
         if (!reusable) {
+            presentationChanged = true;
             if (entry) disposePlayer(entry);
             const initialMuted = preserveAudio ? true : muted;
             const rendered = renderChannelElement(channel, initialMuted, count === 1 ? 'full-screen-video' : 'video');
@@ -992,17 +1011,20 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
             entry.channel = channel;
         }
         const visible = entry.resource ? entry.resource.element : entry.element;
-        visible.dataset.channelName = channel.name || '';
-        visible.dataset.channelKey = key;
-        visible.classList.toggle('full-screen-video', count === 1);
-        visible.classList.toggle('video', count > 1);
+        if (visible.dataset.channelName !== (channel.name || '')) { visible.dataset.channelName = channel.name || ''; presentationChanged = true; }
+        if (visible.dataset.channelKey !== key) { visible.dataset.channelKey = key; presentationChanged = true; }
+        if (visible.classList.contains('full-screen-video') !== (count === 1)) { visible.classList.toggle('full-screen-video', count === 1); presentationChanged = true; }
+        if (visible.classList.contains('video') !== (count > 1)) { visible.classList.toggle('video', count > 1); presentationChanged = true; }
     });
     activePlayers.forEach(entry => entry.resource?.twitch?.refresh());
     updatePlayerLayout({ force: layoutContextChanged });
     updateGlobalAudioButton();
     if (unsyncedAudio.length) showGlobalAudioFeedback({ muted, unsupported: unsyncedAudio, reloaded: 0 });
-    playerPositionEditor?.refresh();
-    playerNameOverlay?.refresh();
+    if (layoutChanged || presentationChanged) {
+        playerPositionEditor?.refresh();
+        playerNameOverlay?.refresh();
+        playerWindowControls?.refresh();
+    }
 }
 
 function pruneActivePlayers() {
@@ -1133,9 +1155,13 @@ function readPlayerBookmarkAudio(keys) {
 function withPlayerAudioLayout(action, options = {}) {
     if (playerAudioLayoutDepth) return action();
     if (!playerLayoutAudioAvailable()) return action();
+    // Only bypass an idle queue. An apparently blocked step/reset may become
+    // meaningful after an earlier queued operation has changed the cells.
+    if (!playerAudioLayoutBatch && !playerAudioLayoutQueue.length && !options.focus && !options.bookmarkAudio &&
+        typeof options.requiresLayout === 'function' && !options.requiresLayout()) return action();
     return new Promise((resolve, reject) => {
         playerAudioLayoutQueue.push({ action, resolve, reject, focus: options.focus,
-            bookmarkAudio: options.bookmarkAudio, audioIntent: options.audioIntent });
+            bookmarkAudio: options.bookmarkAudio, audioIntent: options.audioIntent, requiresLayout: options.requiresLayout });
         startPlayerAudioLayout();
     });
 }
@@ -1225,18 +1251,46 @@ window.addEventListener('pagehide', () => {
     }
     for (const request of playerAudioLayoutQueue.splice(0)) request.resolve(false);
 });
-function guardPlayerAudioLayout(action) {
-    return function (...args) { return withPlayerAudioLayout(() => action.apply(this, args)); };
+function guardPlayerAudioLayout(action, requiresLayout) {
+    const guarded = function (...args) {
+        return withPlayerAudioLayout(() => action.apply(this, args), {
+            requiresLayout: typeof requiresLayout === 'function' ? () => requiresLayout(...args) : undefined
+        });
+    };
+    guarded.requiresLayout = requiresLayout;
+    return guarded;
 }
-updatePlayerLayout = guardPlayerAudioLayout(updatePlayerLayout, false);
-applyPlayerSize = guardPlayerAudioLayout(applyPlayerSize);
-enlargePlayer = guardPlayerAudioLayout(enlargePlayer);
-shrinkPlayer = guardPlayerAudioLayout(shrinkPlayer);
-closePlayer = guardPlayerAudioLayout(closePlayer);
-swapPlayerPositions = guardPlayerAudioLayout(swapPlayerPositions);
-movePlayerDirection = guardPlayerAudioLayout(movePlayerDirection);
-resetPlayerPositions = guardPlayerAudioLayout(resetPlayerPositions);
-syncActivePlayers = guardPlayerAudioLayout(syncActivePlayers);
+applyPlayerSize = guardPlayerAudioLayout(applyPlayerSize, (next, { optimize = true } = {}) =>
+    optimize || PlayerLayout.compare(getCurrentPlayerGeometry(), next).changed);
+enlargePlayer = guardPlayerAudioLayout(enlargePlayer, key => activePlayers.size > 1 && activePlayers.has(key) &&
+    !(playerLayoutState.focus?.key === key && playerLayoutState.focus.span >= 256));
+shrinkPlayer = guardPlayerAudioLayout(shrinkPlayer, key => activePlayers.size > 1 && activePlayers.has(key) &&
+    playerLayoutState.enlargedGeometry?.items.some(item => item.key === key && item.span > 1));
+closePlayer = guardPlayerAudioLayout(closePlayer, key => activePlayers.has(key) ||
+    key === 'initial-player' && !activePlayers.size && Boolean(document.getElementById('multi-stream-container')?.querySelector('#MyFrame')));
+swapPlayerPositions = guardPlayerAudioLayout(swapPlayerPositions, (source, target) =>
+    PlayerLayout.compare(getCurrentPlayerGeometry(), playerLayoutOperations.exchange(getCurrentPlayerGeometry(), source, target).next).changed);
+movePlayerDirection = guardPlayerAudioLayout(movePlayerDirection, (key, direction, target) =>
+    activePlayers.has(key) && activePlayers.has(target) &&
+    PlayerLayout.compare(getCurrentPlayerGeometry(), playerLayoutOperations.step(getCurrentPlayerGeometry(), key, direction, target).next).changed);
+resetPlayerPositions = guardPlayerAudioLayout(resetPlayerPositions, () => {
+    if (playerLayoutState.enlargedGeometry) return true;
+    const ranks = new Map(channels.map((channel, index) => [ChannelList.channelKey(channel), index]));
+    const keys = getPlayerPositionKeys().sort((a, b) => (ranks.get(a) ?? Infinity) - (ranks.get(b) ?? Infinity));
+    return PlayerLayout.compare(getCurrentPlayerGeometry(), PlayerGeometry.build({ keys, columns: playerLayoutState.geometry.columns })).changed;
+});
+syncActivePlayers = guardPlayerAudioLayout(syncActivePlayers, requested => {
+    const selected = ChannelList.mergeChannels(requested);
+    const ranks = new Map(playerLayoutState.preferredOrder.map((key, index) => [key, index]));
+    selected.sort((a, b) => (ranks.get(ChannelList.channelKey(a)) ?? Infinity) - (ranks.get(ChannelList.channelKey(b)) ?? Infinity));
+    const keys = selected.map(ChannelList.channelKey);
+    if (keys.length !== activePlayers.size || keys.some(key => {
+        const entry = activePlayers.get(key);
+        return !entry || !getPlayerElement(entry).isConnected || entry.failed || entry.resource?.failed;
+    })) return true;
+    const focus = keys.length > 1 ? playerLayoutState.enlargedGeometry?.items.find(item => item.span > 1) : null;
+    return PlayerLayout.compare(getCurrentPlayerGeometry(), PlayerGeometry.build({ keys, columns: playerLayoutState.geometry.columns, focus })).changed;
+});
 
 /* =============== 頻道儲存 / 載入 =============== */
 function saveChannelsToStorage() {
@@ -1691,7 +1745,20 @@ function applyPlayerBookmark(value) {
                 new Event('umininn-player-bookmark-audio-intent', { bubbles: true }));
             audioIntent = document.documentElement.getAttribute('data-umininn-player-audio-intent');
         }
-        return withPlayerAudioLayout(() => applyLayout(snapshot), { bookmarkAudio, audioIntent });
+        return withPlayerAudioLayout(() => applyLayout(snapshot), { bookmarkAudio, audioIntent,
+            requiresLayout() {
+                const available = new Map(channels.map(channel => [ChannelList.channelKey(channel), channel]));
+                const selected = snapshot.channels.map(item => available.get(item.key)).filter(Boolean);
+                const keys = selected.map(ChannelList.channelKey);
+                if (keys.length !== activePlayers.size || keys.some(key => {
+                    const entry = activePlayers.get(key);
+                    return !entry || !getPlayerElement(entry).isConnected || entry.failed || entry.resource?.failed;
+                })) return true;
+                const focus = keys.length > 1 && keys.includes(snapshot.focus?.key) ? snapshot.focus : null;
+                return PlayerLayout.compare(getCurrentPlayerGeometry(), PlayerGeometry.build({ keys,
+                    columns: focus ? snapshot.columns : Math.min(snapshot.columns, keys.length), focus })).changed;
+            }
+        });
     };
 }
 
@@ -1976,7 +2043,8 @@ function applyPlayerBookmark(value) {
             } else if (applied && plan.kind === 'relocate')
                 announcement.textContent = `${activePlayers.get(plan.focusKey).channel.name} 已搬到指定區域`;
             else if (plan.reason === 'target-blocked') announcement.textContent = '大格已在可容納的目標位置';
-        });
+        }, { requiresLayout: () => activePlayers.has(source) && activePlayers.has(target) &&
+            PlayerLayout.compare(getCurrentPlayerGeometry(), playerLayoutOperations.target(getCurrentPlayerGeometry(), source, target, { direction }).next).changed });
     }
 
     function open(nextMode) {
@@ -2026,7 +2094,7 @@ function applyPlayerBookmark(value) {
         return withPlayerAudioLayout(() => {
             resetPlayerPositions();
             announcement.textContent = '已還原播放器大小及頻道列表的預設次序';
-        });
+        }, { requiresLayout: () => resetPlayerPositions.requiresLayout?.() ?? true });
     }
     resetButton?.addEventListener('click', resetPositions);
     editorResetButton.addEventListener('click', resetPositions);
@@ -2037,7 +2105,7 @@ function applyPlayerBookmark(value) {
             if (!focus) return;
             const name = activePlayers.get(focus.key).channel.name;
             if (shrinkPlayer(focus.key)) announcement.textContent = `${name} 已縮小至 ${focus.span - 1}×${focus.span - 1}${focus.span === 2 ? '，已達最小單位，保留目前排列' : ''}`;
-        });
+        }, { requiresLayout: () => opened && mode === 'enlarge' && Boolean(playerLayoutState.enlargedGeometry) });
     });
     doneButton.addEventListener('click', () => close());
     toolbarToggle.addEventListener('click', () => {
@@ -2069,7 +2137,7 @@ function applyPlayerBookmark(value) {
                 if (!opened || mode !== 'enlarge' || !activePlayers.has(key)) return;
                 if (enlargePlayer(key)) announcement.textContent = `${activePlayers.get(key).channel.name} 已放大至 ${playerLayoutState.focus.span}×${playerLayoutState.focus.span}`;
                 else announcement.textContent = '已達放大上限';
-            });
+            }, { requiresLayout: () => opened && mode === 'enlarge' && (enlargePlayer.requiresLayout?.(key) ?? true) });
             return;
         }
         if (pickedKey && pickedKey !== key) exchange(pickedKey, key);
@@ -2259,7 +2327,13 @@ function applyPlayerBookmark(value) {
                         current.columns !== gesture.base.columns || JSON.stringify(current.items) !== JSON.stringify(gesture.base.items)) return;
                     applyPlayerSize(next, { optimize: false });
                     announcement.textContent = `${activePlayers.get(gesture.key).channel.name} 已調整至 ${gesture.span}×${gesture.span}`;
-                });
+                }, { requiresLayout() {
+                    const current = getCurrentPlayerGeometry(), bounds = pane.getBoundingClientRect();
+                    return opened && mode === 'enlarge' && activePlayers.has(gesture.key) &&
+                        pane.clientWidth === gesture.measure.width && pane.clientHeight === gesture.measure.height &&
+                        bounds.left === gesture.bounds.left && bounds.top === gesture.bounds.top &&
+                        !PlayerLayout.compare(current, gesture.base).changed && PlayerLayout.compare(current, next).changed;
+                } });
             }
             event.preventDefault();
             return;

@@ -7,6 +7,27 @@
     const RESIZE_DELAY = 180;
     const ASPECT_RESIZE_BAND = 0.15;
 
+    // Compare the rendered cells by identity. Calculation scores, object order
+    // and other bookkeeping do not make an otherwise identical grid change.
+    function compare(previous, next) {
+        const before = new Map((previous?.items || []).map(item => [item.key, item]));
+        const after = new Map((next?.items || []).map(item => [item.key, item]));
+        const changedKeys = [];
+        for (const [key, item] of after) {
+            const old = before.get(key);
+            if (!old || item.row !== old.row || item.column !== old.column || item.span !== old.span) changedKeys.push(key);
+        }
+        const removedKeys = [...before.keys()].filter(key => !after.has(key));
+        const columnsChanged = previous?.columns !== next?.columns;
+        const rowsChanged = previous?.rows !== next?.rows;
+        const cellsChanged = changedKeys.length > 0 || removedKeys.length > 0 ||
+            Boolean(previous?.items) !== Boolean(next?.items);
+        const deferredChanged = Boolean(previous?.deferredFocus) !== Boolean(next?.deferredFocus);
+        return { columnsChanged, rowsChanged, cellsChanged, deferredChanged, changedKeys, removedKeys,
+            topologyChanged: columnsChanged || rowsChanged || cellsChanged,
+            changed: columnsChanged || rowsChanged || cellsChanged || deferredChanged };
+    }
+
     // The live grid has one owner. CSS is a projection of these cells, never an
     // input to ordering. Desired focus/pending intent are kept separately from
     // committed cells so a hidden pane can retain its saved enlarged anchor.
@@ -182,7 +203,8 @@
     }
 
     function observe(pane, { getCount, getTrackCount = getCount, calculate = choose,
-        stabilizeResize = false, getResizeStability = () => false, onChange = () => {}, runUpdate: optionsRunUpdate }) {
+        stabilizeResize = false, getResizeStability = () => false, onChange = () => {},
+        onCommit = next => next, runUpdate: optionsRunUpdate }) {
         const view = pane.ownerDocument?.defaultView;
         let current = null;
         let timer = null;
@@ -193,19 +215,16 @@
         let reference = null;
         let aspectReference = null;
         let pendingForce = false;
+        let lastXLimit, lastYLimit;
         const observer = view?.ResizeObserver ? new view.ResizeObserver(schedule) : null;
 
         function clearPending() {
             if (timer !== null) view.clearTimeout(timer);
             timer = null;
         }
-        function update(options = {}) {
-            return typeof optionsRunUpdate === 'function' ? optionsRunUpdate(() => applyUpdate(options)) : applyUpdate(options);
-        }
-        function applyUpdate({ force = false } = {}) {
+        function measure({ force = false } = {}, applyLimits = false) {
             if (disposed) return;
             if (suspended) { pendingForce ||= force; return; }
-            clearPending();
             const style = view?.getComputedStyle(pane);
             const number = value => parseFloat(value) || 0;
             const width = Math.max(0, (pane.clientWidth || 0) - number(style?.paddingLeft) - number(style?.paddingRight));
@@ -215,11 +234,19 @@
             // Gaps must also fit when many players share an extremely thin pane.
             // CSS retains the normal em-based gap whenever there is enough room.
             const tracks = Math.max(1, getTrackCount());
-            pane.style.setProperty?.('--player-grid-gap-x-limit', `${width / (2 * tracks)}px`);
-            pane.style.setProperty?.('--player-grid-gap-y-limit', `${height / (2 * tracks)}px`);
-            const fittedStyle = view?.getComputedStyle(pane);
-            const columnGap = gap(fittedStyle?.columnGap, width);
-            const rowGap = gap(fittedStyle?.rowGap, height);
+            const xLimit = width / (2 * tracks), yLimit = height / (2 * tracks);
+            const oldColumnGap = gap(style?.columnGap, width), oldRowGap = gap(style?.rowGap, height);
+            // A capped gap can grow to an unknown CSS value. Capture audio
+            // before changing that cap, then read its exact computed value.
+            const uncertainGap = !applyLimits && ((lastXLimit !== undefined && xLimit > lastXLimit && oldColumnGap >= lastXLimit) ||
+                (lastYLimit !== undefined && yLimit > lastYLimit && oldRowGap >= lastYLimit));
+            if (applyLimits) {
+                writeLimit('--player-grid-gap-x-limit', xLimit, lastXLimit);
+                writeLimit('--player-grid-gap-y-limit', yLimit, lastYLimit);
+            }
+            const fittedStyle = applyLimits ? view?.getComputedStyle(pane) : style;
+            const columnGap = applyLimits ? gap(fittedStyle?.columnGap, width) : Math.min(oldColumnGap, xLimit);
+            const rowGap = applyLimits ? gap(fittedStyle?.rowGap, height) : Math.min(oldRowGap, yLimit);
             const usable = width > 0 && height > 0;
             const validPrevious = Number.isInteger(current?.columns) && current.columns > 0;
             const withinBand = (value, original) => Math.abs(value - original) <=
@@ -232,13 +259,45 @@
                 (anchor.width / anchor.height) - 1) <= ASPECT_RESIZE_BAND + Number.EPSILON;
             // Hidden panes still process logical changes; defer choosing tracks
             // for those changes until there is a useful measurement again.
-            if (!usable && computedForce) pendingForce = true;
-            const next = calculate({ count, width, height, columnGap, rowGap, previous: current,
+            const calculation = { count, width, height, columnGap, rowGap, previous: current,
                 force: computedForce,
                 preserveColumns: validPrevious && (!usable || (!computedForce &&
-                    (stableAspect ? Boolean(similarAspect) : Boolean(stabilizeResize && small)))) });
-            const topologyChanged = next.columns !== current?.columns || next.rows !== current?.rows ||
-                JSON.stringify(next.items) !== JSON.stringify(current?.items);
+                    (stableAspect ? Boolean(similarAspect) : Boolean(stabilizeResize && small)))) };
+            const next = calculate(calculation), difference = compare(current, next);
+            const gapsChanged = columnGap !== lastColumnGap || rowGap !== lastRowGap;
+            const columns = `repeat(${next.columns}, minmax(0px, 1fr))`, rows = `repeat(${next.rows}, minmax(0px, 1fr))`;
+            const repaired = pane.style.gridTemplateColumns !== columns || pane.style.gridTemplateRows !== rows;
+            return { width, height, xLimit, yLimit, columnGap, rowGap, usable, small, computedForce, stableAspect,
+                calculation, next, difference, gapsChanged, requiresLayout: difference.topologyChanged || gapsChanged || uncertainGap || repaired };
+        }
+        function writeLimit(name, value, previous) {
+            const text = `${value}px`;
+            if (pane.style.getPropertyValue ? pane.style.getPropertyValue(name) !== text : previous !== value)
+                pane.style.setProperty?.(name, text);
+        }
+        function update(options = {}) {
+            clearPending();
+            if (typeof optionsRunUpdate !== 'function') return applyUpdate(options);
+            const planned = measure(options);
+            if (!planned) return;
+            if (planned.requiresLayout)
+                return optionsRunUpdate(() => applyUpdate(options), () => Boolean(measure(options)?.requiresLayout));
+            return applyUpdate(options, planned);
+        }
+        function applyUpdate(options, prepared) {
+            // Deferred audio capture may outlive a resize, selection change or
+            // pagehide. Re-read the latest state instead of applying its preview.
+            const plan = prepared || measure(options, true);
+            if (!plan) return;
+            if (prepared) {
+                writeLimit('--player-grid-gap-x-limit', plan.xLimit, lastXLimit);
+                writeLimit('--player-grid-gap-y-limit', plan.yLimit, lastYLimit);
+            }
+            const { width, height, xLimit, yLimit, columnGap, rowGap, usable, small, computedForce,
+                stableAspect, calculation, difference, gapsChanged } = plan;
+            const next = onCommit(plan.next, calculation) || plan.next;
+            const { topologyChanged } = difference;
+            if (!usable && computedForce) pendingForce = true;
             if (usable) {
                 if (!reference || computedForce || !small) reference = { width, height };
                 // Anchor to the adopted logical layout, not each measurement:
@@ -248,16 +307,17 @@
                 pendingForce = false;
             }
             if (!stableAspect) aspectReference = null;
-            const changed = topologyChanged ||
-                Boolean(next.deferredFocus) !== Boolean(current?.deferredFocus) ||
-                columnGap !== lastColumnGap || rowGap !== lastRowGap;
+            const changed = difference.changed || gapsChanged;
             current = next;
             lastColumnGap = columnGap;
             lastRowGap = rowGap;
-            if (!changed) return;
-            pane.style.gridTemplateColumns = `repeat(${next.columns}, minmax(0, 1fr))`;
-            pane.style.gridTemplateRows = `repeat(${next.rows}, minmax(0, 1fr))`;
-            onChange(next);
+            lastXLimit = xLimit; lastYLimit = yLimit;
+            const columns = `repeat(${next.columns}, minmax(0px, 1fr))`, rows = `repeat(${next.rows}, minmax(0px, 1fr))`;
+            const repaired = pane.style.gridTemplateColumns !== columns || pane.style.gridTemplateRows !== rows;
+            if (pane.style.gridTemplateColumns !== columns) pane.style.gridTemplateColumns = columns;
+            if (pane.style.gridTemplateRows !== rows) pane.style.gridTemplateRows = rows;
+            if (changed || repaired) onChange(next);
+            return changed || repaired;
         }
         function schedule() {
             if (disposed || suspended) return;
@@ -282,6 +342,10 @@
         view?.addEventListener('pageshow', resume);
         return {
             update,
+            // Direct exchanges already project the current tracks. Keep the
+            // observer's comparison baseline aligned without resetting resize
+            // stability or starting a second audio transaction on its next tick.
+            adopt(next) { if (!disposed) current = next; },
             getColumns: () => current?.columns || 1,
             destroy() {
                 disposed = true;
@@ -294,7 +358,7 @@
         };
     }
 
-    const api = { choose, observe, createState, createOperations };
+    const api = { choose, observe, createState, createOperations, compare };
     if (typeof module === 'object' && module.exports) module.exports = api;
     else root.PlayerLayout = api;
 })(typeof globalThis === 'object' ? globalThis : this);

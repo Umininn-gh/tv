@@ -17,7 +17,17 @@ class Element {
     constructor(tag) {
         this.tagName = tag.toUpperCase(); this.style = {}; this.dataset = {}; this.children = []; this.parentNode = null;
         this.volume = 1; this.muted = false; this.paused = true; this.playCalls = 0; this.pauseCalls = 0; this.loadCalls = 0;
-        this.classList = { toggle() {} };
+        this.className = '';
+        this.classList = {
+            contains: token => this.className.split(/\s+/).includes(token),
+            toggle: (token, force) => {
+                const tokens = new Set(this.className.split(/\s+/).filter(Boolean));
+                const enabled = force === undefined ? !tokens.has(token) : Boolean(force);
+                if (enabled) tokens.add(token); else tokens.delete(token);
+                this.className = [...tokens].join(' ');
+                return enabled;
+            }
+        };
     }
     get isConnected() { return this.root || Boolean(this.parentNode?.isConnected); }
     appendChild(child) { child.remove(); child.parentNode = this; this.children.push(child); return child; }

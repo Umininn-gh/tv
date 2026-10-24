@@ -23,7 +23,18 @@ function fixture({ nativeHls = false } = {}) {
     class Element {
         constructor(tag) {
             this.tagName = tag.toUpperCase(); this.style = {}; this.dataset = {}; this.children = [];
-            this.parentNode = null; this.listeners = new Map(); this.classList = { toggle() {}, remove() {} };
+            this.parentNode = null; this.listeners = new Map(); this.className = '';
+            this.classList = {
+                contains: token => this.className.split(/\s+/).includes(token),
+                toggle: (token, force) => {
+                    const tokens = new Set(this.className.split(/\s+/).filter(Boolean));
+                    const enabled = force === undefined ? !tokens.has(token) : Boolean(force);
+                    if (enabled) tokens.add(token); else tokens.delete(token);
+                    this.className = [...tokens].join(' ');
+                    return enabled;
+                },
+                remove: (...tokens) => { this.className = this.className.split(/\s+/).filter(token => token && !tokens.includes(token)).join(' '); }
+            };
             this.muted = false; this.volume = 1; this.playCalls = this.pauseCalls = this.loadCalls = 0;
         }
         get isConnected() { return this.root || Boolean(this.parentNode?.isConnected); }
