@@ -534,6 +534,7 @@ const PLAYER_ENLARGEMENT_STORAGE_KEY = 'playerEnlargementLayout';
 // Shared duration for the viewing page's temporary menus and editing overlays.
 const PLAYER_OVERLAY_TIMEOUT_SECONDS = 30;
 const playerLayoutState = PlayerLayout.createState({ buildGeometry: PlayerGeometry.build });
+const playerLayoutOperations = PlayerLayout.createOperations({ geometry: PlayerGeometry });
 let playerPositionEditor = null;
 let playerNameOverlay = null;
 let playerWindowControls = null;
@@ -788,48 +789,10 @@ function updatePlayerLayout({ force = false } = {}) {
 }
 
 function calculatePlayerLayout(options) {
-    const keys = getPlayerPositionKeys();
-    const focus = keys.includes(playerLayoutState.focus?.key) && keys.length > 1 ? playerLayoutState.focus : null;
-    if (!focus) {
-        if (playerLayoutState.pending?.intent === 'bookmark') {
-            const columns = Math.max(1, Math.min(keys.length || 1, playerLayoutState.pending.columns));
-            // Apply the saved grid once, then keep the existing resize
-            // stability rules. Hidden panes retain the restore intent.
-            if (options.width > 0 && options.height > 0) playerLayoutState.setPending(null);
-            return { count: keys.length, columns, rows: Math.max(1, Math.ceil(keys.length / columns)), area: 0 };
-        }
-        playerLayoutState.setPending(null);
-        return PlayerLayout.choose(options);
-    }
-    if (!(options.width > 0 && options.height > 0)) {
-        // A hidden fallback grid must not overwrite the saved anchor.
-        // Keep pending size/restore intent until there is a real pane.
-        const columns = Math.max(focus.span, Math.min(Math.max(playerLayoutState.pending?.columns || 0,
-            options.previous?.columns || 0, focus.column + focus.span), focus.span + keys.length - 1));
-        return { ...PlayerGeometry.build({ keys, columns, focus }), count: keys.length, deferredFocus: true };
-    }
-    let next;
-    if (playerLayoutState.pending?.intent === 'bookmark') {
-        next = PlayerGeometry.build({ keys, columns: playerLayoutState.pending.columns, focus });
-        playerLayoutState.setPending(null);
-    } else if (playerLayoutState.pending?.intent === 'size' || playerLayoutState.pending?.intent === 'restore') {
-        // Explicit sizing and reopening settle on the best grid immediately.
-        playerLayoutState.setPending(null);
-        next = PlayerGeometry.choose({ ...options, keys, focus, force: true });
-    } else if (playerLayoutState.pending?.intent === 'drag') {
-        // The preview already chose these tracks and the opposite corner.
-        next = PlayerGeometry.build({ keys, columns: playerLayoutState.pending.columns, focus });
-        playerLayoutState.setPending(null);
-    } else if (playerLayoutState.pending) {
-        // A saved grid may have come from a much larger selection.
-        const columns = Math.max(focus.span, Math.min(playerLayoutState.pending.columns, focus.span + keys.length - 1));
-        next = PlayerGeometry.build({ keys, columns, focus });
-        playerLayoutState.setPending(null);
-    } else if (options.preserveColumns && options.previous?.columns >= focus.span &&
-        options.previous.columns <= 768) {
-        next = PlayerGeometry.build({ keys, columns: options.previous.columns, focus });
-    } else next = PlayerGeometry.choose({ ...options, keys, focus });
-    return { ...next, count: keys.length };
+    const plan = playerLayoutOperations.reflow({ keys: getPlayerPositionKeys(),
+        focus: playerLayoutState.focus, pending: playerLayoutState.pending }, options);
+    playerLayoutState.setPending(plan.pending);
+    return plan.next;
 }
 
 function playerGridArea(item) {
@@ -923,16 +886,17 @@ function getPlayerPositionKeys() {
 }
 
 function swapPlayerPositions(sourceKey, targetKey) {
-    const keys = getPlayerPositionKeys();
-    const sourceIndex = keys.indexOf(sourceKey);
-    const targetIndex = keys.indexOf(targetKey);
-    if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return false;
-    [keys[sourceIndex], keys[targetIndex]] = [keys[targetIndex], keys[sourceIndex]];
-    if (playerLayoutState.enlargedGeometry) {
-        playerLayoutState.setPending(PlayerGeometry.swap(playerLayoutState.enlargedGeometry, sourceKey, targetKey));
-        playerLayoutState.setFocus(playerLayoutState.pending.items.find(item => item.span > 1));
-        playerLayoutState.commit(PlayerGeometry.build({ keys, columns: playerLayoutState.pending.columns, focus: playerLayoutState.focus }));
-    } else playerLayoutState.setOrder(keys);
+    return applyPlayerPlacement(playerLayoutOperations.exchange(getCurrentPlayerGeometry(), sourceKey, targetKey));
+}
+
+function applyPlayerPlacement(plan) {
+    if (plan.kind === 'none') return false;
+    if (plan.kind !== 'exchange') return applyPlayerSize(plan.next, { optimize: false });
+    if (plan.enlarged) {
+        playerLayoutState.setPending(plan.pending);
+        playerLayoutState.setFocus(plan.focus);
+        playerLayoutState.commit(plan.next);
+    } else playerLayoutState.setOrder(plan.keys);
     // Project cells without moving connected iframe nodes or restarting playback.
     projectPlayerLayout();
     if (playerLayoutState.pending) { updatePlayerLayout({ force: true }); savePlayerEnlargement(); }
@@ -945,15 +909,8 @@ function swapPlayerPositions(sourceKey, targetKey) {
 }
 
 function movePlayerDirection(key, direction, targetKey) {
-    const layout = getCurrentPlayerGeometry();
-    const source = layout.items.find(item => item.key === key);
-    const target = PlayerGeometry.neighbors(layout, key, direction).find(item => item.key === targetKey);
-    if (!source || !target || !activePlayers.has(key) || !activePlayers.has(targetKey)) return false;
-    if (source.span === 1 && target.span === 1) return swapPlayerPositions(key, targetKey);
-    const next = PlayerGeometry.step(layout, key, direction, targetKey);
-    if (next === layout) return false;
-    // Apply the chosen tracks and order directly; never reparent live media.
-    return applyPlayerSize(next, { optimize: false });
+    if (!activePlayers.has(key) || !activePlayers.has(targetKey)) return false;
+    return applyPlayerPlacement(playerLayoutOperations.step(getCurrentPlayerGeometry(), key, direction, targetKey));
 }
 
 function resetPlayerPositions() {
@@ -2010,30 +1967,15 @@ function applyPlayerBookmark(value) {
             if (!activePlayers.has(source) || !activePlayers.has(target)) return false;
             const sourceName = activePlayers.get(source)?.channel.name;
             const targetName = activePlayers.get(target)?.channel.name;
-            const geometry = getCurrentPlayerGeometry();
-            const sourceItem = geometry.items.find(item => item.key === source);
-            const targetItem = geometry.items.find(item => item.key === target);
-            if (sourceItem && targetItem && (sourceItem.span > 1 || targetItem.span > 1)) {
-                const edgeDirection = ['up', 'down', 'left', 'right'].find(value =>
-                    PlayerGeometry.neighbors(geometry, source, value).some(item => item.key === target));
-                // Keyboard arrows only step across a touching edge. Explicit
-                // pointer destinations may also request a bounded remote placement.
-                if (direction && direction !== edgeDirection) return;
-                if (edgeDirection) {
-                    const reverse = { up: 'down', down: 'up', left: 'right', right: 'left' };
-                    const labels = { up: '上', down: '下', left: '左', right: '右' };
-                    const focusDirection = sourceItem.span > 1 ? edgeDirection : reverse[edgeDirection];
-                    if (movePlayerDirection(source, edgeDirection, target))
-                        announcement.textContent = `${sourceItem.span > 1 ? sourceName : targetName} 已向${labels[focusDirection]}平移一格`;
-                    return;
-                }
-                const next = PlayerGeometry.relocate(geometry, source, target);
-                if (next !== geometry && applyPlayerSize(next, { optimize: false }))
-                    announcement.textContent = `${sourceItem.span > 1 ? sourceName : targetName} 已搬到指定區域`;
-                else announcement.textContent = '大格已在可容納的目標位置';
-                return;
-            }
-            if (swapPlayerPositions(source, target)) announcement.textContent = `${sourceName} 與 ${targetName} 已交換位置`;
+            const plan = playerLayoutOperations.target(getCurrentPlayerGeometry(), source, target, { direction });
+            const applied = applyPlayerPlacement(plan);
+            if (applied && plan.kind === 'exchange') announcement.textContent = `${sourceName} 與 ${targetName} 已交換位置`;
+            else if (applied && plan.kind === 'step') {
+                const labels = { up: '上', down: '下', left: '左', right: '右' };
+                announcement.textContent = `${activePlayers.get(plan.focusKey).channel.name} 已向${labels[plan.focusDirection]}平移一格`;
+            } else if (applied && plan.kind === 'relocate')
+                announcement.textContent = `${activePlayers.get(plan.focusKey).channel.name} 已搬到指定區域`;
+            else if (plan.reason === 'target-blocked') announcement.textContent = '大格已在可容納的目標位置';
         });
     }
 

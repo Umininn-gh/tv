@@ -92,7 +92,8 @@ function fixtureDocument({ width = 1100, height = 600, framePlatform = 'at' } = 
     let channels=[{id:'one',platform:'m3u8',name:'劇集一台'},{id:'two',platform:'${framePlatform}',name:'劇集二台'},{id:'three',platform:'${framePlatform}',name:'直播三台'},{id:'four',platform:'m3u8',name:'新聞四台'}];
     const activePlayers=new Map(),playerResources=new WeakMap();
     const PLAYER_POSITION_STORAGE_KEY='playerPositionOrder',PLAYER_ENLARGEMENT_STORAGE_KEY='playerEnlargementLayout';
-    const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});let playerGrid=null;
+    const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});
+    const playerLayoutOperations=PlayerLayout.createOperations({geometry:PlayerGeometry});let playerGrid=null;
     let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[];
     let layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null;
     const playerWindowControls={refresh(){}},playerNameOverlay={refresh(){},setVisible(){}};

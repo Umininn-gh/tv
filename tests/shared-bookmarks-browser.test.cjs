@@ -56,7 +56,8 @@ function htmlFixture({ width = 1100, height = 600 } = {}) {
     <script>${instrument}
     const channels=[{id:'one',platform:'m3u8',name:'劇集一台'},{id:'two',platform:'at',name:'直播二台'},{id:'three',platform:'at',name:'新聞三台'},{id:'four',platform:'m3u8',name:'劇集四台'}];
     const activePlayers=new Map(),playerResources=new WeakMap(),PLAYER_POSITION_STORAGE_KEY='playerPositionOrder',PLAYER_ENLARGEMENT_STORAGE_KEY='playerEnlargementLayout';
-    const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});let playerGrid=null;
+    const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});
+    const playerLayoutOperations=PlayerLayout.createOperations({geometry:PlayerGeometry});let playerGrid=null;
     let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[],layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null;
     const playerWindowControls={refresh(){}},playerNameOverlay={refresh(){},setVisible(){}},playerPositionEditor={refresh(){},layoutChanged(){},close(){}},channelSelectionIdleTimer={setVisible(){}};
     window.fixture={renders:0,nextId:0,remembered:new Map(),captures:0,applies:0};

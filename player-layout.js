@@ -61,6 +61,93 @@
         });
     }
 
+    // Decide what an input means before the page commits it. These rules only
+    // describe cells: they never update the state, DOM, storage or player sound.
+    function createOperations({ geometry } = {}) {
+        if (!geometry || ['build', 'swap', 'neighbors', 'step', 'relocate', 'choose']
+            .some(name => typeof geometry[name] !== 'function')) throw new TypeError('geometry operations are required');
+        const visualKeys = layout => [...layout.items].sort((a, b) => a.row - b.row || a.column - b.column)
+            .map(item => item.key);
+        const none = (layout, reason = 'invalid', extra = {}) => ({ kind: 'none', next: layout, reason, ...extra });
+        function pair(layout, sourceKey, targetKey) {
+            if (!Array.isArray(layout?.items) || sourceKey === targetKey) return null;
+            const source = layout.items.find(item => item.key === sourceKey);
+            const target = layout.items.find(item => item.key === targetKey);
+            return source && target ? { source, target } : null;
+        }
+        function exchange(layout, sourceKey, targetKey) {
+            if (!pair(layout, sourceKey, targetKey)) return none(layout);
+            const keys = visualKeys(layout);
+            const sourceIndex = keys.indexOf(sourceKey), targetIndex = keys.indexOf(targetKey);
+            [keys[sourceIndex], keys[targetIndex]] = [keys[targetIndex], keys[sourceIndex]];
+            const enlarged = layout.items.some(item => item.span > 1);
+            const pending = enlarged ? geometry.swap(layout, sourceKey, targetKey) : null;
+            const focus = pending?.items.find(item => item.span > 1) || null;
+            // The visual order, rather than geometry.items' insertion order, is
+            // the established direct-exchange contract (including large tiles).
+            const next = geometry.build({ keys, columns: pending?.columns || layout.columns, focus });
+            return { kind: 'exchange', keys, next, pending, focus, enlarged };
+        }
+        function step(layout, sourceKey, direction, targetKey) {
+            const items = pair(layout, sourceKey, targetKey);
+            if (!items || !geometry.neighbors(layout, sourceKey, direction).some(item => item.key === targetKey))
+                return none(layout, 'not-adjacent');
+            if (items.source.span === 1 && items.target.span === 1) return exchange(layout, sourceKey, targetKey);
+            const next = geometry.step(layout, sourceKey, direction, targetKey);
+            if (next === layout) return none(layout, 'step-blocked');
+            const reverse = { up: 'down', down: 'up', left: 'right', right: 'left' };
+            return { kind: 'step', next,
+                focusKey: items.source.span > 1 ? sourceKey : targetKey,
+                focusDirection: items.source.span > 1 ? direction : reverse[direction] };
+        }
+        function target(layout, sourceKey, targetKey, { direction = null } = {}) {
+            const items = pair(layout, sourceKey, targetKey);
+            if (!items) return none(layout);
+            if (items.source.span === 1 && items.target.span === 1) return exchange(layout, sourceKey, targetKey);
+            const edge = ['up', 'down', 'left', 'right'].find(value =>
+                geometry.neighbors(layout, sourceKey, value).some(item => item.key === targetKey));
+            // Keyboard movement of a large tile requires a touching edge. A
+            // pointer destination can instead request a remote bounded placement.
+            if (direction && direction !== edge) return none(layout, 'not-adjacent');
+            if (edge) return step(layout, sourceKey, edge, targetKey);
+            const next = geometry.relocate(layout, sourceKey, targetKey);
+            const focusKey = items.source.span > 1 ? sourceKey : targetKey;
+            return next === layout ? none(layout, 'target-blocked', { focusKey }) : { kind: 'relocate', next, focusKey };
+        }
+        function reflow({ keys, focus, pending }, options) {
+            focus = keys.includes(focus?.key) && keys.length > 1 ? focus : null;
+            if (!focus) {
+                if (pending?.intent === 'bookmark') {
+                    const columns = Math.max(1, Math.min(keys.length || 1, pending.columns));
+                    return { next: { count: keys.length, columns, rows: Math.max(1, Math.ceil(keys.length / columns)), area: 0 },
+                        pending: options.width > 0 && options.height > 0 ? null : pending };
+                }
+                return { next: choose(options), pending: null };
+            }
+            if (!(options.width > 0 && options.height > 0)) {
+                // Hidden panes preserve the saved anchor and the pending intent.
+                const columns = Math.max(focus.span, Math.min(Math.max(pending?.columns || 0,
+                    options.previous?.columns || 0, focus.column + focus.span), focus.span + keys.length - 1));
+                return { next: { ...geometry.build({ keys, columns, focus }), count: keys.length, deferredFocus: true }, pending };
+            }
+            let next;
+            if (pending?.intent === 'bookmark' || pending?.intent === 'drag') {
+                // Bookmarks restore their tracks; a drag has already chosen its
+                // tracks and opposite corner in the preview.
+                next = geometry.build({ keys, columns: pending.columns, focus });
+            } else if (pending?.intent === 'size' || pending?.intent === 'restore') {
+                next = geometry.choose({ ...options, keys, focus, force: true });
+            } else if (pending) {
+                const columns = Math.max(focus.span, Math.min(pending.columns, focus.span + keys.length - 1));
+                next = geometry.build({ keys, columns, focus });
+            } else if (options.preserveColumns && options.previous?.columns >= focus.span && options.previous.columns <= 768) {
+                next = geometry.build({ keys, columns: options.previous.columns, focus });
+            } else next = geometry.choose({ ...options, keys, focus });
+            return { next: { ...next, count: keys.length }, pending: null };
+        }
+        return Object.freeze({ exchange, step, target, reflow });
+    }
+
     function choose({ count, width, height, columnGap = 0, rowGap = 0, previous, force = false,
         preserveColumns = false }) {
         count = Number.isFinite(Number(count)) ? Math.max(0, Math.floor(Number(count))) : 0;
@@ -207,7 +294,7 @@
         };
     }
 
-    const api = { choose, observe, createState };
+    const api = { choose, observe, createState, createOperations };
     if (typeof module === 'object' && module.exports) module.exports = api;
     else root.PlayerLayout = api;
 })(typeof globalThis === 'object' ? globalThis : this);
