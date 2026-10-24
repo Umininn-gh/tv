@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.28
+// @version      1.0.29
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -30,7 +30,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.28",
+        userscriptVersion: "1.0.29",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -1335,8 +1335,11 @@
                     (!record.bookmarkLease || same(record.bookmarkLease, item)));
                 record.focusTarget = false; // Hidden NO_MEDIA routes must also accept mute guards.
                 if (!record.lease || !same(record.lease, item)) {
-                    record.lease = { ...item }; record.state = null; record.guardConfirmed = false; record.bookmarkOpened = false;
+                    record.state = null; record.guardConfirmed = false; record.bookmarkOpened = false;
                 }
+                // Media can become available inside the same frame/controller.
+                // Refresh capability metadata without rebinding the opening lease.
+                record.lease = { ...item };
                 if (ctx.bookmarkReset) record.bookmarkOpened = false;
                 record.desired = record.bookmarkTarget ? { muted: false, volume: saved } : { muted: true };
                 record.finished = false; record.status = 'waiting';
@@ -3097,9 +3100,13 @@
             try { entry.frame.contentWindow.postMessage(envelope('frame:probe'), new URL(entry.frame.src, win.location.href).origin); } catch (_) {}
             renderEntry(entry);
         }
-        function scheduleProbe(entry) {
-            probe(entry, true);
-            for (const delay of [1000, 3000]) entry.probeTimers.push(win.setTimeout(() => { if (!entry.target && entry.element.isConnected) probe(entry); }, delay));
+        function scheduleProbe(entry, reset = true) {
+            clearProbeTimers(entry);
+            entry.probePending = true;
+            probe(entry, reset);
+            for (const delay of [1000, 3000]) entry.probeTimers.push(win.setTimeout(() => {
+                if (entry.probePending && entry.element.isConnected) probe(entry);
+            }, delay));
         }
         function removeEntry(entry) {
             if (revealedEntry === entry) revealedEntry = null;
@@ -3136,7 +3143,10 @@
                         applyResult(entry, entry.controller.getState());
                         if (globalMuted !== null && !audioFocusIntent && layoutTicket === null) void execute(entry, { action: 'setMuted', value: globalMuted });
                     } else if (entry.kind === 'frame') {
-                        entry.onLoad = () => scheduleProbe(entry);
+                        // A document-idle handshake may arrive before iframe load.
+                        // Preserve that document's lease; a new token still
+                        // invalidates it in onFrameMessage, as does a changed src.
+                        entry.onLoad = () => scheduleProbe(entry, !entry.target);
                         frame.addEventListener('load', entry.onLoad);
                         scheduleProbe(entry);
                     } else entry.notice = '此播放器網域未支援；請使用播放器內的控制。';
@@ -3183,6 +3193,7 @@
                         intent.awaitingFirstTarget = false;
                     } else if (intent === audioFocusIntent && intent.generation !== entry.generation) invalidateLayoutAudio();
                 }
+                entry.probePending = false;
                 clearProbeTimers(entry);
                 if (first || !entry.busy || audioFocusIntent?.refreshWaiters?.has(entry)) applyResult(entry, data.result);
                 if (audioFocusIntent?.entry === entry) audioFocusIntent.refreshTargetPending = false;

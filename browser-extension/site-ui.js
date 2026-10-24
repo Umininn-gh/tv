@@ -892,9 +892,13 @@
             try { entry.frame.contentWindow.postMessage(envelope('frame:probe'), new URL(entry.frame.src, win.location.href).origin); } catch (_) {}
             renderEntry(entry);
         }
-        function scheduleProbe(entry) {
-            probe(entry, true);
-            for (const delay of [1000, 3000]) entry.probeTimers.push(win.setTimeout(() => { if (!entry.target && entry.element.isConnected) probe(entry); }, delay));
+        function scheduleProbe(entry, reset = true) {
+            clearProbeTimers(entry);
+            entry.probePending = true;
+            probe(entry, reset);
+            for (const delay of [1000, 3000]) entry.probeTimers.push(win.setTimeout(() => {
+                if (entry.probePending && entry.element.isConnected) probe(entry);
+            }, delay));
         }
         function removeEntry(entry) {
             if (revealedEntry === entry) revealedEntry = null;
@@ -931,7 +935,10 @@
                         applyResult(entry, entry.controller.getState());
                         if (globalMuted !== null && !audioFocusIntent && layoutTicket === null) void execute(entry, { action: 'setMuted', value: globalMuted });
                     } else if (entry.kind === 'frame') {
-                        entry.onLoad = () => scheduleProbe(entry);
+                        // A document-idle handshake may arrive before iframe load.
+                        // Preserve that document's lease; a new token still
+                        // invalidates it in onFrameMessage, as does a changed src.
+                        entry.onLoad = () => scheduleProbe(entry, !entry.target);
                         frame.addEventListener('load', entry.onLoad);
                         scheduleProbe(entry);
                     } else entry.notice = '此播放器網域未支援；請使用播放器內的控制。';
@@ -978,6 +985,7 @@
                         intent.awaitingFirstTarget = false;
                     } else if (intent === audioFocusIntent && intent.generation !== entry.generation) invalidateLayoutAudio();
                 }
+                entry.probePending = false;
                 clearProbeTimers(entry);
                 if (first || !entry.busy || audioFocusIntent?.refreshWaiters?.has(entry)) applyResult(entry, data.result);
                 if (audioFocusIntent?.entry === entry) audioFocusIntent.refreshTargetPending = false;

@@ -39,7 +39,7 @@ test.before(async () => {
 });
 test.after(async () => { await browser?.close(); });
 
-async function productionPage(name) {
+async function productionPage(name, observeLayout = false) {
     const page = await browser.newPage();
     // Use production HTML without starting login, remote media, chat or network work.
     const url = 'https://umininn-gh.github.io/tv/' + name;
@@ -49,7 +49,7 @@ async function productionPage(name) {
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await page.addScriptTag({ content: read('browser-extension/shared/config.js') });
     await page.addScriptTag({ content: 'globalThis.module = { exports: {} };\n' + read('browser-extension/site-ui.js') + '\nglobalThis.siteApi = module.exports; delete globalThis.module;' });
-    await page.evaluate(() => {
+    await page.evaluate(observeLayout => {
         window.compatibilityEvents = [];
         window.compatibilityCommands = [];
         window.compatibilityCancellations = 0;
@@ -78,10 +78,15 @@ async function productionPage(name) {
                 return Promise.resolve();
             }, cancel() { compatibilityCancellations++; }, dispose() {}
         }; } };
-        window.siteController = siteApi.createSiteController({ window, document, config: UmininnConfig,
+        if (observeLayout) document.documentElement.setAttribute('data-umininn-player-userscript', '');
+        const layoutAudio = observeLayout ? { createLayoutAudioFlow(options) {
+            window.compatibilityLayout = options;
+            return { notify() {}, cancel() {}, settle: () => Promise.resolve() };
+        } } : undefined;
+        window.siteController = siteApi.createSiteController({ window, document, config: UmininnConfig, layoutAudio,
             runtime: { sendMessage: () => Promise.resolve({ ok: false, code: 'NO_MEDIA' }) }, media: factory, recovery });
         siteController.start();
-    });
+    }, observeLayout);
     return page;
 }
 
@@ -146,6 +151,82 @@ async function mountedMainPage() {
     await mountLogin(page);
     return page;
 }
+
+test('a frame load probe retains the already connected document lease; a different token or source invalidates it', { skip: !browserTests }, async () => {
+    const page = await productionPage('index.html', true);
+    try {
+        await mountLogin(page);
+        const frameUrl = 'https://player.twitch.tv/?channel=fixture&parent=umininn-gh.github.io';
+        await page.route(frameUrl, route => route.fulfill({ contentType: 'text/html',
+            body: '<!doctype html><title>Fixture</title><script>window.probeCount=0;addEventListener("message",event=>{if(event.data.type==="frame:probe")probeCount++})</script>' }));
+        await page.evaluate(async frameUrl => {
+            const frame = window.compatibilityFrame = document.createElement('iframe');
+            frame.dataset.channelKey = 'twitch|fixture'; frame.src = frameUrl;
+            const loaded = new Promise(resolve => frame.addEventListener('load', resolve, { once: true }));
+            document.getElementById('multi-stream-container').replaceChildren(frame);
+            siteController.scan(); await loaded;
+            window.compatibilityReadyMessages = 0;
+            window.addEventListener('message', event => {
+                if (event.source === frame.contentWindow && event.data.type === 'frame:ready') compatibilityReadyMessages++;
+            });
+        }, frameUrl);
+        const child = page.frame({ url: frameUrl });
+        assert.ok(child, 'the foreign fixture frame finished its actual load');
+        await child.waitForFunction(() => typeof probeCount === 'number');
+        const messageConfig = await page.evaluate(() => ({ channel: UmininnConfig.CHANNEL, version: UmininnConfig.VERSION }));
+        const announceFrame = async token => {
+            const previous = await page.evaluate(() => compatibilityReadyMessages);
+            // Let the browser supply its real WindowProxy. Firefox cannot
+            // reliably construct a synthetic cross-process MessageEvent source.
+            await child.evaluate(({ token, channel, version }) => parent.postMessage({ channel, version,
+                type: 'frame:ready', frameId: 1, token,
+                result: { ok: true, code: 'OK', state: { available: true, muted: true, volume: 1,
+                    muteSupported: true, volumeSupported: true, playbackStatus: 'playing' } }
+            }, 'https://umininn-gh.github.io'), { token, ...messageConfig });
+            await page.waitForFunction(previous => compatibilityReadyMessages > previous, previous);
+        };
+        await announceFrame('a'.repeat(32));
+        await page.evaluate(() => { window.initialFrameLease = compatibilityLayout.getEntries()[0]; });
+        const afterLoad = await page.evaluate(() => {
+            // Reproduce a document-idle ready announcement arriving before its
+            // iframe load event; the reply identifies that same document.
+            compatibilityFrame.dispatchEvent(new Event('load'));
+            return compatibilityLayout.isCurrent(initialFrameLease);
+        });
+        await announceFrame('a'.repeat(32));
+        const sameDocument = await page.evaluate(() => {
+            return { afterReply: compatibilityLayout.isCurrent(initialFrameLease),
+                version: compatibilityLayout.getEntries()[0].version, original: initialFrameLease.version };
+        });
+        assert.equal(afterLoad, true);
+        assert.equal(sameDocument.afterReply, true);
+        assert.equal(sameDocument.version, sameDocument.original);
+        await child.evaluate(() => { probeCount = 0; });
+        await page.evaluate(() => compatibilityFrame.dispatchEvent(new Event('load')));
+        await child.waitForFunction(() => probeCount >= 2, null, { timeout: 2000 });
+        assert.equal(await page.evaluate(() => compatibilityLayout.isCurrent(initialFrameLease)), true,
+            'a delayed handshake retry must not invalidate the same document lease by itself');
+        await announceFrame('b'.repeat(32));
+        const replacedDocument = await page.evaluate(() => {
+            window.replacedFrameLease = compatibilityLayout.getEntries()[0];
+            return { oldCurrent: compatibilityLayout.isCurrent(initialFrameLease),
+                newCurrent: compatibilityLayout.isCurrent(replacedFrameLease),
+                versionChanged: replacedFrameLease.version !== initialFrameLease.version };
+        });
+        assert.deepEqual(replacedDocument, { oldCurrent: false, newCurrent: true, versionChanged: true });
+        const probesAfterReply = await child.evaluate(() => probeCount);
+        await page.waitForTimeout(2200);
+        assert.equal(await child.evaluate(() => probeCount), probesAfterReply, 'a valid new-document reply cancels remaining bounded probes');
+        assert.equal(await page.evaluate(() => {
+            compatibilityFrame.src = 'https://player.twitch.tv/?channel=replaced&parent=umininn-gh.github.io';
+            siteController.scan();
+            return compatibilityLayout.isCurrent(replacedFrameLease);
+        }), false);
+    } finally {
+        await page.evaluate(() => siteController.dispose());
+        await page.close();
+    }
+});
 
 async function assertNoScheduledRecovery(page) {
     // Cross a new task boundary: the production layout hook schedules at 0 ms.

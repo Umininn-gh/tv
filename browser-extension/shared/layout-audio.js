@@ -523,8 +523,11 @@
                     (!record.bookmarkLease || same(record.bookmarkLease, item)));
                 record.focusTarget = false; // Hidden NO_MEDIA routes must also accept mute guards.
                 if (!record.lease || !same(record.lease, item)) {
-                    record.lease = { ...item }; record.state = null; record.guardConfirmed = false; record.bookmarkOpened = false;
+                    record.state = null; record.guardConfirmed = false; record.bookmarkOpened = false;
                 }
+                // Media can become available inside the same frame/controller.
+                // Refresh capability metadata without rebinding the opening lease.
+                record.lease = { ...item };
                 if (ctx.bookmarkReset) record.bookmarkOpened = false;
                 record.desired = record.bookmarkTarget ? { muted: false, volume: saved } : { muted: true };
                 record.finished = false; record.status = 'waiting';

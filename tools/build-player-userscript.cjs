@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const RELEASE_VERSION = '1.0.28';
+const RELEASE_VERSION = '1.0.29';
 const FILENAME = 'umininn-tv-player.user.js';
 const META_FILENAME = 'umininn-tv-player.meta.js';
 const DISTRIBUTION_URL = 'https://umininn-gh.github.io/tv/userscript/';

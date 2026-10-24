@@ -731,6 +731,76 @@ test('a late bookmark peer is awaited within thirty seconds while ready targets 
     assert.equal(f.reports.at(-1).code, 'COMPLETE'); assert.equal(f.clock.pending, 0);
 });
 
+test('a saved bookmark target becomes ready in the same controller after initially reporting NO_MEDIA', async () => {
+    const a = player('at|cold', true, 1, false), b = player('gosh|peer', false, 0.8), f = fixture([a, b]);
+    a.readable = true; a.state.available = false;
+    const originalRead = f.settings.read, originalWrite = f.settings.write;
+    f.settings.read = async item => item.key === a.key && !a.state.available ?
+        { ok: false, code: 'NO_MEDIA', state: { ...a.state } } : originalRead(item);
+    f.settings.write = async (item, command) => {
+        const result = await originalWrite(item, command);
+        return item.key === a.key && !a.state.available ? { ...result, ok: false, code: 'NO_MEDIA' } : result;
+    };
+    await f.flow.prepare(1);
+    assert.equal((await f.flow.bookmark(1, [{ key: a.key, volume: 0.62 }])).code, 'PENDING');
+    assert.equal(a.state.muted, true); assert.equal(b.state.muted, true);
+    assert.equal(f.calls.some(call => call.action === 'setVolume' || call.value === false), false);
+    const identity = a.identity, version = a.version;
+    a.ready = true; a.state.available = true; f.flow.notify(); await flush();
+    assert.equal(a.identity, identity); assert.equal(a.version, version);
+    assert.equal(a.state.muted, false); assert.equal(a.state.volume, 0.62);
+    assert.equal(b.state.muted, true); assert.equal(b.state.muteGuardActive, true);
+    assert.equal(f.reports.at(-1).code, 'COMPLETE'); assert.equal(f.clock.pending, 0);
+});
+
+test('several saved bookmark targets can become readable and ready independently without changing controller versions', async () => {
+    const a = player('at|a', true, 1, false), b = player('gosh|b', true, 1, false);
+    const peer = player('kick|peer', false, 0.8), f = fixture([a, b, peer]);
+    await f.flow.prepare(1);
+    assert.equal((await f.flow.bookmark(1, [{ key: a.key, volume: 0.21 }, { key: b.key, volume: 0.43 }])).code, 'PENDING');
+    assert.equal(peer.state.muted, true);
+    a.ready = true; f.flow.notify(); await flush();
+    assert.equal(a.state.muted, true); assert.equal(a.state.volume, 1);
+    b.readable = true; b.state.available = false;
+    const originalRead = f.settings.read, originalWrite = f.settings.write;
+    f.settings.read = async item => item.key === b.key && !b.state.available ?
+        { ok: false, code: 'NO_MEDIA', state: { ...b.state } } : originalRead(item);
+    f.settings.write = async (item, command) => {
+        const result = await originalWrite(item, command);
+        return item.key === b.key && !b.state.available ? { ...result, ok: false, code: 'NO_MEDIA' } : result;
+    };
+    f.flow.notify(); await flush();
+    assert.equal(a.state.muted, false); assert.equal(a.state.volume, 0.21);
+    assert.equal(b.state.muted, true); assert.equal(b.state.muteGuardActive, true);
+    assert.equal(f.reports.at(-1).code, 'PENDING');
+    b.ready = true; b.state.available = true; f.flow.notify(); await flush();
+    assert.equal(a.version, 1); assert.equal(b.version, 1);
+    assert.equal(a.state.muted, false); assert.equal(a.state.volume, 0.21);
+    assert.equal(b.state.muted, false); assert.equal(b.state.volume, 0.43);
+    assert.equal(peer.state.muted, true); assert.equal(peer.state.muteGuardActive, true);
+    assert.equal(f.reports.at(-1).code, 'COMPLETE'); assert.equal(f.clock.pending, 0);
+});
+
+test('a saved bookmark target becoming ready after its timeout cannot reopen through refreshed metadata', async () => {
+    const a = player('at|late', true, 1, false), b = player('gosh|peer', false, 0.8), f = fixture([a, b]);
+    a.readable = true; a.state.available = false;
+    const originalRead = f.settings.read, originalWrite = f.settings.write;
+    f.settings.read = async item => item.key === a.key && !a.state.available ?
+        { ok: false, code: 'NO_MEDIA', state: { ...a.state } } : originalRead(item);
+    f.settings.write = async (item, command) => {
+        const result = await originalWrite(item, command);
+        return item.key === a.key && !a.state.available ? { ...result, ok: false, code: 'NO_MEDIA' } : result;
+    };
+    await f.flow.prepare(1);
+    assert.equal((await f.flow.bookmark(1, [{ key: a.key, volume: 0.62 }])).code, 'PENDING');
+    await f.clock.tick(30000);
+    assert.equal(f.reports.at(-1).code, 'TIMEOUT'); assert.equal(f.clock.pending, 0);
+    const writes = f.calls.length;
+    a.ready = true; a.state.available = true; f.flow.notify(); await flush();
+    assert.equal(a.state.muted, true); assert.equal(a.state.volume, 1);
+    assert.equal(b.state.muted, true); assert.equal(f.calls.length, writes); assert.equal(f.clock.pending, 0);
+});
+
 test('readable hidden bookmark media are muted with persistent guards before any target opens', async () => {
     const a = player('native|a', false, 0.7), b = player('kick|b', false, 0.8, false), f = fixture([a, b]);
     b.readable = true; b.state.available = false; await f.flow.prepare(1);
