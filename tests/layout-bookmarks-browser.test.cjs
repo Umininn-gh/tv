@@ -42,7 +42,8 @@ function loadProduction() {
         'playerBookmarkAudioAvailable', 'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible'];
     appScript = names.map(name => productionFunction(source, name)).join('\n') + '\n' + productionIife(source, 'initLayoutBookmarks')
         .replace('capture: capturePlayerBookmark', 'capture: (...args)=>{fixture.captures++;return capturePlayerBookmark(...args)}')
-        .replace('apply: applyPlayerBookmark', 'apply: (...args)=>{fixture.applies++;return applyPlayerBookmark(...args)}');
+        .replace('apply: applyPlayerBookmark', 'apply: (...args)=>{fixture.applies++;return applyPlayerBookmark(...args)}')
+        + '\n' + productionIife(source, 'initPlayerNameOverlay');
 }
 
 test.before(async () => {
@@ -97,8 +98,8 @@ function fixtureDocument({ width = 1100, height = 600, framePlatform = 'at' } = 
     const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});
     const playerLayoutOperations=PlayerLayout.createOperations({geometry:PlayerGeometry});let playerGrid=null;
     let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[];
-    let layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null;
-    const playerWindowControls={refresh(){}},playerNameOverlay={refresh(){},setVisible(){}};
+    let layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null,playerNameOverlay=null;
+    const playerWindowControls={refresh(){}};
     const playerPositionEditor={refresh(){},layoutChanged(){},close(){fixture.editorCloses++}};
     const channelSelectionIdleTimer={setVisible(){}};
     window.fixture={rendered:0,editorCloses:0,nextId:0,remembered:new Map(),captures:0,applies:0};
@@ -223,6 +224,40 @@ async function assertContinuity(f, before) {
     }
 }
 
+async function assertPlayerNames(f, count = 4) {
+    const state = await f.page.waitForFunction(count => {
+        const layer = document.getElementById('player-name-overlay');
+        if (!layer || layer.hidden) return false;
+        const cells = [...layer.querySelectorAll('.player-name-cell')];
+        if (cells.length !== count || cells.length !== activePlayers.size) return false;
+        const rect = element => {
+            const box = element.getBoundingClientRect();
+            return { left: box.left, top: box.top, right: box.right, bottom: box.bottom };
+        };
+        const items = cells.map(cell => {
+            const entry = activePlayers.get(cell.dataset.playerKey), label = cell.querySelector('.player-name-label');
+            return { key: cell.dataset.playerKey, text: label.textContent, name: entry?.channel.name,
+                cell: rect(cell), label: rect(label), player: entry ? rect(getPlayerElement(entry)) : null,
+                pointerEvents: getComputedStyle(label).pointerEvents };
+        });
+        if (!items.every(item => item.player && item.text === item.name &&
+            ['left', 'top', 'right', 'bottom'].every(side => Math.abs(item.cell[side] - item.player[side]) < .65) &&
+            Math.abs((item.label.left + item.label.right - item.player.left - item.player.right) / 2) < .65 &&
+            Math.abs((item.label.top + item.label.bottom - item.player.top - item.player.bottom) / 2) < .65)) return false;
+        return { sibling: layer.parentElement === document.getElementById('multi-stream-container-wrapper'),
+            pointerEvents: getComputedStyle(layer).pointerEvents, items };
+    }, count);
+    const value = await state.jsonValue(); await state.dispose();
+    assert.equal(value.sibling, true);
+    assert.equal(value.pointerEvents, 'none', 'names must not consume player input');
+    assert.ok(value.items.every(item => item.pointerEvents === 'none'));
+    return value.items;
+}
+
+async function assertPlayerNamesHidden(f) {
+    assert.equal(await f.page.locator('#player-name-overlay').isVisible(), false);
+}
+
 test('capture uses authoritative visual order and enlarged geometry while leaving uncommitted channel selections alone', browserCase, async t => {
     const f = await fixture(t), keys = await f.page.evaluate(() => fixture.keys()), before = await remember(f);
     const snapshot = await f.page.evaluate(keys => {
@@ -313,23 +348,122 @@ test('bookmark menu and channel menu close one another, Escape returns focus, an
     const f = await fixture(t), before = await remember(f);
     await f.page.clock.install({ time: new Date('2026-01-01T00:00:00Z') });
     await f.page.clock.pauseAt(new Date('2026-01-01T00:00:01Z'));
+    await assertPlayerNamesHidden(f);
     await f.page.locator('#more-channels-btn').click();
     assert.equal(await f.page.locator('#channel-selection').isVisible(), true);
+    await assertPlayerNames(f);
     await f.page.locator('#layout-bookmarks-btn').click();
     assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true);
     assert.equal(await f.page.locator('#channel-selection').isVisible(), false);
+    await assertPlayerNames(f);
+    await f.page.evaluate(() => setChannelSelectionVisible(false));
+    assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true);
+    await assertPlayerNames(f);
     await f.page.clock.fastForward(29999);
     assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true);
+    await assertPlayerNames(f);
     await f.page.clock.fastForward(1);
     assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), false);
+    await assertPlayerNamesHidden(f);
     await f.page.locator('#layout-bookmarks-btn').click();
+    await assertPlayerNames(f);
     await f.page.keyboard.press('Escape');
     assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), false);
+    await assertPlayerNamesHidden(f);
     assert.equal(await f.page.locator('#layout-bookmarks-btn').evaluate(element => element === document.activeElement), true);
     await f.page.locator('#layout-bookmarks-btn').click();
+    await assertPlayerNames(f);
     await f.page.locator('#more-channels-btn').click();
     assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), false);
     assert.equal(await f.page.locator('#channel-selection').isVisible(), true);
+    await assertPlayerNames(f);
+    await f.page.locator('#layout-bookmarks-btn').click();
+    assert.equal(await f.page.locator('#channel-selection').isVisible(), false);
+    await assertPlayerNames(f);
+    await f.page.locator('.layout-bookmarks-close').click();
+    await assertPlayerNamesHidden(f);
+    await f.page.locator('#layout-bookmarks-btn').click();
+    await assertPlayerNames(f);
+    await f.page.locator('#layout-bookmarks-btn').click();
+    await assertPlayerNamesHidden(f);
+    await f.page.locator('#layout-bookmarks-btn').click();
+    await assertPlayerNames(f);
+    await f.page.locator('#outside').click();
+    assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), false);
+    await assertPlayerNamesHidden(f);
+    assert.equal(await f.page.locator('#outside').evaluate(element => element === document.activeElement), true, 'outside dismissal preserves its clicked focus');
+    await f.page.locator('#layout-bookmarks-btn').click();
+    await assertPlayerNames(f);
+    await f.page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true })));
+    assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), false);
+    await assertPlayerNamesHidden(f);
+    await f.page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+    await assertPlayerNamesHidden(f);
+    await assertContinuity(f, before);
+});
+
+test('bookmark and playback controls independently retain channel names until both menus close', browserCase, async t => {
+    const f = await fixture(t), before = await remember(f);
+    await f.page.evaluate(() => document.documentElement.setAttribute('data-umininn-player-controls-open', ''));
+    await assertPlayerNames(f);
+    await f.page.locator('#layout-bookmarks-btn').click();
+    await assertPlayerNames(f);
+    await f.page.evaluate(() => document.documentElement.removeAttribute('data-umininn-player-controls-open'));
+    assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true);
+    await assertPlayerNames(f);
+    await f.page.evaluate(() => document.documentElement.setAttribute('data-umininn-player-controls-open', ''));
+    await f.page.locator('.layout-bookmarks-close').click();
+    assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), false);
+    await assertPlayerNames(f);
+    await f.page.evaluate(() => document.documentElement.removeAttribute('data-umininn-player-controls-open'));
+    await assertPlayerNamesHidden(f);
+    await assertContinuity(f, before);
+});
+
+test('bookmark names follow asynchronous rename, added and removed live tiles and resized geometry without reloading retained media', browserCase, async t => {
+    const f = await fixture(t), keys = await f.page.evaluate(() => fixture.keys());
+    const before = await remember(f, keys.slice(0, 3)), navigations = [...f.navigations];
+    const renders = await f.page.evaluate(() => fixture.rendered);
+    await f.page.locator('#layout-bookmarks-btn').click();
+    const initial = await assertPlayerNames(f);
+    const name = '<img src=x onerror="window.bookmarkNameXss=1"> & 新台名 🎮';
+    await f.page.evaluate(({ key, name }) => {
+        setTimeout(() => {
+            channels = channels.map(channel => ChannelList.channelKey(channel) === key ? { ...channel, name } : channel);
+            syncActivePlayers(channels);
+        }, 20);
+    }, { key: keys[0], name });
+    await f.page.waitForFunction(({ key, name }) => activePlayers.get(key).channel.name === name, { key: keys[0], name });
+    assert.equal((await assertPlayerNames(f)).find(item => item.key === keys[0]).text, name);
+    assert.equal(await f.page.locator('#player-name-overlay img, #player-name-overlay script').count(), 0);
+    assert.equal(await f.page.evaluate(() => window.bookmarkNameXss), undefined);
+    await assertContinuity(f, before);
+    await f.page.evaluate(() => setTimeout(() => {
+        channels = channels.concat({ id: 'added', platform: 'm3u8', name: '新增直播五台' });
+        syncActivePlayers(channels);
+    }, 20));
+    await f.page.waitForFunction(() => activePlayers.size === 5 && activePlayers.get('m3u8|added')?.resource.video.readyState >= 2);
+    const added = await assertPlayerNames(f, 5);
+    assert.equal(added.find(item => item.key === 'm3u8|added').text, '新增直播五台');
+    assert.notDeepEqual(added.find(item => item.key === keys[0]).cell, initial.find(item => item.key === keys[0]).cell, 'adding a tile updates the real grid and its name rectangles');
+    await assertContinuity(f, before);
+    await f.page.evaluate(key => setTimeout(() => {
+        channels = channels.filter(channel => ChannelList.channelKey(channel) !== key);
+        syncActivePlayers(channels);
+    }, 20), keys[3]);
+    await f.page.waitForFunction(key => activePlayers.size === 4 && !activePlayers.has(key), keys[3]);
+    const removed = await assertPlayerNames(f);
+    assert.ok(removed.every(item => item.key !== keys[3]), 'a removed tile leaves no stale name');
+    await f.page.evaluate(() => {
+        const wrapper = document.getElementById('multi-stream-container-wrapper');
+        wrapper.style.width = '720px'; wrapper.style.height = '450px';
+        updatePlayerLayout({ force: true });
+    });
+    const resized = await assertPlayerNames(f);
+    assert.notDeepEqual(resized.find(item => item.key === keys[0]).cell, removed.find(item => item.key === keys[0]).cell);
+    assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true);
+    assert.equal(await f.page.evaluate(() => fixture.rendered), renders + 1, 'only the new channel creates a player');
+    assert.deepEqual(f.navigations, navigations);
     await assertContinuity(f, before);
 });
 
@@ -349,6 +483,7 @@ test('bookmark menu dismisses on repeated foreign player clicks without consumin
     for (const index of [0, 0, 1]) {
         await trigger.focus(); await f.page.keyboard.press('Enter');
         assert.equal(await f.page.locator('#layout-bookmarks').isVisible(), true);
+        await assertPlayerNames(f);
         // Let the foreign frame paint the dynamically inserted hit target before
         // sending the click; a warm Chromium compositor can otherwise route it
         // to the old media surface. Preserve real input and exact event counts.
@@ -356,6 +491,7 @@ test('bookmark menu dismisses on repeated foreign player clicks without consumin
         await f.frames[index].evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
         await f.frames[index].locator('#fixture-player-surface').click();
         await f.page.waitForFunction(() => !layoutBookmarkMenu.isOpen());
+        await assertPlayerNamesHidden(f);
         assert.equal(await f.page.evaluate(() => document.activeElement?.tagName), 'IFRAME');
         await assertContinuity(f, before);
     }
@@ -601,6 +737,7 @@ test('preview is a faithful miniature of the saved enlarged grid and applying it
     await f.page.evaluate(() => { playerLayoutState.setFocus(null); playerLayoutState.setPending(null); updatePlayerLayout({ force: true }); });
     await f.page.locator('.layout-bookmark-preview').click();
     await f.page.waitForFunction(() => document.getElementById('layout-bookmarks').hidden);
+    await assertPlayerNamesHidden(f);
     assert.deepEqual(await f.page.evaluate(() => capturePlayerBookmark()), saved);
     await assertContinuity(f, before);
 });

@@ -2254,6 +2254,7 @@ function applyPlayerBookmark(value) {
     const pane = document.getElementById('multi-stream-container');
     const wrapper = document.getElementById('multi-stream-container-wrapper');
     const panel = document.getElementById('channel-selection');
+    const bookmarkPanel = document.getElementById('layout-bookmarks');
     if (!pane || !wrapper || !panel) return;
     const layer = document.createElement('div');
     layer.id = 'player-name-overlay';
@@ -2326,7 +2327,8 @@ function applyPlayerBookmark(value) {
     }
     function setVisible(visible) {
         visible = !suspended && !document.hidden && !document.fullscreenElement &&
-            (visible || document.documentElement.hasAttribute('data-umininn-player-controls-open'));
+            (visible || bookmarkPanel && !bookmarkPanel.hidden && getComputedStyle(bookmarkPanel).display !== 'none' ||
+                document.documentElement.hasAttribute('data-umininn-player-controls-open'));
         if (visible === opened) { if (visible) schedule(); return; }
         opened = visible;
         if (visible) {
@@ -2353,6 +2355,7 @@ function applyPlayerBookmark(value) {
     // Also cover future menu visibility changes outside the shared open/close helper.
     const visibilityObserver = new MutationObserver(syncVisibility);
     visibilityObserver.observe(panel, { attributes: true, attributeFilter: ['style', 'hidden', 'class'] });
+    if (bookmarkPanel) visibilityObserver.observe(bookmarkPanel, { attributes: true, attributeFilter: ['style', 'hidden', 'class'] });
     visibilityObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-umininn-player-controls-open'] });
     playerNameOverlay = { setVisible, refresh: schedule };
     document.addEventListener('visibilitychange', syncVisibility);
