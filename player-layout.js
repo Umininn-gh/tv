@@ -85,7 +85,7 @@
     // Decide what an input means before the page commits it. These rules only
     // describe cells: they never update the state, DOM, storage or player sound.
     function createOperations({ geometry } = {}) {
-        if (!geometry || ['build', 'swap', 'neighbors', 'step', 'relocate', 'choose']
+        if (!geometry || ['build', 'swap', 'swapFocus', 'neighbors', 'step', 'relocate', 'choose']
             .some(name => typeof geometry[name] !== 'function')) throw new TypeError('geometry operations are required');
         const visualKeys = layout => [...layout.items].sort((a, b) => a.row - b.row || a.column - b.column)
             .map(item => item.key);
@@ -108,6 +108,13 @@
             // the established direct-exchange contract (including large tiles).
             const next = geometry.build({ keys, columns: pending?.columns || layout.columns, focus });
             return { kind: 'exchange', keys, next, pending, focus, enlarged };
+        }
+        function swapFocus(layout, targetKey) {
+            const next = geometry.swapFocus(layout, targetKey);
+            if (next === layout) return none(layout, 'no-focus-target');
+            return { kind: 'swap-focus', next, keys: visualKeys(next),
+                focus: next.items.find(item => item.span > 1),
+                sourceKey: layout.items.find(item => item.span > 1).key, targetKey };
         }
         function step(layout, sourceKey, direction, targetKey) {
             const items = pair(layout, sourceKey, targetKey);
@@ -166,7 +173,7 @@
             } else next = geometry.choose({ ...options, keys, focus });
             return { next: { ...next, count: keys.length }, pending: null };
         }
-        return Object.freeze({ exchange, step, target, reflow });
+        return Object.freeze({ exchange, swapFocus, step, target, reflow });
     }
 
     function choose({ count, width, height, columnGap = 0, rowGap = 0, previous, force = false,

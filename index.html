@@ -671,7 +671,7 @@
         .player-window-buttons button:focus-visible { outline: 1px solid #fff; outline-offset: -2px; }
         .player-window-buttons button:disabled { opacity: .35; cursor: default; }
         .player-window-buttons svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 1; pointer-events: none; }
-        .player-window-move, .player-window-audio, .player-direction-button {
+        .player-window-move, .player-window-audio, .player-window-swap-focus, .player-direction-button {
             position: absolute;
             display: inline-flex;
             align-items: center;
@@ -695,26 +695,30 @@
         }
         .player-window-move { top: 3px; left: 3px; }
         .player-window-audio { top: 3px; left: calc(var(--player-corner-size, 18px) + 6px); }
+        .player-window-swap-focus { top: 3px; left: calc(var(--player-corner-size, 18px) * 2 + 9px); }
         .player-direction-button { width: 14px; height: 14px; }
         .player-direction-up { top: 3px; transform: translateX(-50%); }
         .player-direction-down { bottom: 3px; transform: translateX(-50%); }
         .player-direction-left { left: 3px; transform: translateY(-50%); }
         .player-direction-right { right: 3px; transform: translateY(-50%); }
         .player-direction-button svg { width: 8px; height: 8px; max-width: 100%; max-height: 100%; fill: currentColor; pointer-events: none; }
-        .player-window-move[hidden], .player-window-audio[hidden], .player-direction-button[hidden] { display: none; }
+        .player-window-move[hidden], .player-window-audio[hidden], .player-window-swap-focus[hidden], .player-direction-button[hidden] { display: none; }
         .player-window-cell[data-hovered="true"] > .player-window-move,
         .player-window-cell[data-hovered="true"] > .player-window-audio,
+        .player-window-cell[data-hovered="true"] > .player-window-swap-focus,
         .player-window-cell[data-hovered="true"] > .player-direction-button,
         .player-window-cell:has(button:focus-visible) > .player-window-move,
         .player-window-cell:has(button:focus-visible) > .player-window-audio,
+        .player-window-cell:has(button:focus-visible) > .player-window-swap-focus,
         .player-window-cell:has(button:focus-visible) > .player-direction-button { opacity: .7; pointer-events: auto; }
-        .player-window-move:hover, .player-window-audio:hover, .player-direction-button:hover { background: rgba(255, 255, 255, .23); opacity: 1; }
-        .player-window-move:hover, .player-window-move:active, .player-window-audio:hover, .player-window-audio:active { transform: none; }
+        .player-window-move:hover, .player-window-audio:hover, .player-window-swap-focus:hover, .player-direction-button:hover { background: rgba(255, 255, 255, .23); opacity: 1; }
+        .player-window-move:hover, .player-window-move:active, .player-window-audio:hover, .player-window-audio:active,
+        .player-window-swap-focus:hover, .player-window-swap-focus:active { transform: none; }
         .player-direction-up:hover, .player-direction-up:active,
         .player-direction-down:hover, .player-direction-down:active { transform: translateX(-50%); }
         .player-direction-left:hover, .player-direction-left:active,
         .player-direction-right:hover, .player-direction-right:active { transform: translateY(-50%); }
-        .player-window-move:focus-visible, .player-window-audio:focus-visible, .player-direction-button:focus-visible { outline: 1px solid #fff; outline-offset: -1px; }
+        .player-window-move:focus-visible, .player-window-audio:focus-visible, .player-window-swap-focus:focus-visible, .player-direction-button:focus-visible { outline: 1px solid #fff; outline-offset: -1px; }
         .player-window-move:disabled { cursor: default; }
         .player-window-cell[data-hovered="true"] > .player-window-move:disabled,
         .player-window-cell:has(button:focus-visible) > .player-window-move:disabled { opacity: .3; }
@@ -1593,7 +1597,7 @@
     <link rel="stylesheet" href="./login.css">
     <link rel="stylesheet" href="./layout-bookmarks.css?v=20261024-bookmarks-delete-all">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261025-bookmark-name-overlay"></script>
+    <script defer src="./login.js?v=20261025-focus-swap"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">

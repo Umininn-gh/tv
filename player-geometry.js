@@ -114,6 +114,23 @@
     const compareCells = (a, b) => a.row - b.row || a.column - b.column ||
         (String(a.key) < String(b.key) ? -1 : String(a.key) > String(b.key) ? 1 : 0);
 
+    function swapFocus(layout, targetKey) {
+        if (!Array.isArray(layout?.items) ||
+            !Number.isInteger(layout.columns) || layout.columns < 1 ||
+            !Number.isInteger(layout.rows) || layout.rows < 1 || layout.items.some(item =>
+                !validCell(item) || item.column + item.span > layout.columns || item.row + item.span > layout.rows) ||
+            new Set(layout.items.map(item => item.key)).size !== layout.items.length) return layout;
+        const enlarged = layout.items.filter(item => item.span > 1);
+        const target = layout.items.find(item => item.key === targetKey);
+        if (enlarged.length !== 1 || !target || target.span !== 1) return layout;
+        const focus = enlarged[0];
+        // Exchange occupied slots without repacking. In particular, the large
+        // rectangle keeps its anchor and every unrelated tile stays exactly put.
+        return { ...layout, items: layout.items.map(item => item === focus ?
+            { ...item, row: target.row, column: target.column, span: target.span } : item === target ?
+                { ...item, row: focus.row, column: focus.column, span: focus.span } : item) };
+    }
+
     function neighbors(layout, key, direction) {
         if (!Object.hasOwn(neighborAxes, direction) || !Array.isArray(layout?.items)) return [];
         const source = layout.items.find(item => item?.key === key && validCell(item));
@@ -304,7 +321,7 @@
         return { ...build({ keys, columns: best.columns, focus }), area: best.area };
     }
 
-    const api = { build, grow, shrink, resize, swap, neighbor, neighbors, step, relocate, choose };
+    const api = { build, grow, shrink, resize, swap, swapFocus, neighbor, neighbors, step, relocate, choose };
     if (typeof module === 'object' && module.exports) module.exports = api;
     else root.PlayerGeometry = api;
 })(typeof globalThis === 'object' ? globalThis : this);

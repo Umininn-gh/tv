@@ -914,6 +914,26 @@ function swapPlayerPositions(sourceKey, targetKey) {
     return applyPlayerPlacement(playerLayoutOperations.exchange(getCurrentPlayerGeometry(), sourceKey, targetKey));
 }
 
+function swapPlayerWithFocus(key) {
+    if (!activePlayers.has(key)) return false;
+    const plan = playerLayoutOperations.swapFocus(getCurrentPlayerGeometry(), key);
+    if (plan.kind === 'none' || !activePlayers.has(plan.sourceKey)) return false;
+    // Exchange the occupants of two existing slots. Do not run the movement or
+    // automatic packing rules: every other cell must keep its exact rectangle.
+    playerLayoutState.commit(plan.next);
+    playerLayoutState.setFocus(plan.focus);
+    playerLayoutState.setPending(null);
+    projectPlayerLayout();
+    playerGrid?.adopt(playerLayoutState.geometry);
+    playerLayoutState.rememberOrder();
+    try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(playerLayoutState.preferredOrder)); } catch (_) {}
+    savePlayerEnlargement();
+    playerPositionEditor?.refresh();
+    playerNameOverlay?.refresh();
+    playerWindowControls?.refresh();
+    return true;
+}
+
 function applyPlayerPlacement(plan) {
     if (plan.kind === 'none') return false;
     if (plan.kind !== 'exchange') return applyPlayerSize(plan.next, { optimize: false });
@@ -1149,6 +1169,8 @@ closePlayer = guardPlayerAudioLayout(closePlayer, key => activePlayers.has(key) 
     key === 'initial-player' && !activePlayers.size && Boolean(document.getElementById('multi-stream-container')?.querySelector('#MyFrame')));
 swapPlayerPositions = guardPlayerAudioLayout(swapPlayerPositions, (source, target) =>
     PlayerLayout.compare(getCurrentPlayerGeometry(), playerLayoutOperations.exchange(getCurrentPlayerGeometry(), source, target).next).changed);
+swapPlayerWithFocus = guardPlayerAudioLayout(swapPlayerWithFocus, key => activePlayers.has(key) &&
+    playerLayoutOperations.swapFocus(getCurrentPlayerGeometry(), key).kind !== 'none');
 movePlayerDirection = guardPlayerAudioLayout(movePlayerDirection, (key, direction, target) =>
     activePlayers.has(key) && activePlayers.has(target) &&
     PlayerLayout.compare(getCurrentPlayerGeometry(), playerLayoutOperations.step(getCurrentPlayerGeometry(), key, direction, target).next).changed);
@@ -2590,6 +2612,7 @@ function applyPlayerBookmark(value) {
         const bounds = wrapper.getBoundingClientRect();
         const geometry = getCurrentPlayerGeometry();
         const geometryItems = new Map(geometry.items.map(item => [item.key, item]));
+        const enlarged = geometry.items.find(item => item.span > 1 && activePlayers.has(item.key));
         const rectangles = new Map(visible.map(item => [item.key, item.element.getBoundingClientRect()]));
         for (const { key, name, element } of visible) {
             let cell = cells.get(key);
@@ -2616,6 +2639,14 @@ function applyPlayerBookmark(value) {
                 move.textContent = '✜';
                 node.appendChild(move);
                 buttons.move = move;
+                const swapFocus = document.createElement('button');
+                swapFocus.type = 'button';
+                swapFocus.className = 'player-window-swap-focus';
+                swapFocus.dataset.playerAction = 'swap-focus';
+                swapFocus.textContent = '⇄';
+                swapFocus.hidden = true;
+                node.appendChild(swapFocus);
+                buttons.swapFocus = swapFocus;
                 node.addEventListener('pointerenter', scheduleHover);
                 node.addEventListener('pointerleave', scheduleHover);
                 cell = { node, bar, buttons, directionButtons: new Map(), element: null };
@@ -2654,11 +2685,22 @@ function applyPlayerBookmark(value) {
                 delete cell.buttons.audio;
                 if (focused) cell.buttons.move.focus({ preventScroll: true });
             }
-            // Keep the two left shortcuts and the right toolbar distinct even
+            const canSwapFocus = Boolean(enlarged && enlarged.key !== key && geometryItems.get(key)?.span === 1);
+            const swapHadFocus = document.activeElement === cell.buttons.swapFocus;
+            cell.buttons.swapFocus.hidden = !canSwapFocus;
+            const swapLabel = playerLayoutAudioAvailable() && document.documentElement.hasAttribute('data-umininn-player-unified-audio-ready') ?
+                `與大格互換，並只開此台聲音（100%）：${name}` : `與大格互換：${name}`;
+            cell.buttons.swapFocus.title = swapLabel;
+            cell.buttons.swapFocus.setAttribute('aria-label', swapLabel);
+            cell.buttons.swapFocus.style.left = `calc(var(--player-corner-size, 18px) * ${cell.buttons.audio ? 2 : 1} + ${cell.buttons.audio ? 9 : 6}px)`;
+            if (!canSwapFocus && swapHadFocus) (cell.buttons.audio || cell.buttons.move).focus({ preventScroll: true });
+            // Keep the left shortcuts and the right toolbar distinct even
             // when a small window leaves very little room in a tile.
             const toolbarCount = span > 1 ? 3 : 2;
-            const cornerSize = cell.buttons.audio ? Math.max(1, Math.min(18,
-                Math.floor((rect.width - 12) / (toolbarCount + 2)), Math.floor((rect.height - 10) / 2))) : 18;
+            const leftCount = 1 + Number(Boolean(cell.buttons.audio)) + Number(canSwapFocus);
+            const leftWidthGaps = 3 * (leftCount - 1);
+            const cornerSize = leftCount > 1 ? Math.max(1, Math.min(18,
+                Math.floor((rect.width - 9 - leftWidthGaps) / (toolbarCount + leftCount)), Math.floor((rect.height - 10) / 2))) : 18;
             cell.node.style.setProperty('--player-corner-size', `${cornerSize}px`);
             cell.node.style.setProperty('--player-corner-font', `${Math.min(14, cornerSize)}px`);
             cell.node.style.setProperty('--player-corner-padding', cornerSize < 18 ? '1px' : '3px');
@@ -2703,13 +2745,13 @@ function applyPlayerBookmark(value) {
                         // Keep the arrow aligned with its target, moving inward
                         // only when its hit area would overlap a corner control.
                         if (direction === 'up') {
-                            const overlapsCorner = center < (cell.buttons.audio ? 2 * cornerSize + 13 : 28) || center > rect.width - (toolbarCount * cornerSize + 10);
+                            const overlapsCorner = center < (leftCount > 1 ? leftCount * cornerSize + leftWidthGaps + 10 : 28) || center > rect.width - (toolbarCount * cornerSize + 10);
                             button.style.top = `${inset(rect.height, overlapsCorner)}px`;
                         } else button.style.bottom = `${inset(rect.height, center < 28 || center > rect.width - 28)}px`;
                     } else {
                         let center = (start + end) / 2 - rect.top;
                         const inward = center < 28 || center > rect.height - 28;
-                        if (cell.buttons.audio && center - size / 2 < cornerSize + 4) {
+                        if (leftCount > 1 && center - size / 2 < cornerSize + 4) {
                             center = Math.min(rect.height - size / 2 - 3, cornerSize + 4 + size / 2);
                         }
                         button.style.top = `${center}px`;
@@ -2736,7 +2778,7 @@ function applyPlayerBookmark(value) {
     }
     layer.addEventListener('click', async event => {
         const button = event.target.closest('button[data-player-action]');
-        if (!button || blocked() || button.disabled) return;
+        if (!button || blocked() || button.disabled || button.hidden) return;
         event.preventDefault(); event.stopPropagation();
         const key = button.closest('.player-window-cell').dataset.playerKey;
         if (button.dataset.playerAction === 'close') {
@@ -2750,6 +2792,24 @@ function applyPlayerBookmark(value) {
             const focus = playerAudioBridge.beginFocus(key, entry, target);
             if (focus) focus.lease = playerRegistry.lease(entry);
             await withPlayerAudioLayout(() => enlargePlayer(key), { focus });
+        }
+        else if (button.dataset.playerAction === 'swap-focus') {
+            // Ignore a second click landing on the old main tile after the
+            // first exchange. Independently selected targets may still queue.
+            if (event.detail > 1) return;
+            const entry = activePlayers.get(key);
+            if (!entry || playerLayoutOperations.swapFocus(getCurrentPlayerGeometry(), key).kind === 'none') return;
+            const target = getPlayerElement(entry), lease = playerRegistry.lease(entry);
+            const focus = playerAudioBridge.beginFocus(key, entry, target);
+            if (focus) focus.lease = lease;
+            await withPlayerAudioLayout(() => {
+                if (!playerRegistry.isCurrent(lease) || getPlayerElement(entry) !== target) return false;
+                // A repeated activation may have queued while this was still a
+                // small tile. Keep its latest audio intent if the earlier swap
+                // already put the same live player into the large slot.
+                return swapPlayerWithFocus(key) || Boolean(playerLayoutState.enlargedGeometry?.items
+                    .some(item => item.key === key && item.span > 1));
+            }, { focus });
         }
         else if (button.dataset.playerAction === 'audio-focus') {
             if (!audioFocusAvailable() || !activePlayers.has(key)) return;
@@ -2777,7 +2837,8 @@ function applyPlayerBookmark(value) {
     function observe() {
         mutations.observe(pane, { childList: true, subtree: true });
         modeObserver.observe(document.documentElement, { attributes: true,
-            attributeFilter: ['data-umininn-player-userscript', 'data-umininn-player-audio-focus-ready'] });
+            attributeFilter: ['data-umininn-player-userscript', 'data-umininn-player-audio-focus-ready',
+                'data-umininn-player-unified-audio-ready', 'data-umininn-player-layout-audio-ready'] });
         if (editor) modeObserver.observe(editor, { attributes: true, attributeFilter: ['hidden'] });
         window.addEventListener('resize', schedule);
         wrapper.addEventListener('scroll', schedule, { passive: true });
