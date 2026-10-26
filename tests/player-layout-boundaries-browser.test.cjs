@@ -276,8 +276,12 @@ test('layout boundaries: all four resize handles after downward placement retain
         await openEditor(f, 'size');
         const drag = await startCornerDrag(f, key, corner);
         await moveCornerDrag(f, drag, 1.1); await f.page.mouse.up(); await waitSpan(f, key, 3);
-        const resized = item(await read(f), key);
-        assert.deepEqual(resized, { key, span: 3, row: start.row - Number(corner[0] === 'n'), column: start.column - Number(corner[1] === 'w') });
+        const result = await read(f), resized = item(result, key);
+        const fixedBottom = corner[0] === 'n' && start.row + start.span === moved.rows;
+        const fixedRight = corner[1] === 'w' && start.column + start.span === moved.columns;
+        assert.deepEqual(resized, { key, span: 3,
+            row: fixedBottom ? result.rows - 3 : start.row - Number(corner[0] === 'n'),
+            column: fixedRight ? result.columns - 3 : start.column - Number(corner[1] === 'w') });
         await assertRendered(f, { editor: true }); await closeEditor(f);
     }
     await assertContinuity(f, before);
@@ -305,11 +309,9 @@ test('BND-003: zero-size projection must neither overwrite the settled anchor no
     await waitWindowGeometry(f);
     const order = await keys(f), key = order[0];
     const retained = await activeMediaSnapshot(f, order, { remember: true });
-    await prepare(f, { columns: 7, span: 6, row: 0, column: 1, key, order });
-    await openEditor(f, 'size');
-    const drag = await startCornerDrag(f, key, 'nw');
-    await moveCornerDrag(f, drag, -4.1); await f.page.mouse.up(); await waitSpan(f, key, 2);
-    await closeEditor(f);
+    // Keep exercising existing saved sparse layouts, including those made by
+    // earlier corner-resize versions. New corner fitting may choose new tracks.
+    await prepare(f, { columns: 7, span: 2, row: 4, column: 5, key, order });
     const visible = await read(f);
     assert.deepEqual(item(visible, key), { key, span: 2, row: 4, column: 5 });
     assert.equal(visible.columns, 7);

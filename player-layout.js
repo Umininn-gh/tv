@@ -85,7 +85,7 @@
     // Decide what an input means before the page commits it. These rules only
     // describe cells: they never update the state, DOM, storage or player sound.
     function createOperations({ geometry } = {}) {
-        if (!geometry || ['build', 'grow', 'swap', 'swapFocus', 'neighbors', 'step', 'relocate', 'choose']
+        if (!geometry || ['build', 'grow', 'shrink', 'resize', 'swap', 'swapFocus', 'neighbors', 'step', 'relocate', 'choose']
             .some(name => typeof geometry[name] !== 'function')) throw new TypeError('geometry operations are required');
         const visualKeys = layout => [...layout.items].sort((a, b) => a.row - b.row || a.column - b.column)
             .map(item => item.key);
@@ -125,6 +125,58 @@
             return { kind: 'size', next, growthAnchor: { key, span: current.span + 1,
                 right: current.column > 0 && current.column + current.span === layout.columns,
                 bottom: current.row > 0 && current.row + current.span === layout.rows } };
+        }
+        function shrink(layout, key) {
+            const current = layout?.items?.find(item => item.key === key);
+            if (!current || !(current.span > 1)) return none(layout, 'missing-shrink-target');
+            const next = geometry.shrink(layout, key);
+            return { kind: 'size', next, span: next.items.find(item => item.key === key).span };
+        }
+        function resize(layout, key, span, corner = 'se') {
+            const current = layout?.items?.find(item => item.key === key);
+            if (!current) return none(layout, 'missing-resize-target');
+            corner = ['nw', 'ne', 'sw', 'se'].includes(corner) ? corner : 'se';
+            const next = geometry.resize(layout, key, span, corner);
+            span = next.items.find(item => item.key === key).span;
+            if (span === current.span) return none(layout, 'size-unchanged', { span, corner });
+            // A named corner resolves opposite-edge ties: a west handle fixes
+            // the east edge even when the square already fills the full width.
+            return { kind: 'size', next, span, corner, preserveAnchor: true,
+                growthAnchor: { key, span,
+                    right: corner.endsWith('w') && current.column + current.span === layout.columns,
+                    bottom: corner.startsWith('n') && current.row + current.span === layout.rows } };
+        }
+        function fitSize({ keys = [], focus, growthAnchor, preserveAnchor = false } = {}, options = {}) {
+            keys = Array.isArray(keys) ? [...new Set(keys)] : [];
+            focus = keys.length > 1 && keys.includes(focus?.key) && focus.span > 1 ? focus : null;
+            if (focus) return { ...geometry.choose({ ...options, keys, focus, growthAnchor, preserveAnchor, force: true }),
+                count: keys.length };
+            const fitted = choose({ ...options, count: keys.length, force: true });
+            return { ...fitted, ...geometry.build({ keys, columns: fitted.columns }), count: keys.length };
+        }
+        function previewSize(layout, key, span, corner, measure = {}) {
+            const plan = resize(layout, key, span, corner);
+            if (plan.kind === 'none') return plan;
+            const width = Number(measure.width), height = Number(measure.height);
+            if (!(width > 0 && height > 0) || !Number.isFinite(width) || !Number.isFinite(height) ||
+                !(layout.columns > 0 && layout.rows > 0)) return none(layout, 'unmeasurable-resize', { span: plan.span, corner: plan.corner });
+            const current = layout.items.find(item => item.key === key);
+            const nonnegative = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+            const gapX = nonnegative(measure.columnGap), gapY = nonnegative(measure.rowGap);
+            const pitchX = (width + gapX) / layout.columns, pitchY = (height + gapY) / layout.rows;
+            const requestedWidth = Math.max(0, plan.span * pitchX - gapX);
+            const requestedHeight = Math.max(0, plan.span * pitchY - gapY);
+            const left = plan.corner.endsWith('w') ? (current.column + current.span) * pitchX - gapX - requestedWidth : current.column * pitchX;
+            const top = plan.corner.startsWith('n') ? (current.row + current.span) * pitchY - gapY - requestedHeight : current.row * pitchY;
+            // Pointer feedback uses the starting grid and fixed opposite corner.
+            // Fitting the final layout cannot move that feedback while dragging;
+            // clip it to the pane when the requested size grows beyond its edges.
+            const x = Math.max(0, Math.min(width, left)), y = Math.max(0, Math.min(height, top));
+            const right = Math.max(x, Math.min(width, left + requestedWidth));
+            const bottom = Math.max(y, Math.min(height, top + requestedHeight));
+            const next = fitSize({ keys: visualKeys(plan.next), focus: plan.next.items.find(item => item.span > 1),
+                growthAnchor: plan.growthAnchor, preserveAnchor: plan.preserveAnchor }, { ...measure, previous: layout });
+            return { ...plan, next, preview: { left: x, top: y, width: right - x, height: bottom - y } };
         }
         function step(layout, sourceKey, direction, targetKey) {
             const items = pair(layout, sourceKey, targetKey);
@@ -177,8 +229,9 @@
                 // tracks and opposite corner in the preview.
                 next = geometry.build({ keys, columns: pending.columns, focus });
             } else if (pending?.intent === 'size' || pending?.intent === 'restore') {
-                next = geometry.choose({ ...options, keys, focus, force: true,
-                    growthAnchor: pending.intent === 'size' ? pending.growthAnchor : undefined });
+                next = fitSize({ keys, focus,
+                    growthAnchor: pending.intent === 'size' ? pending.growthAnchor : undefined,
+                    preserveAnchor: pending.intent === 'size' && pending.preserveAnchor === true }, options);
             } else if (pending) {
                 const columns = Math.max(focus.span, Math.min(pending.columns, focus.span + keys.length - 1));
                 next = geometry.build({ keys, columns, focus });
@@ -187,7 +240,7 @@
             } else next = geometry.choose({ ...options, keys, focus });
             return { next: { ...next, count: keys.length }, pending: null };
         }
-        return Object.freeze({ exchange, swapFocus, grow, step, target, reflow });
+        return Object.freeze({ exchange, swapFocus, grow, shrink, resize, fitSize, previewSize, step, target, reflow });
     }
 
     function choose({ count, width, height, columnGap = 0, rowGap = 0, previous, force = false,

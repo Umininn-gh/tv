@@ -863,7 +863,8 @@ function shrinkPlayer(key) {
     if (activePlayers.size < 2 || !activePlayers.has(key)) return false;
     const current = playerLayoutState.enlargedGeometry?.items.find(item => item.key === key);
     if (!current || current.span <= 1) return false;
-    return applyPlayerSize(PlayerGeometry.shrink(playerLayoutState.enlargedGeometry, key));
+    const plan = playerLayoutOperations.shrink(playerLayoutState.enlargedGeometry, key);
+    return plan.kind !== 'none' && applyPlayerSize(plan.next);
 }
 
 function closePlayer(key) {
@@ -1955,7 +1956,7 @@ function applyPlayerBookmark(value) {
         setChannelSelectionVisible(false);
         mode = nextMode;
         layer.dataset.mode = mode;
-        const help = mode === 'enlarge' ? '拖拉四角預覽，放開套用；也可點格放大或按「縮小一格」；Esc 取消拖拉／完成' : '拖曳或點選目標；相鄰一步，跨格到位；方向鍵逐格，Esc 完成';
+        const help = mode === 'enlarge' ? '拖拉四角預覽，放開後自動分格；也可點格放大或按「縮小一格」；Esc 取消拖拉／完成' : '拖曳或點選目標；相鄰一步，跨格到位；方向鍵逐格，Esc 完成';
         instructions.textContent = `${help}；閒置 ${PLAYER_OVERLAY_TIMEOUT_SECONDS} 秒後自動完成`;
         doneButton.textContent = mode === 'enlarge' ? '✅ 完成放大' : '✅ 完成搬位';
         opened = true;
@@ -2108,28 +2109,21 @@ function applyPlayerBookmark(value) {
         const span = Math.max(1, Math.min(256, Math.round(gesture.item.span + delta)));
         if (gesture.span === span) return;
         gesture.span = span;
-        const next = PlayerGeometry.resize(gesture.base, gesture.key, span, gesture.corner);
-        if (span === 1) {
-            const keys = [...next.items].sort((a, b) => a.row - b.row || a.column - b.column).map(item => item.key);
-            const normal = PlayerLayout.choose({ ...gesture.measure, count: keys.length, force: true });
-            gesture.next = PlayerGeometry.build({ keys, columns: normal.columns });
-        } else {
-            const keys = [...next.items].sort((a, b) => a.row - b.row || a.column - b.column).map(item => item.key);
-            gesture.next = PlayerGeometry.choose({ ...gesture.measure, keys,
-                focus: next.items.find(item => item.span > 1), force: true, preserveAnchor: true });
+        // Every sizing mode uses the same operation/fit engine. The drag frame
+        // keeps its starting screen-space corner; only release applies the fit.
+        const plan = playerLayoutOperations.previewSize(gesture.base, gesture.key, span, gesture.corner, gesture.measure);
+        gesture.next = plan.kind === 'none' ? null : plan.next;
+        if (!gesture.next) {
+            resizePreview.hidden = true;
+            layer.classList.remove('position-resizing');
+            return;
         }
-        const item = gesture.next.items.find(value => value.key === gesture.key);
-        // Match the gap caps used by the real layout, even for very large spans.
-        const tracks = Math.max(activePlayers.size + span - 1, item.row + span, gesture.next.columns);
-        const gapX = Math.min(gesture.measure.columnGap, gesture.measure.width / (2 * tracks));
-        const gapY = Math.min(gesture.measure.rowGap, gesture.measure.height / (2 * tracks));
-        const cellWidth = Math.max(0, (gesture.measure.width - gapX * (gesture.next.columns - 1)) / gesture.next.columns);
-        const cellHeight = Math.max(0, (gesture.measure.height - gapY * (gesture.next.rows - 1)) / gesture.next.rows);
-        resizePreview.style.left = `${item.column * (cellWidth + gapX)}px`;
-        resizePreview.style.top = `${item.row * (cellHeight + gapY)}px`;
-        resizePreview.style.width = `${cellWidth * span + gapX * (span - 1)}px`;
-        resizePreview.style.height = `${cellHeight * span + gapY * (span - 1)}px`;
-        resizePreview.textContent = `${activePlayers.get(gesture.key)?.channel.name || ''} · ${span}×${span}（放開套用）`;
+        const rect = plan.preview;
+        resizePreview.style.left = `${rect.left}px`;
+        resizePreview.style.top = `${rect.top}px`;
+        resizePreview.style.width = `${rect.width}px`;
+        resizePreview.style.height = `${rect.height}px`;
+        resizePreview.textContent = `${activePlayers.get(gesture.key)?.channel.name || ''} · ${plan.span}×${plan.span}（放開後自動分格）`;
         resizePreview.hidden = false;
         layer.classList.add('position-resizing');
     }
