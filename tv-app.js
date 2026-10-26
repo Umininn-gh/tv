@@ -832,7 +832,7 @@ function savePlayerEnlargement() {
     } catch (_) {}
 }
 
-function applyPlayerSize(next, { optimize = true } = {}) {
+function applyPlayerSize(next, { optimize = true, growthAnchor } = {}) {
     const nextFocus = next.items.find(item => item.span > 1) || null;
     const sameFocus = nextFocus?.key === playerLayoutState.focus?.key && nextFocus?.row === playerLayoutState.focus?.row &&
         nextFocus?.column === playerLayoutState.focus?.column && nextFocus?.span === playerLayoutState.focus?.span;
@@ -841,7 +841,8 @@ function applyPlayerSize(next, { optimize = true } = {}) {
     // Capture the reflowed order before the final shrink returns to normal tracks.
     playerLayoutState.commit(next);
     playerLayoutState.setFocus(next.items.find(item => item.span > 1) || null);
-    playerLayoutState.setPending(playerLayoutState.focus ? { ...next, intent: optimize ? 'size' : 'drag' } : null);
+    playerLayoutState.setPending(playerLayoutState.focus ? { ...next, intent: optimize ? 'size' : 'drag',
+        ...(optimize && growthAnchor ? { growthAnchor } : {}) } : null);
     updatePlayerLayout({ force: true });
     playerLayoutState.rememberOrder();
     try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(playerLayoutState.preferredOrder)); } catch (_) {}
@@ -854,7 +855,8 @@ function applyPlayerSize(next, { optimize = true } = {}) {
 function enlargePlayer(key) {
     if (activePlayers.size < 2 || !activePlayers.has(key)) return false;
     if (playerLayoutState.focus?.key === key && playerLayoutState.focus.span >= 256) return false;
-    return applyPlayerSize(PlayerGeometry.grow(getCurrentPlayerGeometry(), key));
+    const plan = playerLayoutOperations.grow(getCurrentPlayerGeometry(), key);
+    return applyPlayerSize(plan.next, { growthAnchor: plan.growthAnchor });
 }
 
 function shrinkPlayer(key) {

@@ -281,12 +281,15 @@
     }
 
     function choose({ keys, width, height, columnGap = 0, rowGap = 0, previous,
-        focus, force = false, preserveAnchor = false } = {}) {
+        focus, force = false, preserveAnchor = false, growthAnchor } = {}) {
         keys = uniqueKeys(keys);
         if (!keys.length) return { ...build(), area: 0 };
         focus = getFocus(keys, focus);
         const span = focus?.span || 1;
-        const minimum = preserveAnchor && focus ? focus.column + span : span;
+        const growing = focus && growthAnchor?.key === focus.key && growthAnchor.span === span;
+        const right = growing && growthAnchor.right === true;
+        const bottom = growing && growthAnchor.bottom === true;
+        const minimum = preserveAnchor && focus && !right ? focus.column + span : span;
         // Beyond this width all ordinary players already fit beside the square.
         const maximum = Math.max(minimum, span + keys.length - 1);
         const occupiedArea = keys.length + span * span - 1;
@@ -300,11 +303,17 @@
             return { ...build({ keys, columns, focus }), area: 0 };
         }
         function measure(columns) {
-            const rows = Math.max(1, Math.ceil(occupiedArea / columns), focus ? focus.row + focus.span : 0);
+            // Position an explicitly growing square against the candidate's
+            // final edges before scoring it. Old-track clamping must not choose
+            // its anchor before the new number of rows/columns is known.
+            const rows = Math.max(1, Math.ceil(occupiedArea / columns), focus ? bottom ? span : focus.row + span : 0);
+            const candidateFocus = focus && { ...focus,
+                column: right ? columns - span : Math.min(focus.column, columns - span),
+                row: bottom ? rows - span : focus.row };
             const cellWidth = Math.max(0, (width - columnGap * (columns - 1)) / columns);
             const cellHeight = Math.max(0, (height - rowGap * (rows - 1)) / rows);
             const videoWidth = Math.min(cellWidth, cellHeight * ASPECT);
-            return { columns, rows, area: videoWidth * videoWidth / ASPECT };
+            return { columns, rows, area: videoWidth * videoWidth / ASPECT, focus: candidateFocus };
         }
         let best = measure(minimum);
         for (let columns = minimum + 1; columns <= maximum; columns++) {
@@ -318,7 +327,7 @@
             const gain = focus ? FOCUS_SWITCH_GAIN : SWITCH_GAIN;
             if (best.area <= current.area * (1 + gain)) best = current;
         }
-        return { ...build({ keys, columns: best.columns, focus }), area: best.area };
+        return { ...build({ keys, columns: best.columns, focus: best.focus }), area: best.area };
     }
 
     const api = { build, grow, shrink, resize, swap, swapFocus, neighbor, neighbors, step, relocate, choose };

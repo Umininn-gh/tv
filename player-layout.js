@@ -85,7 +85,7 @@
     // Decide what an input means before the page commits it. These rules only
     // describe cells: they never update the state, DOM, storage or player sound.
     function createOperations({ geometry } = {}) {
-        if (!geometry || ['build', 'swap', 'swapFocus', 'neighbors', 'step', 'relocate', 'choose']
+        if (!geometry || ['build', 'grow', 'swap', 'swapFocus', 'neighbors', 'step', 'relocate', 'choose']
             .some(name => typeof geometry[name] !== 'function')) throw new TypeError('geometry operations are required');
         const visualKeys = layout => [...layout.items].sort((a, b) => a.row - b.row || a.column - b.column)
             .map(item => item.key);
@@ -115,6 +115,16 @@
             return { kind: 'swap-focus', next, keys: visualKeys(next),
                 focus: next.items.find(item => item.span > 1),
                 sourceKey: layout.items.find(item => item.span > 1).key, targetKey };
+        }
+        function grow(layout, key) {
+            const current = layout?.items?.find(item => item.key === key);
+            if (!current) return none(layout, 'missing-growth-target');
+            const next = geometry.grow(layout, key);
+            // This intent belongs only to this + action. Prefer left/top when
+            // the old square touches both opposite edges; never persist docking.
+            return { kind: 'size', next, growthAnchor: { key, span: current.span + 1,
+                right: current.column > 0 && current.column + current.span === layout.columns,
+                bottom: current.row > 0 && current.row + current.span === layout.rows } };
         }
         function step(layout, sourceKey, direction, targetKey) {
             const items = pair(layout, sourceKey, targetKey);
@@ -153,9 +163,12 @@
                 return { next: choose(options), pending: null };
             }
             if (!(options.width > 0 && options.height > 0)) {
-                // Hidden panes preserve the saved anchor and the pending intent.
-                const columns = Math.max(focus.span, Math.min(Math.max(pending?.columns || 0,
-                    options.previous?.columns || 0, focus.column + focus.span), focus.span + keys.length - 1));
+                // An unmeasurable pane cannot choose a tighter grid. Sparse
+                // corner drags can legitimately retain more tracks than the
+                // remaining key count needs; keep those confirmed tracks so
+                // both reveal and bookmark capture retain the same anchor.
+                const columns = Math.min(768, Math.max(focus.span, pending?.columns || 0,
+                    options.previous?.columns || 0, focus.column + focus.span));
                 return { next: { ...geometry.build({ keys, columns, focus }), count: keys.length, deferredFocus: true }, pending };
             }
             let next;
@@ -164,7 +177,8 @@
                 // tracks and opposite corner in the preview.
                 next = geometry.build({ keys, columns: pending.columns, focus });
             } else if (pending?.intent === 'size' || pending?.intent === 'restore') {
-                next = geometry.choose({ ...options, keys, focus, force: true });
+                next = geometry.choose({ ...options, keys, focus, force: true,
+                    growthAnchor: pending.intent === 'size' ? pending.growthAnchor : undefined });
             } else if (pending) {
                 const columns = Math.max(focus.span, Math.min(pending.columns, focus.span + keys.length - 1));
                 next = geometry.build({ keys, columns, focus });
@@ -173,7 +187,7 @@
             } else next = geometry.choose({ ...options, keys, focus });
             return { next: { ...next, count: keys.length }, pending: null };
         }
-        return Object.freeze({ exchange, swapFocus, step, target, reflow });
+        return Object.freeze({ exchange, swapFocus, grow, step, target, reflow });
     }
 
     function choose({ count, width, height, columnGap = 0, rowGap = 0, previous, force = false,

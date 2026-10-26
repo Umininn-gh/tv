@@ -284,7 +284,7 @@ test('normal exchanges do not consume an outstanding hidden bookmark or restore 
     }
 });
 
-test('reflow is byte-equivalent to the frozen phase-one policy across pending, hidden, focus and stability combinations', () => {
+test('reflow retains legacy visible policy while hidden panes preserve confirmed tracks and anchors', () => {
     let compared = 0;
     for (const count of [0, 1, 2, 5, 17, 32]) {
         const list = keys(count);
@@ -300,7 +300,20 @@ test('reflow is byte-equivalent to the frozen phase-one policy across pending, h
                             force: intent === 'size' });
                         const before = JSON.stringify({ input, options });
                         const expected = legacyReflow(input, options), plan = operations.reflow(input, options);
-                        assert.deepEqual(plan, expected);
+                        const activeFocus = count > 1 && list.includes(focus?.key);
+                        if (activeFocus && !(width > 0 && height > 0)) {
+                            // Zero-size projection now retains the full confirmed
+                            // layout, even when only a few active keys remain.
+                            // Check the new contract independently of its formula.
+                            assert.equal(plan.pending, input.pending);
+                            assert.equal(plan.next.deferredFocus, true);
+                            assert.deepEqual(plan.next.items.find(item => item.span > 1), focus);
+                            assert.ok(plan.next.columns >= focus.column + focus.span);
+                            if (previousColumns && previousColumns <= 768) assert.ok(plan.next.columns >= previousColumns);
+                            if (pending?.columns <= 768) assert.ok(plan.next.columns >= pending.columns);
+                            assert.ok(plan.next.columns <= 768);
+                            assertCells(plan.next, list);
+                        } else assert.deepEqual(plan, expected);
                         assert.equal(JSON.stringify({ input, options }), before, 'planning is read-only');
                         compared++;
                     }
