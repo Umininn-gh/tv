@@ -40,10 +40,18 @@
         let waiting = false;
         let lastNotification = '';
         let observedRoots = new Set();
+        let watchedRoots = new Set(), emptyInventoryVerified = false;
         let observedMedia = new Set();
         const MO = view.MutationObserver || root.MutationObserver;
         const RO = view.ResizeObserver || root.ResizeObserver;
-        const mutations = typeof MO === 'function' ? new MO(scheduleScan) : null;
+        const mutations = typeof MO === 'function' ? new MO(records => {
+            // Decorative offline banners must not repeatedly revoke a proven
+            // empty guard. New media or opaque player routes revoke it at once.
+            if (!records?.length || records.some(record =>
+                [...(record.addedNodes || []), ...(record.removedNodes || [])].some(containsMediaRoute))) emptyInventoryVerified = false;
+            scheduleScan();
+            notify();
+        }) : null;
         const sizes = typeof RO === 'function' ? new RO(scheduleScan) : null;
 
         const read = (node, key, fallback = null) => {
@@ -51,6 +59,22 @@
         };
         const number = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
         const isMedia = node => node && ['VIDEO', 'AUDIO'].includes(String(node.tagName).toUpperCase());
+        const isOpaqueRoute = node => {
+            const tag = String(node?.tagName).toUpperCase();
+            // A custom player may hide media in a closed shadow root. Only an
+            // accessible open root can participate in an observed empty proof.
+            return ['IFRAME', 'OBJECT', 'EMBED'].includes(tag) || tag.includes('-') && !node.shadowRoot;
+        };
+        function containsMediaRoute(container) {
+            if (!container) return false;
+            const routed = node => isMedia(node) || isOpaqueRoute(node);
+            if (routed(container)) return true;
+            // Even an empty new open root needs observation before its future
+            // media can be covered by the current silence proof.
+            if (container.shadowRoot && (!watchedRoots.has(container.shadowRoot) || containsMediaRoute(container.shadowRoot))) return true;
+            return [...(container.querySelectorAll?.('*') || [])].some(node => routed(node) ||
+                node.shadowRoot && (!watchedRoots.has(node.shadowRoot) || containsMediaRoute(node.shadowRoot)));
+        }
         function connected(node) { return Boolean(node && read(node, 'isConnected', true)); }
         function parentOf(node) { return node.parentElement || node.getRootNode?.().host || null; }
         function visibleArea(node) {
@@ -86,16 +110,21 @@
         function collect() {
             const roots = new Set();
             const found = new Set();
+            const embedded = new Set();
             function visit(container) {
                 if (!container || roots.has(container)) return;
                 roots.add(container);
                 if (isMedia(container)) found.add(container);
                 for (const node of container.querySelectorAll?.('video,audio') || []) found.add(node);
                 if (container.shadowRoot) visit(container.shadowRoot);
-                for (const node of container.querySelectorAll?.('*') || []) if (node.shadowRoot) visit(node.shadowRoot);
+                if (isOpaqueRoute(container)) embedded.add(container);
+                for (const node of container.querySelectorAll?.('*') || []) {
+                    if (isOpaqueRoute(node)) embedded.add(node);
+                    if (node.shadowRoot) visit(node.shadowRoot);
+                }
             }
             visit(scope);
-            return { roots, candidates: [...found] };
+            return { roots, candidates: [...found], embedded: [...embedded] };
         }
         function state() {
             const available = !disposed && connected(media);
@@ -113,7 +142,9 @@
                 volume, muted, paused, ended, readyState, playbackStatus, errorCode, recovering: Boolean(pending),
                 recoverSupported: available && typeof media.play === 'function', volumeSupported: available && volume !== null,
                 muteSupported: (available || guarded.length > 0) && muted !== null, muteGuardActive: !disposed && muteGuard,
-                focusRestorePending: !disposed && guardOwned.size > 0, audioUserRevision, disposed };
+                focusRestorePending: !disposed && guardOwned.size > 0,
+                emptyGuardConfirmed: !disposed && muteGuard && !guardFailure && emptyInventoryVerified && connected(scope),
+                audioUserRevision, disposed };
         }
         function result(ok = true, code = 'OK', message = '') { return { ok, code, message, state: state() }; }
         function currentResult() { return disposed ? result(false, 'DISPOSED', '控制器已關閉') : muteGuard && guardFailure ?
@@ -265,9 +296,10 @@
         function observe(roots, candidates) {
             if (mutations && (roots.size !== observedRoots.size || [...roots].some(item => !observedRoots.has(item)))) {
                 mutations.disconnect();
+                watchedRoots = new Set();
                 for (const container of roots) {
                     try { mutations.observe(container, { childList: true, subtree: true, attributes: true,
-                        attributeFilter: ['style', 'class', 'hidden', 'width', 'height'] }); } catch (_) {}
+                        attributeFilter: ['style', 'class', 'hidden', 'width', 'height'] }); watchedRoots.add(container); } catch (_) {}
                 }
                 observedRoots = roots;
             }
@@ -280,14 +312,17 @@
         function scan() {
             if (disposed || scanning) return;
             scanning = true;
+            emptyInventoryVerified = false;
             try {
-                const { roots, candidates } = collect();
+                const { roots, candidates, embedded } = collect();
                 observe(roots, candidates);
                 const ranked = candidates.map(node => ({ node, area: visibleArea(node), video: String(node.tagName).toUpperCase() === 'VIDEO' }))
                     .filter(item => item.area > 0).sort((a, b) => Number(b.video) - Number(a.video) || b.area - a.area || Number(b.node === media) - Number(a.node === media));
                 bind(ranked[0]?.node || null);
                 observeGuard(candidates);
                 repairGuard();
+                emptyInventoryVerified = Boolean(mutations && !candidates.some(connected) && !embedded.some(connected) &&
+                    [...roots].every(container => watchedRoots.has(container)));
             } finally { scanning = false; }
             notify();
         }

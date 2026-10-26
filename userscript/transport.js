@@ -18,7 +18,7 @@
     function safeState(value) {
         if (!object(value)) return null;
         const result = {};
-        for (const field of ['available', 'muted', 'paused', 'ended', 'recovering', 'recoverSupported', 'platformRecoverSupported', 'volumeSupported', 'muteSupported', 'muteGuardActive', 'focusRestorePending', 'disposed']) {
+        for (const field of ['available', 'muted', 'paused', 'ended', 'recovering', 'recoverSupported', 'platformRecoverSupported', 'volumeSupported', 'muteSupported', 'muteGuardActive', 'focusRestorePending', 'emptyGuardConfirmed', 'disposed']) {
             if (typeof value[field] === 'boolean' || value[field] === null) result[field] = value[field];
         }
         for (const [field, min, max] of [['volume', 0, 1], ['readyState', 0, 4], ['errorCode', 0, 4], ['mediaId', 1, Number.MAX_SAFE_INTEGER]]) {

@@ -11,6 +11,20 @@ const TOKEN = 'a'.repeat(48), DOCUMENT = 'b'.repeat(48), SESSION = 'c'.repeat(48
 const envelope = (type, fields = {}) => ({ channel: config.CHANNEL, version: config.VERSION, type, ...fields });
 const snapshot = () => ({ ok: true, code: 'OK', message: '', state: { available: true, volume: 0.4, muted: false, paused: true, readyState: 4, playbackStatus: 'paused', recoverSupported: true, volumeSupported: true, muteSupported: true } });
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('site transport preserves only a typed empty-guard proof without inventing player mute state', async () => {
+    const f = siteFixture(); f.ready();
+    for (const proof of [true, false, 'true', 1, null]) {
+        const pending = f.command();
+        f.result(undefined, { result: { ok: false, code: 'NO_MEDIA', state: { available: false,
+            muted: null, volume: null, muteSupported: false, volumeSupported: false, muteGuardActive: true, emptyGuardConfirmed: proof } } });
+        const result = await pending;
+        assert.equal(result.state.muted, null); assert.equal(result.state.volume, null);
+        if (typeof proof === 'boolean') assert.equal(result.state.emptyGuardConfirmed, proof);
+        else assert.notEqual(result.state.emptyGuardConfirmed, true);
+    }
+    f.transport.dispose();
+});
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 function eventTarget() {
     const listeners = new Map(), listenerOptions = new Map();

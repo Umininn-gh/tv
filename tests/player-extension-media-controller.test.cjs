@@ -64,6 +64,138 @@ function fixture() {
 }
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 
+test('an observed empty guarded player reports silence proof without inventing mute or volume values', async () => {
+    const f = fixture(), controller = f.mount();
+    assert.equal(controller.getState().state.emptyGuardConfirmed, false);
+    const result = await controller.execute({ action: 'setMuted', value: true, guard: true });
+    assert.equal(result.code, 'NO_MEDIA'); assert.equal(result.ok, false);
+    assert.equal(result.state.available, false); assert.equal(result.state.muteGuardActive, true);
+    assert.equal(result.state.emptyGuardConfirmed, true);
+    assert.equal(result.state.muted, null); assert.equal(result.state.volume, null);
+    assert.equal(result.state.muteSupported, false); assert.equal(f.clock.timers.size, 0);
+    controller.dispose(); assert.equal(controller.getState().state.emptyGuardConfirmed, false);
+});
+
+test('empty proof requires working observers and rejects embedded documents and hidden media', async () => {
+    for (const tag of ['iframe', 'object', 'embed']) {
+        const f = fixture(), embedded = f.doc.documentElement.append(new f.Node(tag)), controller = f.mount();
+        assert.equal((await controller.execute({ action: 'setMuted', value: true, guard: true })).state.emptyGuardConfirmed, false, tag);
+        embedded.remove(); assert.equal(controller.getState().state.emptyGuardConfirmed, true);
+        controller.dispose();
+    }
+    const hidden = fixture(), video = hidden.add(); video.hidden = true;
+    const controller = hidden.mount(), result = await controller.execute({ action: 'setMuted', value: true, guard: true });
+    assert.equal(result.state.emptyGuardConfirmed, false); assert.equal(result.state.muted, true);
+    assert.equal(video.muted, true); controller.dispose();
+    const missing = fixture(); missing.view.MutationObserver = undefined;
+    const noObserver = missing.mount(); assert.equal((await noObserver.execute({ action: 'setMuted', value: true, guard: true })).state.emptyGuardConfirmed, false); noObserver.dispose();
+    const refused = fixture(); refused.view.MutationObserver = class { observe() { throw new Error('unavailable'); } disconnect() {} };
+    const broken = refused.mount(); assert.equal((await broken.execute({ action: 'setMuted', value: true, guard: true })).state.emptyGuardConfirmed, false); broken.dispose();
+});
+
+test('custom players with inaccessible shadow roots cannot prove an empty guarded inventory', async () => {
+    const f = fixture(), host = f.doc.documentElement.append(new f.Node('closed-player'));
+    const closedRoot = new f.Node(); closedRoot.tagName = undefined; closedRoot.host = host;
+    const hiddenAudio = f.add('audio', closedRoot); hiddenAudio.hidden = true;
+    host.shadowRoot = null;
+    const controller = f.mount(), result = await controller.execute({ action: 'setMuted', value: true, guard: true });
+    assert.equal(result.code, 'NO_MEDIA'); assert.equal(result.state.emptyGuardConfirmed, false);
+    assert.equal(result.state.muted, null); assert.equal(result.state.volume, null);
+    assert.equal(hiddenAudio.muted, false, 'inaccessible audio cannot be claimed as controlled');
+    assert.equal(f.mutations[0].targets.has(closedRoot), false);
+    host.remove(); assert.equal(controller.getState().state.emptyGuardConfirmed, true);
+    controller.dispose();
+});
+
+test('open custom roots are observed before empty proof and late shadow media revoke and repair it', async () => {
+    const f = fixture(), host = f.doc.documentElement.append(new f.Node('open-player'));
+    host.shadowRoot = new f.Node(); host.shadowRoot.tagName = undefined; host.shadowRoot.host = host;
+    const controller = f.mount(), reports = [];
+    controller.subscribe(result => reports.push(result));
+    const empty = await controller.execute({ action: 'setMuted', value: true, guard: true });
+    assert.equal(empty.state.emptyGuardConfirmed, true);
+    assert.equal(f.mutations[0].targets.has(host.shadowRoot), true);
+    const audio = f.add('audio', host.shadowRoot); audio.hidden = true;
+    f.mutations[0].callback([{ type: 'childList', addedNodes: [audio], removedNodes: [] }]);
+    assert.equal(reports.at(-1).state.emptyGuardConfirmed, false, 'late shadow audio immediately revokes the proof');
+    f.tick(80); assert.equal(audio.muted, true); assert.equal(controller.getState().state.emptyGuardConfirmed, false);
+    assert.deepEqual([audio.playCalls, audio.pauseCalls, audio.loadCalls], [0, 0, 0]);
+    controller.dispose(); assert.equal(f.clock.timers.size, 0);
+});
+
+test('late opaque custom players revoke proof immediately both directly and inside added wrappers', async () => {
+    for (const wrapped of [false, true]) {
+        const f = fixture(), controller = f.mount(), reports = [];
+        controller.subscribe(result => reports.push(result));
+        await controller.execute({ action: 'setMuted', value: true, guard: true });
+        assert.equal(reports.at(-1).state.emptyGuardConfirmed, true);
+        const host = new f.Node('late-player'), added = wrapped ? new f.Node('div') : host;
+        if (wrapped) added.append(host);
+        f.doc.documentElement.append(added);
+        f.mutations[0].callback([{ type: 'childList', addedNodes: [added], removedNodes: [] }]);
+        assert.equal(reports.at(-1).state.emptyGuardConfirmed, false, `queued ${wrapped ? 'nested' : 'direct'} custom player`);
+        f.tick(80); assert.equal(controller.getState().state.emptyGuardConfirmed, false);
+        added.remove();
+        f.mutations[0].callback([{ type: 'childList', addedNodes: [], removedNodes: [added] }]);
+        f.tick(80); assert.equal(controller.getState().state.emptyGuardConfirmed, true);
+        controller.dispose(); assert.equal(f.clock.timers.size, 0);
+    }
+});
+
+test('new open roots revoke empty proof until observed, covering media added before the queued scan', async () => {
+    for (const lateAudio of [false, true]) {
+        const f = fixture(), controller = f.mount(), reports = [];
+        controller.subscribe(result => reports.push(result));
+        await controller.execute({ action: 'setMuted', value: true, guard: true });
+        const host = f.doc.documentElement.append(new f.Node('new-open-player'));
+        host.shadowRoot = new f.Node(); host.shadowRoot.tagName = undefined; host.shadowRoot.host = host;
+        f.mutations[0].callback([{ type: 'childList', addedNodes: [host], removedNodes: [] }]);
+        assert.equal(f.mutations[0].targets.has(host.shadowRoot), false);
+        assert.equal(reports.at(-1).state.emptyGuardConfirmed, false, 'an unobserved open root is not proven empty');
+        const audio = lateAudio ? f.add('audio', host.shadowRoot) : null;
+        // No root observer can report this insertion before the pending scan.
+        f.tick(80);
+        assert.equal(f.mutations[0].targets.has(host.shadowRoot), true);
+        assert.equal(controller.getState().state.emptyGuardConfirmed, !lateAudio);
+        if (audio) {
+            assert.equal(audio.muted, true);
+            assert.deepEqual([audio.playCalls, audio.pauseCalls, audio.loadCalls], [0, 0, 0]);
+        }
+        controller.dispose(); assert.equal(f.clock.timers.size, 0);
+    }
+});
+
+test('new DOM revokes an empty proof immediately and late media are guarded without starting playback', async () => {
+    const f = fixture(), controller = f.mount(), reports = [];
+    controller.subscribe(result => reports.push(result));
+    await controller.execute({ action: 'setMuted', value: true, guard: true });
+    assert.equal(reports.at(-1).state.emptyGuardConfirmed, true);
+    const late = f.add(); late.muted = false; f.mutate();
+    assert.equal(reports.at(-1).state.emptyGuardConfirmed, false, 'a queued scan cannot leave an old empty proof valid');
+    f.tick(80); assert.equal(late.muted, true); assert.equal(controller.getState().state.emptyGuardConfirmed, false);
+    assert.deepEqual([late.playCalls, late.pauseCalls, late.loadCalls], [0, 0, 0]);
+    await controller.execute({ action: 'setMuted', value: false }); assert.equal(controller.getState().state.emptyGuardConfirmed, false);
+    controller.dispose(); assert.equal(f.clock.timers.size, 0);
+});
+
+test('decorative empty-player DOM updates retain proof without repeated sound-policy repairs', async () => {
+    const f = fixture(), controller = f.mount(), reports = [];
+    controller.subscribe(result => reports.push(result));
+    await controller.execute({ action: 'setMuted', value: true, guard: true });
+    const before = reports.length;
+    for (let index = 0; index < 8; index++) {
+        const banner = f.doc.documentElement.append(new f.Node('span'));
+        f.mutations[0].callback([{ type: 'childList', addedNodes: [banner], removedNodes: [] }]);
+        f.tick(80);
+    }
+    assert.equal(reports.length, before, 'unchanged silence proof must not exhaust the focus repair budget');
+    const wrapper = new f.Node('div'); wrapper.append(new f.Node('iframe')); f.doc.documentElement.append(wrapper);
+    f.mutations[0].callback([{ type: 'childList', addedNodes: [wrapper], removedNodes: [] }]);
+    assert.equal(reports.at(-1).state.emptyGuardConfirmed, false);
+    f.tick(80); assert.equal(controller.getState().state.emptyGuardConfirmed, false);
+    controller.dispose(); assert.equal(f.clock.timers.size, 0);
+});
+
 test('no-media and invalid commands return honest JSON without changing defaults', async () => {
     const f = fixture(), controller = f.mount();
     assert.equal(controller.getState().code, 'NO_MEDIA');

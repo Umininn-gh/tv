@@ -28,11 +28,54 @@
         if (!state) return false;
         // Twitch can show a real Play control before it has created a video.
         const platformPlay = action === 'recover' && state.platformRecoverSupported === true && state.recoverSupported === true;
-        if (!platformPlay && (result.code === 'no-media' || state.playbackStatus === 'no-media')) return false;
+        if (!platformPlay && (typeof result.code === 'string' && ['no-media', 'no_media'].includes(result.code.toLowerCase()) || state.playbackStatus === 'no-media')) return false;
+        if (['setMuted', 'setVolume'].includes(action) && state.available === false) return false;
+        if (action === 'setMuted' && typeof state.muted !== 'boolean') return false;
+        if (action === 'setVolume' && !(typeof state.volume === 'number' && Number.isFinite(state.volume) && state.volume >= 0 && state.volume <= 1)) return false;
         const support = { setVolume: 'volumeSupported', setMuted: 'muteSupported', recover: 'recoverSupported' }[action];
         if (support && state[support] === false) return false;
         const caps = result.capabilities || state.capabilities || {};
         return caps[action] !== false;
+    }
+
+    function confirmedSilentPeer(state) {
+        return state?.muteGuardActive === true && (state.muted === true ||
+            state.available === false && state.emptyGuardConfirmed === true && state.muteSupported === false &&
+            state.muted == null && state.volume == null);
+    }
+
+    function renderAudioControls(entry, state, activeElement) {
+        const volume = state?.volume;
+        const volumeKnown = typeof volume === 'number' && Number.isFinite(volume) && volume >= 0 && volume <= 1;
+        const muteKnown = typeof state?.muted === 'boolean';
+        if (volumeKnown) {
+            if (activeElement !== entry.volume) entry.volume.value = String(Math.round(volume * 100));
+            entry.level.textContent = `${Math.round(volume * 100)}%`;
+            entry.volume.setAttribute('aria-valuetext', entry.level.textContent);
+        } else {
+            // A disabled placeholder must not retain an earlier apparent 100%.
+            entry.volume.value = '0';
+            entry.level.textContent = '—';
+            entry.volume.setAttribute('aria-valuetext', '未知');
+        }
+        entry.mute.textContent = muteKnown ? state.muted ? '開聲' : '靜音' : '狀態未知';
+        entry.mute.setAttribute('aria-pressed', muteKnown ? String(state.muted) : 'mixed');
+        entry.volume.disabled = entry.busy || !volumeKnown || !canControl(entry, 'setVolume');
+        entry.mute.disabled = entry.busy || !muteKnown || !canControl(entry, 'setMuted');
+        entry.recover.disabled = entry.busy || !canControl(entry, 'recover');
+    }
+
+    function unifiedFocusFailures(result, targetKey, names, targetName = '目標格') {
+        const failed = (result.results || []).filter(item => ['failed', 'stale', 'timeout', 'skipped'].includes(item.status) &&
+            item.reason !== 'volume-unsupported');
+        const actual = failed.filter(item => item.reason !== 'focus-withheld');
+        const blockers = actual.length ? actual : failed.filter(item => item.key !== targetKey);
+        if (blockers.length) return blockers.map(item => ({
+            name: names.get(item.key) || (item.key === targetKey ? targetName : '未就緒的播放器'),
+            code: item.reason || (item.status === 'stale' ? 'stale' : item.status === 'timeout' ? 'timeout' : 'unconfirmed')
+        }));
+        return [{ name: result.code === 'CANCELLED' ? targetName : '其他播放器',
+            code: result.code === 'CANCELLED' ? 'stale' : result.code === 'TIMEOUT' ? 'timeout' : 'unconfirmed' }];
     }
 
     function isWatchStartTarget(target) {
@@ -504,18 +547,7 @@
             const state = entry.result?.state;
             const labels = { playing: '播放中', paused: '已暫停', waiting: '緩衝中', blocked: '瀏覽器拒絕播放，請在播放器內親自按播放', error: '來源錯誤', ended: '已結束', 'no-media': '尚未找到影片' };
             entry.status.textContent = entry.notice || entry.result?.message || labels[state?.playbackStatus] || '正在偵測播放器…';
-            if (state) {
-                const volume = state.volume;
-                if (typeof volume === 'number' && Number.isFinite(volume) && volume >= 0 && volume <= 1) {
-                    if (activeElement() !== entry.volume) entry.volume.value = String(Math.round(volume * 100));
-                    entry.level.textContent = `${Math.round(volume * 100)}%`;
-                } else entry.level.textContent = '—';
-                entry.mute.textContent = state.muted ? '開聲' : '靜音';
-                entry.mute.setAttribute('aria-pressed', String(Boolean(state.muted)));
-            }
-            entry.volume.disabled = entry.busy || !can(entry, 'setVolume');
-            entry.mute.disabled = entry.busy || !can(entry, 'setMuted');
-            entry.recover.disabled = entry.busy || !can(entry, 'recover');
+            renderAudioControls(entry, state, activeElement());
         }
         function refreshSummary() {
             if (!summary) return;
@@ -654,7 +686,7 @@
         }
 
         function audioFingerprint() {
-            return audioFocusSnapshot().map(item => [item.entry?.id || 0, item.generation, item.state?.muted, item.state?.muteGuardActive,
+            return audioFocusSnapshot().map(item => [item.entry?.id || 0, item.generation, item.state?.muted, item.state?.muteGuardActive, item.state?.emptyGuardConfirmed,
                 item.entry?.target?.token || '', item.entry?.kind || '', Boolean(item.entry?.busy), item.state?.available,
                 item.key === audioFocusIntent?.target && !audioFocusIntent.focused ? item.state?.volume : ''].join(':')).join('|');
         }
@@ -690,8 +722,7 @@
                     if (!intent.dirty && intent.lastFingerprint === fingerprint || intent.repairs >= 4) return;
                     intent.dirty = false;
                     const cohort = audioFocusSnapshot();
-                    const needsRepair = cohort.some(item => item.key !== intent.target &&
-                        (item.state?.muted !== true || item.state?.muteGuardActive !== true)) ||
+                    const needsRepair = cohort.some(item => item.key !== intent.target && !confirmedSilentPeer(item.state)) ||
                         !intent.focused;
                     if (!needsRepair) { intent.lastFingerprint = fingerprint; return; }
                     intent.repairs++;
@@ -703,7 +734,7 @@
                 if (!target) { audioFocusIntent = null; void audioFocusFlow.cancel(); showAudioFocusStatus({ phase: 'removed' }); return; }
                 const changedTarget = target.entry !== intent.entry || target.generation !== intent.generation;
                 const peersNeedMute = snapshot.some(item => item.key !== intent.target &&
-                    (!item.entry || guardedEntries.get(item.entry) !== item.generation || item.state?.muted !== true));
+                    (!item.entry || guardedEntries.get(item.entry) !== item.generation || !confirmedSilentPeer(item.state)));
                 const targetReadyForRetry = !intent.focused && target.entry && !target.entry.busy && can(target.entry, 'setVolume');
                 if ((!changedTarget && !peersNeedMute && !targetReadyForRetry) || intent.lastFingerprint === audioFingerprint()) return;
                 startAudioFocusIntent(intent, intent.focused && !changedTarget, true);
@@ -1225,8 +1256,13 @@
         function showAudioFocusStatus(value) {
             if (!audioFocusStatus || disposed) return;
             const reasons = { unsupported: '未支援聲音控制', pending: '尚未就緒或仍在操作', stale: '播放器已更換', changed: '播放器狀態已改變',
-                'volume-unsupported': '未支援音量控制', 'volume-unconfirmed': '未能確認音量已設為 100%',
-                unconfirmed: '未確認靜音', unavailable: '控制未能連接', timeout: '控制逾時' };
+                'volume-unsupported': '未支援音量控制', 'volume-unconfirmed': '未能確認音量設定',
+                unconfirmed: '未確認靜音', unavailable: '控制未能連接', timeout: '控制逾時',
+                'read-unconfirmed': '未能讀取播放器狀態', 'mute-unsupported': '未支援靜音控制',
+                'muted-unconfirmed': '未能確認聲音設定', 'setMuted-unconfirmed': '未確認靜音',
+                'setVolume-unconfirmed': '未能確認音量設定', 'mute-guard-unconfirmed': '未能確認靜音保護',
+                'lease-changed': '播放器已更換', deadline: '控制逾時', 'audio-changed': '聲音狀態已改變',
+                'prior-audio-unconfirmed': '先前的聲音操作未能確認' };
             let text = '';
             if (value.phase === 'preparing') text = '正在將所有播放器靜音，再只開啟目標格的聲音…';
             else if (value.phase === 'focused') text = value.muted === true ? `其他播放器已靜音；「${value.name}」維持目前的靜音設定。` :
@@ -1386,7 +1422,9 @@
             if (unifiedFocusOpened(intent, result)) showAudioFocusStatus({ phase: 'focused', volume: 1, muted: false,
                 name: intent.entry?.name.textContent || '目標格', volumeWarning: result.code === 'PARTIAL' });
             else if (!['PENDING', 'PREPARED', 'RUNNING'].includes(result.code)) showAudioFocusStatus({ phase: 'partial',
-                failures: [{ name: intent.entry?.name.textContent || '目標格', code: result.code === 'CANCELLED' ? 'stale' : 'unconfirmed' }] });
+                failures: unifiedFocusFailures(result, intent.target.getAttribute('data-channel-key'),
+                    new Map(currentEntries().map(entry => [entry.element.getAttribute('data-channel-key'), entry.name.textContent])),
+                    intent.entry?.name.textContent || '目標格') });
         }
         function originalMuteClick(event) {
             if (!event.target?.closest?.('#toggle-all-audio')) return;
@@ -1724,7 +1762,7 @@
         }
         return { start, dispose, scan };
     }
-    if (typeof module === 'object' && module.exports) module.exports = { createSiteController, validResult, aggregateAudio, canControl, isWatchStartTarget, isRecoveryReady, createReadinessPass, createAudioFocusFlow };
+    if (typeof module === 'object' && module.exports) module.exports = { createSiteController, validResult, aggregateAudio, canControl, confirmedSilentPeer, renderAudioControls, unifiedFocusFailures, isWatchStartTarget, isRecoveryReady, createReadinessPass, createAudioFocusFlow };
     // Firefox's content-script global inherits from Window but is not Window itself.
     const contentWindow = root.window;
     if (contentWindow && config && media && runtime && contentWindow.top === contentWindow && config.isSiteUrl(contentWindow.location.href) && !contentWindow.document.getElementById('umininn-player-control-host')) {

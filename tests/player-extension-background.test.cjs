@@ -13,6 +13,21 @@ const frameSender = (extra = {}) => ({ id: EXTENSION_ID, tab: { id: 4, url: SITE
 const command = (action = 'getState', value, extra = {}) => envelope('site:command', { target: { frameId: 6, token: TOKEN, documentId: 'frame-document' }, command: { action, ...(value === undefined ? {} : { value }) }, ...extra });
 const state = { available: true, mediaId: 1, mediaType: 'video', volume: 0.4, muted: false, paused: true, ended: false, readyState: 4, playbackStatus: 'paused', errorCode: null, recovering: false, recoverSupported: true, volumeSupported: true, muteSupported: true, disposed: false };
 const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('broker preserves typed empty guard evidence but never coerces forged proof into confirmation', async () => {
+    for (const promiseApi of [false, true]) {
+        const f = fixture({ promiseApi });
+        for (const proof of [true, false, 'true', 1, null]) {
+            f.behavior.send = () => ({ ok: false, code: 'NO_MEDIA', state: { available: false,
+                muted: null, volume: null, muteSupported: false, volumeSupported: false, muteGuardActive: true, emptyGuardConfirmed: proof } });
+            const result = await f.broker.handle(command(), siteSender());
+            assert.equal(result.state.muted, null); assert.equal(result.state.volume, null);
+            if (typeof proof === 'boolean') assert.equal(result.state.emptyGuardConfirmed, proof);
+            else assert.notEqual(result.state.emptyGuardConfirmed, true);
+        }
+        f.broker.dispose();
+    }
+});
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; }
 
 function fixture({ promiseApi = false, maxPending = 32 } = {}) {

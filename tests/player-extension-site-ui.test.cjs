@@ -1,6 +1,117 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { aggregateAudio, validResult, canControl, isWatchStartTarget, isRecoveryReady, createAudioFocusFlow } = require('../browser-extension/site-ui.js');
+const { aggregateAudio, validResult, canControl, confirmedSilentPeer, renderAudioControls, unifiedFocusFailures,
+    isWatchStartTarget, isRecoveryReady, createAudioFocusFlow } = require('../browser-extension/site-ui.js');
+
+function audioControlFixture(state) {
+    const control = () => ({ value: '100', textContent: '', disabled: false, attributes: new Map(),
+        setAttribute(key, value) { this.attributes.set(key, String(value)); },
+        getAttribute(key) { return this.attributes.get(key) ?? null; } });
+    const entry = { kind: 'frame', target: { frameId: 4 }, busy: false,
+        volume: control(), level: control(), mute: control(), recover: control(), result: { ok: true, code: 'OK', state } };
+    return { entry, render(next = state, activeElement) { entry.result.state = next; renderAudioControls(entry, next, activeElement); } };
+}
+
+test('unavailable sound never appears unmuted or retains a previously confirmed slider level', () => {
+    const f = audioControlFixture({ muted: false, volume: 1, available: true });
+    f.render(); assert.equal(f.entry.volume.value, '100'); assert.equal(f.entry.mute.getAttribute('aria-pressed'), 'false');
+    f.entry.result.code = 'NO_MEDIA';
+    f.render({ available: false, playbackStatus: 'no-media', volume: null, muted: null,
+        volumeSupported: false, muteSupported: false, muteGuardActive: true, emptyGuardConfirmed: true });
+    assert.equal(f.entry.volume.value, '0', 'a disabled placeholder must not claim the old 100% is current');
+    assert.equal(f.entry.volume.getAttribute('aria-valuetext'), '未知'); assert.equal(f.entry.level.textContent, '—');
+    assert.equal(f.entry.volume.disabled, true); assert.equal(f.entry.mute.textContent, '狀態未知');
+    assert.equal(f.entry.mute.getAttribute('aria-pressed'), 'mixed'); assert.equal(f.entry.mute.disabled, true);
+    f.entry.result.code = 'OK';
+    f.render({ available: true, volume: .37, muted: true, volumeSupported: true, muteSupported: true });
+    assert.equal(f.entry.volume.value, '37'); assert.equal(f.entry.level.textContent, '37%');
+    assert.equal(f.entry.volume.getAttribute('aria-valuetext'), '37%'); assert.equal(f.entry.volume.disabled, false);
+    assert.equal(f.entry.mute.textContent, '開聲'); assert.equal(f.entry.mute.getAttribute('aria-pressed'), 'true');
+    assert.equal(f.entry.mute.disabled, false);
+});
+
+test('missing, unsupported and malformed sound values remain independently unknown and disabled', () => {
+    for (const volume of [undefined, null, NaN, Infinity, -1, 1.01, '1']) {
+        const f = audioControlFixture({ muted: true, volume }); f.render();
+        assert.equal(f.entry.volume.disabled, true); assert.equal(f.entry.level.textContent, '—');
+        assert.equal(f.entry.volume.getAttribute('aria-valuetext'), '未知');
+        assert.equal(f.entry.mute.disabled, false, 'a known mute state remains controllable even when volume is unknown');
+    }
+    for (const muted of [undefined, null, 0, 1, 'false']) {
+        const f = audioControlFixture({ muted, volume: .5 }); f.render();
+        assert.equal(f.entry.mute.disabled, true); assert.equal(f.entry.mute.textContent, '狀態未知');
+        assert.equal(f.entry.mute.getAttribute('aria-pressed'), 'mixed'); assert.equal(f.entry.volume.disabled, false);
+    }
+    const f = audioControlFixture(null); f.render();
+    assert.equal(f.entry.volume.disabled, true); assert.equal(f.entry.mute.disabled, true);
+    assert.equal(f.entry.recover.disabled, true);
+});
+
+test('zero volume and false mute stay real values while an active slider keeps its uncommitted input', () => {
+    const f = audioControlFixture({ muted: false, volume: 0 }); f.render();
+    assert.equal(f.entry.volume.disabled, false); assert.equal(f.entry.level.textContent, '0%');
+    assert.equal(f.entry.volume.getAttribute('aria-valuetext'), '0%');
+    assert.equal(f.entry.mute.textContent, '靜音'); assert.equal(f.entry.mute.getAttribute('aria-pressed'), 'false');
+    f.entry.volume.value = '57'; f.render({ muted: false, volume: .2 }, f.entry.volume);
+    assert.equal(f.entry.volume.value, '57', 'a live report cannot move a slider currently being adjusted');
+    f.entry.busy = true; f.render({ muted: false, volume: .2 });
+    assert.equal(f.entry.volume.disabled, true); assert.equal(f.entry.mute.disabled, true);
+});
+
+test('an empty guard only qualifies as peer silence when the current authenticated state explicitly confirms it', () => {
+    const empty = { available: false, muteGuardActive: true, emptyGuardConfirmed: true, muteSupported: false,
+        volumeSupported: false, muted: null, volume: null };
+    assert.equal(confirmedSilentPeer(empty), true);
+    assert.equal(confirmedSilentPeer({ ...empty, muted: undefined, volume: undefined }), true);
+    assert.equal(confirmedSilentPeer({ available: true, muted: true, muteGuardActive: true }), true);
+    for (const state of [null, {}, { available: false },
+        { available: false, muteGuardActive: true }, { available: false, emptyGuardConfirmed: true },
+        { available: false, muteGuardActive: false, emptyGuardConfirmed: true },
+        { ...empty, muted: false }, { ...empty, volume: 1 }, { ...empty, volume: 0 },
+        { ...empty, muteSupported: true }, { ...empty, muteSupported: undefined },
+        { available: true, muted: false, muteGuardActive: true, emptyGuardConfirmed: true },
+        { available: true, muted: true, muteGuardActive: false },
+        { muted: null, muteGuardActive: true, emptyGuardConfirmed: 'true' }]) assert.equal(confirmedSilentPeer(state), false);
+    const f = audioControlFixture({ available: false, playbackStatus: 'no-media', muteGuardActive: true, emptyGuardConfirmed: true,
+        muted: null, volume: null, recoverSupported: true, platformRecoverSupported: true }); f.render();
+    assert.equal(f.entry.mute.disabled, true); assert.equal(f.entry.volume.disabled, true);
+    assert.equal(f.entry.recover.disabled, false, 'peer-only safety cannot disable a supported platform Play');
+});
+
+test('uppercase no-media cannot expose manual sound controls even if a malformed reply has numeric fields', () => {
+    const entry = { kind: 'frame', target: {}, result: { ok: false, code: 'NO_MEDIA', state: { muted: false, volume: 1 } } };
+    assert.equal(canControl(entry, 'setMuted'), false); assert.equal(canControl(entry, 'setVolume'), false);
+    entry.result = { ok: true, code: 'OK', state: { available: false, muted: true, volume: 1,
+        muteGuardActive: true, emptyGuardConfirmed: true } };
+    assert.equal(canControl(entry, 'setMuted'), false, 'empty peer safety never enables opening the empty row');
+    assert.equal(canControl(entry, 'setVolume'), false);
+});
+
+test('unified focus failure identifies the actual peer instead of blaming the requested target', () => {
+    const names = new Map([['native|gold', '3. 金剛'], ['kick|fire', '7. 火']]);
+    const failures = unifiedFocusFailures({ code: 'PARTIAL', results: [
+        { key: 'native|gold', status: 'failed', reason: 'focus-withheld' },
+        { key: 'kick|fire', status: 'failed', reason: 'setMuted-unconfirmed' }
+    ] }, 'native|gold', names, '3. 金剛');
+    assert.deepEqual(failures, [{ name: '7. 火', code: 'setMuted-unconfirmed' }]);
+});
+
+test('unified focus still names a genuine target failure and does not expose raw missing channel keys', () => {
+    const names = new Map([['native|gold', '3. 金剛'], ['kick|fire', '7. 火']]);
+    assert.deepEqual(unifiedFocusFailures({ code: 'PARTIAL', results: [
+        { key: 'native|gold', status: 'failed', reason: 'volume-unconfirmed' },
+        { key: 'kick|fire', status: 'restored', reason: '' }
+    ] }, 'native|gold', names, '3. 金剛'), [{ name: '3. 金剛', code: 'volume-unconfirmed' }]);
+    assert.deepEqual(unifiedFocusFailures({ code: 'PARTIAL', results: [
+        { key: 'm3u8|https://private.example/?token=secret', status: 'stale', reason: 'lease-changed' },
+        { key: 'native|gold', status: 'failed', reason: 'focus-withheld' }
+    ] }, 'native|gold', names, '3. 金剛'), [{ name: '未就緒的播放器', code: 'lease-changed' }]);
+    assert.deepEqual(unifiedFocusFailures({ code: 'PARTIAL', results: [
+        { key: 'native|gold', status: 'failed', reason: 'focus-withheld' }
+    ] }, 'native|gold', names, '3. 金剛'), [{ name: '其他播放器', code: 'unconfirmed' }]);
+    assert.deepEqual(unifiedFocusFailures({ code: 'CANCELLED', results: [] }, 'native|gold', names, '3. 金剛'),
+        [{ name: '3. 金剛', code: 'stale' }]);
+});
 
 test('global mute follows actual player state after individual changes', () => {
     assert.equal(aggregateAudio([{muted:true,volume:0.5},{muted:true,volume:0.5}]).muted, true);

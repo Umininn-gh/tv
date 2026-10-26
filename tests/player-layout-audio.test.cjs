@@ -54,6 +54,25 @@ function fixture(initial) {
 }
 function ownGuard(command) { return command.guard === true || command.value === false; }
 function focus(item) { return { focus: { key: item.key, identity: item.identity, element: item.element } }; }
+function emptyPlayer(key, confirmed = false) {
+    return { key, identity: {}, version: 1, ready: false, readable: true, allowEmptyProof: true,
+        state: { available: false, muted: null, volume: null, muteSupported: false, volumeSupported: false,
+            muteGuardActive: confirmed, emptyGuardConfirmed: confirmed } };
+}
+function emptyResponses(f, item) {
+    const read = f.settings.read, write = f.settings.write;
+    f.settings.read = async value => value.key === item.key && item.state.available === false ?
+        { ok: false, code: 'NO_MEDIA', state: { ...item.state } } : read(value);
+    f.settings.write = async (value, command) => {
+        if (value.key !== item.key || item.state.available !== false) return write(value, command);
+        f.calls.push({ key: value.key, ...command });
+        if (command.action === 'setMuted' && command.value === true && command.guard === true) {
+            item.state.muteGuardActive = true;
+            if (item.allowEmptyProof) item.state.emptyGuardConfirmed = true;
+        }
+        return { ok: false, code: 'NO_MEDIA', state: { ...item.state } };
+    };
+}
 
 test('preserves distinct channel audio by key, including false and zero, after position changes', async () => {
     const a = player('twitch|a', false, 0), b = player('kick|b', true, 0.27);
@@ -980,4 +999,211 @@ test('a source renewing during the final bookmark read retains a safe mute-only 
     assert.equal(replacement.state.muted, true); assert.equal(replacement.state.volume, 0.91);
     assert.equal(f.reports.at(-1).code, 'PARTIAL'); assert.equal(f.clock.pending, 0);
     assert.equal(f.calls.filter(call => call.key === a.key && call.value === false).length, 1);
+});
+
+test('an acknowledged observable empty peer permits native focus without inventing mute or volume values', async () => {
+    const a = player('native|target', true, .31), b = emptyPlayer('kick|offline'), f = fixture([a, b]);
+    emptyResponses(f, b);
+    await f.flow.prepare(1);
+    assert.equal((await f.flow.restore(1, focus(a))).code, 'COMPLETE');
+    assert.equal(a.state.muted, false); assert.equal(a.state.volume, 1);
+    assert.equal(b.state.muted, null); assert.equal(b.state.volume, null); assert.equal(b.state.muteSupported, false);
+    assert.deepEqual(f.calls.filter(call => call.key === b.key), [{ key: b.key, action: 'setMuted', value: true, guard: true }]);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('unproven, opaque, malformed and contradictory empty peer reports still withhold native focus', async () => {
+    for (const changes of [{ emptyGuardConfirmed: false }, { emptyGuardConfirmed: undefined }, { emptyGuardConfirmed: 'true' },
+        { emptyGuardConfirmed: true, muted: false }, { emptyGuardConfirmed: true, volume: .2 },
+        { emptyGuardConfirmed: true, muteSupported: undefined }]) {
+        const a = player('native|target', true, .31), b = emptyPlayer('kick|opaque', true), f = fixture([a, b]);
+        b.allowEmptyProof = false; Object.assign(b.state, changes); emptyResponses(f, b);
+        await f.flow.prepare(1);
+        assert.equal((await f.flow.restore(1, focus(a))).code, 'PARTIAL', JSON.stringify(changes));
+        assert.equal(a.state.muted, true); assert.equal(a.state.volume, .31);
+        assert.equal(f.calls.some(call => call.key === a.key && (call.action === 'setVolume' || call.value === false)), false);
+        assert.equal(f.clock.pending, 0);
+    }
+});
+
+test('empty silence proof cannot be accepted from an unavailable non-NO_MEDIA error or an unreadable peer', async () => {
+    for (const code of ['ERROR', 'DISPOSED', 'OK']) {
+        const a = player('native|target', true, .31), b = emptyPlayer('kick|offline', true), f = fixture([a, b]);
+        f.settings.read = async item => ({ ok: item.key !== b.key || code === 'OK',
+            code: item.key === b.key ? code : 'OK', state: { ...item.state } });
+        await f.flow.prepare(1);
+        assert.equal((await f.flow.restore(1, focus(a))).code, 'PARTIAL');
+        assert.equal(f.calls.some(call => call.key === a.key && (call.action === 'setVolume' || call.value === false)), false);
+    }
+    const a = player('native|target', true, .31), b = emptyPlayer('kick|offline', true), f = fixture([a, b]);
+    b.readable = false; emptyResponses(f, b); await f.flow.prepare(1);
+    assert.equal((await f.flow.restore(1, focus(a))).code, 'PENDING');
+    assert.deepEqual(f.calls, []); f.flow.cancel(); assert.equal(f.clock.pending, 0);
+});
+
+test('an empty selected focus target never opens despite a valid empty guard proof', async () => {
+    const a = emptyPlayer('kick|selected', true), b = player('native|peer', false, .42), f = fixture([a, b]);
+    emptyResponses(f, a); await f.flow.prepare(1);
+    assert.equal((await f.flow.restore(1, focus(a))).code, 'PARTIAL');
+    assert.equal(b.state.muted, true);
+    assert.equal(f.calls.some(call => call.key === a.key && (call.action === 'setVolume' || call.value === false)), false);
+    assert.equal(a.state.muted, null); assert.equal(f.clock.pending, 0);
+});
+
+test('an empty peer guard ACK remains authoritative when its caller cache does not update', async () => {
+    const a = player('native|target', true, .31), b = emptyPlayer('kick|offline'), f = fixture([a, b]);
+    let proof = false; const originalRead = f.settings.read, originalWrite = f.settings.write;
+    const reply = () => ({ ok: false, code: 'NO_MEDIA', state: { ...b.state, muteGuardActive: proof, emptyGuardConfirmed: proof } });
+    f.settings.read = async item => item.key === b.key ? reply() : originalRead(item);
+    f.settings.write = async (item, command) => {
+        if (item.key !== b.key) return originalWrite(item, command);
+        f.calls.push({ key: item.key, ...command }); proof = true; return reply();
+    };
+    await f.flow.prepare(1);
+    assert.equal((await f.flow.restore(1, focus(a))).code, 'COMPLETE');
+    assert.equal(b.state.emptyGuardConfirmed, false); assert.equal(proof, true); assert.equal(a.state.muted, false);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('a peer acquiring media after empty confirmation is guarded before the target opens', async () => {
+    const a = player('native|target', true, .31), b = emptyPlayer('kick|offline'), f = fixture([a, b]), gate = deferred();
+    emptyResponses(f, b); const original = f.settings.write; let held = false;
+    f.settings.write = async (item, command) => {
+        const result = await original(item, command);
+        if (item.key === a.key && command.action === 'setVolume') { held = true; await gate.promise; }
+        return result;
+    };
+    await f.flow.prepare(1); const restoring = f.flow.restore(1, focus(a)); await flush(); assert.equal(held, true);
+    b.ready = true; b.state = { available: true, muted: false, volume: .46, muteSupported: true, volumeSupported: true,
+        muteGuardActive: false, emptyGuardConfirmed: false };
+    gate.resolve(); assert.equal((await restoring).code, 'COMPLETE');
+    const open = f.calls.findIndex(call => call.key === a.key && call.action === 'setMuted' && call.value === false);
+    assert.equal(f.calls.slice(0, open).filter(call => call.key === b.key && call.value === true && call.guard).length, 2);
+    assert.equal(b.state.muted, true); assert.equal(b.state.volume, .46); assert.equal(a.state.muted, false);
+    assert.equal(f.calls.some(call => call.key === b.key && (call.action === 'setVolume' || call.value === false)), false);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('losing an empty guard proof during a volume ACK withholds the subsequent target unmute', async () => {
+    const a = player('native|target', true, .31), b = emptyPlayer('kick|offline'), f = fixture([a, b]), gate = deferred();
+    emptyResponses(f, b); const original = f.settings.write; let held = false;
+    f.settings.write = async (item, command) => {
+        const result = await original(item, command);
+        if (item.key === a.key && command.action === 'setVolume') { held = true; await gate.promise; }
+        return result;
+    };
+    await f.flow.prepare(1); const restoring = f.flow.restore(1, focus(a)); await flush(); assert.equal(held, true);
+    b.state.emptyGuardConfirmed = false; b.allowEmptyProof = false;
+    gate.resolve(); assert.equal((await restoring).code, 'PARTIAL');
+    assert.equal(a.state.muted, true);
+    assert.equal(f.calls.some(call => call.key === a.key && call.action === 'setMuted' && call.value === false), false);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('proof loss while a target unmute ACK is withheld closes that target again', async () => {
+    const a = player('native|target', true, .31), b = emptyPlayer('kick|offline'), f = fixture([a, b]), gate = deferred();
+    emptyResponses(f, b); const original = f.settings.write; let held = false;
+    f.settings.write = async (item, command) => {
+        const result = await original(item, command);
+        if (item.key === a.key && command.action === 'setMuted' && command.value === false) { held = true; await gate.promise; }
+        return result;
+    };
+    await f.flow.prepare(1); const restoring = f.flow.restore(1, focus(a)); await flush(); assert.equal(held, true);
+    b.state.emptyGuardConfirmed = false; b.allowEmptyProof = false;
+    gate.resolve(); assert.equal((await restoring).code, 'PARTIAL');
+    assert.equal(a.state.muted, true); assert.deepEqual(f.calls.at(-1), { key: a.key, action: 'setMuted', value: true, guard: true });
+    assert.equal(f.clock.pending, 0);
+});
+
+test('a confirmed empty bookmark peer permits saved native sound without receiving invented volume or unmute', async () => {
+    const a = player('native|target', false, .9), b = emptyPlayer('kick|offline'), f = fixture([a, b]);
+    emptyResponses(f, b); await f.flow.prepare(1);
+    assert.equal((await f.flow.bookmark(1, [{ key: a.key, volume: .23 }])).code, 'COMPLETE');
+    assert.equal(a.state.muted, false); assert.equal(a.state.volume, .23);
+    assert.equal(b.state.muted, null); assert.equal(b.state.volume, null);
+    assert.equal(f.calls.some(call => call.key === b.key && (call.action === 'setVolume' || call.value === false)), false);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('bookmark rechecks an empty peer acquiring media while its saved volume ACK is held', async () => {
+    const a = player('native|target', false, .9), b = emptyPlayer('kick|offline'), f = fixture([a, b]), gate = deferred();
+    emptyResponses(f, b); const original = f.settings.write; let held = false;
+    f.settings.write = async (item, command) => {
+        const result = await original(item, command);
+        if (item.key === a.key && command.action === 'setVolume') { held = true; await gate.promise; }
+        return result;
+    };
+    await f.flow.prepare(1); const restoring = f.flow.bookmark(1, [{ key: a.key, volume: .23 }]);
+    await flush(); assert.equal(held, true);
+    b.ready = true; b.state = { available: true, muted: false, volume: .46, muteSupported: true, volumeSupported: true,
+        muteGuardActive: false, emptyGuardConfirmed: false };
+    gate.resolve(); assert.equal((await restoring).code, 'COMPLETE');
+    const open = f.calls.findIndex(call => call.key === a.key && call.action === 'setMuted' && call.value === false);
+    assert.equal(f.calls.slice(0, open).filter(call => call.key === b.key && call.value === true && call.guard).length, 2);
+    assert.equal(a.state.muted, false); assert.equal(a.state.volume, .23);
+    assert.equal(b.state.muted, true); assert.equal(b.state.volume, .46);
+    assert.equal(f.calls.some(call => call.key === b.key && (call.action === 'setVolume' || call.value === false)), false);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('bookmark closes saved sound if its empty peer proof disappears during an unmute ACK', async () => {
+    const a = player('native|target', false, .9), b = emptyPlayer('kick|offline'), f = fixture([a, b]), gate = deferred();
+    emptyResponses(f, b); const original = f.settings.write; let held = false;
+    f.settings.write = async (item, command) => {
+        const result = await original(item, command);
+        if (item.key === a.key && command.action === 'setMuted' && command.value === false) { held = true; await gate.promise; }
+        return result;
+    };
+    await f.flow.prepare(1); const restoring = f.flow.bookmark(1, [{ key: a.key, volume: .23 }]);
+    await flush(); assert.equal(held, true);
+    b.state.emptyGuardConfirmed = false; b.allowEmptyProof = false;
+    gate.resolve(); assert.equal((await restoring).code, 'PARTIAL');
+    assert.equal(a.state.muted, true); assert.equal(a.state.volume, .23);
+    assert.deepEqual(f.calls.at(-1), { key: a.key, action: 'setMuted', value: true, guard: true });
+    assert.equal(f.calls.some(call => call.key === b.key && (call.action === 'setVolume' || call.value === false)), false);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('an empty bookmark still mutes real media and safely leaves a confirmed empty peer empty', async () => {
+    const a = player('native|peer', false, .9), b = emptyPlayer('kick|offline'), f = fixture([a, b]);
+    emptyResponses(f, b); await f.flow.prepare(1);
+    assert.equal((await f.flow.bookmark(1, [])).code, 'COMPLETE');
+    assert.equal(a.state.muted, true); assert.equal(a.state.volume, .9); assert.equal(b.state.muted, null);
+    assert.equal(f.calls.every(call => call.action === 'setMuted' && call.value === true && call.guard === true), true);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('an empty saved bookmark target stays closed while another saved target opens, then waits for real media', async () => {
+    const a = player('native|target', true, .9), b = emptyPlayer('kick|saved'), f = fixture([a, b]);
+    emptyResponses(f, b); await f.flow.prepare(1);
+    assert.equal((await f.flow.bookmark(1, [{ key: a.key, volume: .23 }, { key: b.key, volume: .62 }])).code, 'PENDING');
+    assert.equal(a.state.muted, false); assert.equal(a.state.volume, .23);
+    assert.equal(f.calls.some(call => call.key === b.key && (call.action === 'setVolume' || call.value === false)), false);
+    b.ready = true; b.state = { available: true, muted: false, volume: .46, muteSupported: true, volumeSupported: true,
+        muteGuardActive: false, emptyGuardConfirmed: false };
+    f.flow.notify(); await flush(); await f.clock.tick(1000);
+    assert.equal(f.reports.at(-1).code, 'COMPLETE'); assert.equal(b.state.muted, false); assert.equal(b.state.volume, .62);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('a completed bookmark revalidates a same-document empty proof loss and can resume after a new proof', async () => {
+    const a = player('native|target', false, .9), b = emptyPlayer('kick|offline'), f = fixture([a, b]);
+    emptyResponses(f, b); await f.flow.prepare(1);
+    await f.flow.bookmark(1, [{ key: a.key, volume: .23 }]); assert.equal(a.state.muted, false);
+    b.state.emptyGuardConfirmed = false; b.allowEmptyProof = false; f.flow.notify(); await flush();
+    assert.equal(f.reports.at(-1).code, 'PARTIAL'); assert.equal(a.state.muted, true);
+    b.state.emptyGuardConfirmed = true; b.allowEmptyProof = true; f.flow.notify(); await flush();
+    assert.equal(f.reports.at(-1).code, 'COMPLETE'); assert.equal(a.state.muted, false); assert.equal(a.state.volume, .23);
+    assert.equal(f.clock.pending, 0);
+});
+
+test('a completed bookmark guards media added to a previously confirmed empty document without idle polling', async () => {
+    const a = player('native|target', false, .9), b = emptyPlayer('kick|offline'), f = fixture([a, b]);
+    emptyResponses(f, b); await f.flow.prepare(1);
+    await f.flow.bookmark(1, [{ key: a.key, volume: .23 }]); assert.equal(f.clock.pending, 0);
+    b.ready = true; b.state = { available: true, muted: false, volume: .46, muteSupported: true, volumeSupported: true,
+        muteGuardActive: false, emptyGuardConfirmed: false };
+    f.flow.notify(); await flush();
+    assert.equal(f.reports.at(-1).code, 'COMPLETE'); assert.equal(b.state.muted, true); assert.equal(b.state.volume, .46);
+    assert.equal(a.state.muted, false); assert.equal(a.state.volume, .23); assert.equal(f.clock.pending, 0);
 });

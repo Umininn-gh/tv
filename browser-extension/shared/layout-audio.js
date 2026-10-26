@@ -349,9 +349,22 @@
         function focusState(record, state) {
             record.state = { ...sound(state), available: state?.available, muteGuardActive: state?.muteGuardActive === true,
                 focusRestorePending: state?.focusRestorePending === true };
+            record.emptyGuardConfirmed = false;
             record.muteSatisfied = record.state.muted === record.desired.muted;
             record.volumeSatisfied = !own(record.desired, 'volume') || own(record.state, 'volume') &&
                 Math.abs(record.state.volume - record.desired.volume) < 0.001;
+        }
+        function emptyObservation(state) {
+            return JSON.stringify([state?.available, state?.muteSupported, state?.muteGuardActive, state?.emptyGuardConfirmed, state?.muted]);
+        }
+        function rememberEmptyObservation(record) {
+            if (record.emptyGuardConfirmed) record.observedEmptyGuard = true;
+            if (record.observedEmptyGuard) record.emptyGuardObservation = emptyObservation(entries().get(record.key)?.state);
+        }
+        function guardedSilent(record, item) {
+            const empty = record.emptyGuardConfirmed === true && (!item ||
+                record.emptyGuardObservation === emptyObservation(item.state));
+            return record.guardConfirmed === true && (record.state?.muted === true || empty);
         }
         function focusSafe(ctx) {
             const found = entries();
@@ -360,7 +373,7 @@
                 if (focused(ctx, item)) continue;
                 const record = ctx.records.get(item.key);
                 if (!record || record.failed || !record.lease || !same(record.lease, item) || !current(record.lease) ||
-                    record.state?.muted !== true || !record.guardConfirmed) return false;
+                    !guardedSilent(record, item)) return false;
             }
             return true;
         }
@@ -373,33 +386,67 @@
             return hiddenPeer(record, item, result) && result.state.muted === true &&
                 result.state.muteSupported === true && result.state.muteGuardActive === true;
         }
+        function guardedEmptyPeer(record, item, result) {
+            const state = result?.state;
+            // A guard can prove an observable, empty document is silent without
+            // inventing muted/volume values for media that does not exist.
+            return hiddenPeer(record, item, result) && state.muteSupported === false &&
+                state.muteGuardActive === true && state.emptyGuardConfirmed === true &&
+                state.muted == null && state.volume == null;
+        }
         async function focusRead(ctx, stage, record) {
+            record.emptyGuardConfirmed = false;
             const item = entries().get(record.key);
             if (!item || !same(record.lease, item) || !current(item)) return false;
             if (item.ready !== true && item.readable !== true) { record.state = null; record.guardConfirmed = false; return false; }
             const outcome = await read(ctx, stage, record.lease);
             if (!live(ctx, stage)) return false;
+            rememberEmptyObservation(record);
             const hidden = outcome.kind === 'result' && hiddenPeer(record, item, outcome.value);
             if (outcome.kind !== 'result' || !hidden && (outcome.value?.ok !== true || outcome.value?.state?.available === false)) {
                 record.failed = true; record.reason = 'read-unconfirmed'; return false;
             }
             focusState(record, outcome.value.state);
-            record.guardConfirmed = hidden ? guardedHiddenPeer(record, item, outcome.value) :
+            record.emptyGuardConfirmed = guardedEmptyPeer(record, item, outcome.value);
+            record.guardConfirmed = hidden ? guardedHiddenPeer(record, item, outcome.value) || record.emptyGuardConfirmed :
                 record.state.muted === true && record.state.muteGuardActive;
+            rememberEmptyObservation(record);
             if (hidden) return true; // The guarded write below must prove actual silence.
             if (!own(record.state, 'muted')) { record.failed = true; record.reason = 'mute-unsupported'; return false; }
             return true;
         }
+        async function confirmEmptyPeers(ctx, stage) {
+            // An opening ACK can be delayed while an empty document acquires
+            // media or an opaque child. Recheck its proof before the next opening.
+            await each([...ctx.records.values()].filter(record => record.emptyGuardConfirmed === true), async record => {
+                if (!await focusRead(ctx, stage, record) || !live(ctx, stage)) return;
+                if (!guardedSilent(record)) await focusWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true });
+            });
+        }
         async function focusWrite(ctx, stage, record, command, permitted) {
-            const opening = record.focusTarget && (command.action === 'setVolume' || command.action === 'setMuted' && command.value === false);
+            const opening = (record.focusTarget || record.bookmarkTarget) && (command.action === 'setVolume' || command.action === 'setMuted' && command.value === false);
+            if (opening) {
+                await confirmEmptyPeers(ctx, stage);
+                if (!live(ctx, stage)) return false;
+            }
             const outcome = await write(ctx, stage, record, command, permitted || (opening ? () => focusSafe(ctx) : null));
             if (!live(ctx, stage)) return false;
+            rememberEmptyObservation(record);
+            const emptyGuard = command.action === 'setMuted' && command.value === true && command.guard === true &&
+                outcome.kind === 'result' && guardedEmptyPeer(record, record.lease, outcome.value);
             const hiddenGuard = command.action === 'setMuted' && command.value === true && command.guard === true &&
                 outcome.kind === 'result' && guardedHiddenPeer(record, record.lease, outcome.value);
-            if (outcome.kind !== 'result' || outcome.value?.ok !== true && !hiddenGuard) {
+            if (outcome.kind !== 'result' || outcome.value?.ok !== true && !hiddenGuard && !emptyGuard) {
                 record.failed = true; record.reason = `${command.action}-unconfirmed`; return false;
             }
             focusState(record, outcome.value.state);
+            record.emptyGuardConfirmed = emptyGuard;
+            if (emptyGuard) {
+                record.guardConfirmed = true;
+                record.muteSatisfied = record.desired.muted === true;
+                rememberEmptyObservation(record);
+                return true;
+            }
             const property = command.action === 'setMuted' ? 'muted' : 'volume';
             if (!own(record.state, property) || (property === 'volume' ?
                 Math.abs(record.state[property] - command.value) >= 0.001 : record.state[property] !== command.value)) {
@@ -422,19 +469,19 @@
             await each(peers, async record => {
                 record.guardConfirmed = false;
                 if (!await focusRead(ctx, stage, record) || !live(ctx, stage)) return;
-                if (record.state.muted !== true || !record.guardConfirmed) {
+                if (!guardedSilent(record)) {
                     if (!await focusWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true })) return;
                 }
                 if (!live(ctx, stage)) return;
-                if (own(record.desired, 'volume') && own(record.state, 'volume') && !record.volumeSatisfied) {
+                if (!record.emptyGuardConfirmed && own(record.desired, 'volume') && own(record.state, 'volume') && !record.volumeSatisfied) {
                     if (!await focusWrite(ctx, stage, record, { action: 'setVolume', value: record.desired.volume })) return;
                     // A platform may clear mute while applying its volume.
-                    if (record.state.muted !== true || !record.guardConfirmed) {
+                    if (!guardedSilent(record)) {
                         if (!await focusWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true })) return;
                     }
                 }
-                if (!record.failed && record.state.muted === true && record.guardConfirmed) {
-                    const partial = own(record.desired, 'volume') && !record.volumeSatisfied;
+                if (!record.failed && guardedSilent(record)) {
+                    const partial = !record.emptyGuardConfirmed && own(record.desired, 'volume') && !record.volumeSatisfied;
                     finish(record, partial ? 'skipped' : 'restored', partial ? 'volume-unsupported' : '');
                 }
             });
@@ -476,6 +523,7 @@
                         // soundtracks muted by our earlier guard were released.
                         if (!target.volumeSatisfied || target.state.focusRestorePending)
                             await focusWrite(ctx, stage, target, { action: 'setVolume', value: 1, focus: true });
+                        if (live(ctx, stage)) await confirmEmptyPeers(ctx, stage);
                         if (live(ctx, stage) && !target.failed && focusSafe(ctx) && (target.state?.muted !== false || target.state.focusRestorePending))
                             await focusWrite(ctx, stage, target, { action: 'setMuted', value: false, focus: true });
                     }
@@ -548,7 +596,7 @@
                 if (!record || record.failed || !record.lease || !same(record.lease, item) || !current(record.lease)) return false;
                 if (record.bookmarkOpened && record.bookmarkTarget && record.bookmarkLease && same(record.bookmarkLease, item) &&
                     !record.failed && record.state?.muted === false && record.volumeSatisfied) continue;
-                if (record.state?.muted !== true || !record.guardConfirmed) return false;
+                if (!guardedSilent(record, item)) return false;
             }
             return true;
         }
@@ -561,7 +609,7 @@
                 if (!await focusRead(ctx, stage, record) || !live(ctx, stage)) return;
                 if (record.bookmarkOpened && record.bookmarkTarget && record.state?.muted === false && record.volumeSatisfied) return;
                 record.bookmarkOpened = false;
-                if (record.state?.muted !== true || !record.guardConfirmed)
+                if (!guardedSilent(record))
                     await bookmarkWrite(ctx, stage, record, { action: 'setMuted', value: true, guard: true });
             });
         }
@@ -598,6 +646,8 @@
                 // still guarded. Several saved targets may then open together.
                 for (const record of cohort) {
                     if (!live(ctx, stage)) return;
+                    await confirmEmptyPeers(ctx, stage);
+                    if (!live(ctx, stage)) return;
                     if (record.bookmarkTarget && !record.failed && record.volumeSatisfied && record.lease.ready === true &&
                         record.bookmarkLease && same(record.bookmarkLease, record.lease) && record.state?.available !== false &&
                         bookmarkSafe(ctx) && record.state?.muted !== false) {
@@ -619,7 +669,7 @@
             for (const record of cohort) {
                 if (record.failed) finish(record, 'failed', record.reason);
                 else if (record.bookmarkTarget && record.bookmarkOpened && safe && record.volumeSatisfied) finish(record, 'restored');
-                else if (!record.bookmarkTarget && record.state?.muted === true && record.guardConfirmed) {
+                else if (!record.bookmarkTarget && guardedSilent(record)) {
                     const saved = ctx.bookmark.has(record.key);
                     finish(record, saved ? 'stale' : 'restored', saved ? 'lease-changed' : '');
                 } else if (ctx.bookmarkFailure || !waiting && !safe) finish(record, 'failed', 'bookmark-unmute-withheld');
@@ -742,7 +792,8 @@
             else if (ctx?.bookmark && ctx.phase === 'complete' && now() < ctx.restoreDeadline) {
                 const found = entries();
                 if (found.ambiguous || [...found.values()].some(item => ctx.records.get(item.key)?.status === 'removed' ||
-                    !same(ctx.records.get(item.key)?.lease, item)) ||
+                    !same(ctx.records.get(item.key)?.lease, item) || ctx.records.get(item.key)?.observedEmptyGuard &&
+                    ctx.records.get(item.key).emptyGuardObservation !== emptyObservation(item.state)) ||
                     [...ctx.records.values()].some(record => record.status !== 'removed' && !found.has(record.key))) void restore(ctx.ticket);
             }
         }
