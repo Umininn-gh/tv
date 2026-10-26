@@ -1,6 +1,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { aggregateAudio, validResult, canControl, confirmedSilentPeer, renderAudioControls, unifiedFocusFailures,
+const fs = require('node:fs');
+const vm = require('node:vm');
+const { aggregateAudio, validResult, canControl, confirmedSilentPeer, retainedGuardResult, renderAudioControls, unifiedFocusFailures,
     isWatchStartTarget, isRecoveryReady, createAudioFocusFlow } = require('../browser-extension/site-ui.js');
 
 function audioControlFixture(state) {
@@ -76,6 +78,170 @@ test('an empty guard only qualifies as peer silence when the current authenticat
         muted: null, volume: null, recoverSupported: true, platformRecoverSupported: true }); f.render();
     assert.equal(f.entry.mute.disabled, true); assert.equal(f.entry.volume.disabled, true);
     assert.equal(f.entry.recover.disabled, false, 'peer-only safety cannot disable a supported platform Play');
+});
+
+function automaticGuardFixture(result) {
+    // Exercise the real execute shortcut and its surrounding budget checks
+    // without mounting unrelated controls or constructing a browser document.
+    const source = fs.readFileSync(require.resolve('../browser-extension/site-ui.js'), 'utf8');
+    const start = source.indexOf('        async function execute(entry, command, settings = {}) {');
+    const end = source.indexOf('\n        async function applyAll(', start);
+    assert.ok(start > 0 && end > start, 'production command seam must exist');
+    const entry = { kind: 'native', element: {}, generation: 7, busy: false, guardInFlight: false, result };
+    const writes = new Map([[entry, { generation: 7, count: 4 }]]), guarded = new Map();
+    const intent = { automatic: true, guardWrites: writes, repairs: 4 };
+    const state = { entries: new Map([[entry.element, entry]]), disposed: false,
+        audioFocusIntent: intent, guardedEntries: guarded,
+        retainedGuardResult, can() { throw new Error('guard must not consult opening capabilities'); },
+        renderEntry() { throw new Error('retaining a guard must not start another command'); } };
+    const execute = vm.runInNewContext('(' + source.slice(start, end).trim() + ')', state);
+    return { entry, writes, guarded, intent, execute: () => execute(entry, { action: 'setMuted', value: true, guard: true }) };
+}
+
+test('automatic guard retains an empty NO_MEDIA acknowledgement without rearming an exhausted guard budget', async () => {
+    const result = { ok: false, code: 'NO_MEDIA', state: { available: false, muted: null, volume: null,
+        muteSupported: false, volumeSupported: false, muteGuardActive: true, emptyGuardConfirmed: true } };
+    const f = automaticGuardFixture(result), previous = f.writes.get(f.entry);
+    const ack = await f.execute();
+    assert.equal(ack.ok, false); assert.equal(ack.code, 'NO_MEDIA');
+    assert.deepEqual(ack.state, result.state); assert.notEqual(ack.state, result.state);
+    assert.equal(ack.state.muted, null); assert.equal(ack.state.volume, null);
+    assert.equal(f.writes.get(f.entry), previous); assert.equal(previous.count, 4);
+    assert.equal(f.intent.repairs, 4);
+    assert.equal(f.guarded.get(f.entry), 7);
+    assert.equal(f.entry.busy, false); assert.equal(f.entry.guardInFlight, false);
+});
+
+test('automatic guard acknowledges real mute while rejecting opaque, unproven and contradictory empty reports', async () => {
+    const empty = { available: false, muted: null, volume: null, muteSupported: false,
+        muteGuardActive: true, emptyGuardConfirmed: true };
+    const cases = [
+        { code: 'OK', state: { available: true, muted: true, volume: .4, muteGuardActive: true }, expected: 'OK', ok: true },
+        { code: 'NO_MEDIA', state: { ...empty, muted: true, muteSupported: true }, expected: 'OK', ok: true },
+        ...[false, undefined, 'true'].map(emptyGuardConfirmed => ({ code: 'NO_MEDIA',
+            state: { ...empty, emptyGuardConfirmed }, expected: 'NOT_APPLIED', ok: false })),
+        ...[{ muted: false }, { volume: 0 }, { available: true }, { muteSupported: true }].map(change => ({ code: 'NO_MEDIA',
+            state: { ...empty, ...change }, expected: 'NOT_APPLIED', ok: false })),
+        ...['ERROR', 'NOT_APPLIED', 'OK', 'no_media'].map(code => ({ code, state: empty, expected: 'NOT_APPLIED', ok: false }))
+    ];
+    for (const value of cases) {
+        const f = automaticGuardFixture({ ok: false, code: value.code, state: value.state });
+        const ack = await f.execute();
+        assert.equal(ack.code, value.expected, JSON.stringify(value)); assert.equal(ack.ok, value.ok);
+        assert.deepEqual(ack.state, value.state); assert.equal(f.writes.get(f.entry).count, 4);
+        assert.equal(f.entry.busy, false); assert.equal(f.entry.guardInFlight, false);
+    }
+});
+
+test('retaining a live, empty, invalidated then live guard never spends another automatic write attempt', async () => {
+    const f = automaticGuardFixture(null), previous = f.writes.get(f.entry);
+    const empty = { available: false, muted: null, volume: null, muteSupported: false,
+        muteGuardActive: true, emptyGuardConfirmed: true };
+    const sequence = [
+        { code: 'OK', state: { available: true, muted: true, volume: .4, muteGuardActive: true } },
+        { code: 'NO_MEDIA', state: empty },
+        { code: 'NO_MEDIA', state: { ...empty, emptyGuardConfirmed: false } },
+        { code: 'NO_MEDIA', state: empty },
+        { code: 'OK', state: { available: true, muted: true, volume: .9, muteGuardActive: true } }
+    ];
+    const codes = [];
+    for (const result of sequence) { f.entry.result = { ok: result.code === 'OK', ...result }; codes.push((await f.execute()).code); }
+    assert.deepEqual(codes, ['OK', 'NO_MEDIA', 'NOT_APPLIED', 'NO_MEDIA', 'OK']);
+    assert.equal(f.writes.get(f.entry), previous); assert.equal(previous.count, 4);
+    assert.equal(f.intent.repairs, 4);
+    assert.equal(f.guarded.get(f.entry), 7);
+});
+
+function unifiedReconcileFixture() {
+    const source = fs.readFileSync(require.resolve('../browser-extension/site-ui.js'), 'utf8');
+    const seam = (startText, endText) => {
+        const start = source.indexOf(startText), end = source.indexOf(endText, start);
+        assert.ok(start > 0 && end > start, 'production reconciliation seam must exist');
+        return '(' + source.slice(start, end).trim() + ')';
+    };
+    const pane = {}, target = { isConnected: true, parentElement: pane }, peer = {};
+    const entry = { generation: 1 }, intent = { unified: true, committed: true, target, entry, generation: 1,
+        holding: false, running: false, focused: false, repairs: 0, ticket: 11, lastFingerprint: 'before' };
+    const f = { intent, entry, target, peer, timers: [], restores: [], statuses: [], notifications: 0, fingerprint: 'changed',
+        cohort: [{ key: target, state: { available: true, muted: true, muteGuardActive: true } },
+            { key: peer, state: { available: false, muted: null, volume: null, muteSupported: false,
+                muteGuardActive: true, emptyGuardConfirmed: false } }],
+        completesFocused: false };
+    const state = { disposed: false, audioFocusIntent: intent, audioReconcileTimer: null,
+        doc: { getElementById: () => pane }, entries: new Map([[target, entry]]),
+        win: { setTimeout(callback) { f.timers.push(callback); return f.timers.length; } },
+        confirmedSilentPeer, audioFingerprint: () => f.fingerprint, audioFocusSnapshot: () => f.cohort,
+        layoutAudioFlow: { notify() { f.notifications++; } },
+        clearAudioIntent() { f.cleared = true; state.audioFocusIntent = null; },
+        showAudioFocusStatus(value) { f.statuses.push(value); },
+        restoreUnifiedFocus(value, ticket) {
+            f.restores.push({ intent: value, ticket, repairs: value.repairs, fingerprint: f.fingerprint });
+            value.holding = true; value.running = true;
+            f.queue(); // getState/applyResult during the real restore marks dirty.
+            value.running = false; value.holding = false; value.focused = f.completesFocused;
+            value.lastFingerprint = f.fingerprint;
+            f.queue(); // The production restore schedules its retained follow-up.
+        } };
+    state.validUnifiedTarget = vm.runInNewContext(seam('        function validUnifiedTarget(', '\n        function finishAudioRefresh('), state);
+    f.queue = vm.runInNewContext(seam('        function queueAudioFocusReconcile(', '\n        function muteImmediately('), state);
+    f.run = () => { let limit = 20; while (f.timers.length && limit--) f.timers.shift()();
+        assert.ok(limit >= 0, 'a retained intent must not form an unbounded notification loop'); };
+    f.manualOverride = () => { state.audioFocusIntent = { ...intent, target: {} }; };
+    return f;
+}
+
+test('dirty getState reports with the same fingerprint cannot consume four automatic repair attempts', () => {
+    const f = unifiedReconcileFixture();
+    f.queue(); f.run();
+    assert.equal(f.restores.length, 1); assert.equal(f.intent.repairs, 1);
+    assert.equal(f.notifications, 1); assert.equal(f.intent.dirty, false);
+    f.intent.dirty = true; f.queue(); f.run();
+    assert.equal(f.restores.length, 1); assert.equal(f.intent.repairs, 1);
+    assert.equal(f.intent.dirty, false);
+});
+
+test('a fresh empty proof can release a withheld target after four unsafe repairs without resetting their budget', () => {
+    const f = unifiedReconcileFixture(); f.intent.repairs = 4;
+    f.queue(); f.run(); assert.equal(f.restores.length, 0);
+    f.cohort[1].state.emptyGuardConfirmed = true; f.fingerprint = 'fresh-empty-proof'; f.completesFocused = true;
+    f.queue(); f.run();
+    assert.equal(f.restores.length, 1); assert.equal(f.intent.repairs, 4);
+    assert.equal(f.restores[0].ticket, 11); assert.equal(f.restores[0].intent, f.intent);
+    assert.equal(f.intent.automatic, true); assert.equal(f.intent.focused, true);
+    f.intent.dirty = true; f.queue(); f.run(); assert.equal(f.restores.length, 1);
+    f.cohort[1].state.emptyGuardConfirmed = false; f.fingerprint = 'unsafe-again';
+    f.queue(); f.run(); assert.equal(f.restores.length, 1); assert.equal(f.intent.repairs, 4);
+    f.intent.focused = false;
+    f.cohort[1].state = { available: true, muted: true, volume: .6, muteGuardActive: true };
+    f.fingerprint = 'live-media-guard-confirmed'; f.queue(); f.run();
+    assert.equal(f.restores.length, 2); assert.equal(f.intent.repairs, 4); assert.equal(f.intent.focused, true);
+});
+
+test('an unsafe peer remains blocked at the exhausted budget despite fresh fingerprints and dirty notifications', () => {
+    const f = unifiedReconcileFixture(); f.intent.repairs = 4;
+    for (const fingerprint of ['loading', 'new-opaque-route', 'refused-mute']) {
+        f.fingerprint = fingerprint; f.intent.dirty = true; f.queue(); f.run();
+    }
+    assert.equal(f.restores.length, 0); assert.equal(f.intent.repairs, 4);
+    assert.equal(f.intent.lastFingerprint, 'refused-mute'); assert.equal(f.intent.dirty, false);
+});
+
+test('fresh safe proof cannot reopen a removed target or its changed controller identity', () => {
+    for (const change of [f => { f.target.isConnected = false; },
+        f => { f.target.parentElement = {}; }, f => { f.entry.generation++; }]) {
+        const f = unifiedReconcileFixture(); f.intent.repairs = 4;
+        f.cohort[1].state.emptyGuardConfirmed = true; change(f);
+        f.queue(); f.run();
+        assert.equal(f.restores.length, 0); assert.equal(f.cleared, true);
+        assert.deepEqual(f.statuses.map(value => value.phase), ['removed']);
+    }
+});
+
+test('a newer explicit sound intent wins over a queued proof-based automatic recovery', () => {
+    const f = unifiedReconcileFixture(); f.intent.repairs = 4;
+    f.cohort[1].state.emptyGuardConfirmed = true; f.queue(); f.manualOverride(); f.run();
+    assert.equal(f.restores.length, 0); assert.equal(f.cleared, undefined);
+    assert.deepEqual(f.statuses, []); assert.equal(f.intent.repairs, 4);
 });
 
 test('uppercase no-media cannot expose manual sound controls even if a malformed reply has numeric fields', () => {

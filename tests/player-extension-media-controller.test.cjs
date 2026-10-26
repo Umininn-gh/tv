@@ -24,12 +24,15 @@ function fixture() {
         clock.now = end;
     }
     class Node extends Events {
-        constructor(tag = 'div') { super(); this.tagName = tag.toUpperCase(); this.children = []; this.parentNode = null; this.style = {}; this.hidden = false; this.rect = { left: 0, top: 0, width: 640, height: 360 }; }
+        constructor(tag = 'div') { super(); this.tagName = tag.toUpperCase(); this.children = []; this.parentNode = null; this.style = {}; this.attributes = new Map(); this.hidden = false; this.rect = { left: 0, top: 0, width: 640, height: 360 }; }
         get parentElement() { return this.parentNode?.tagName ? this.parentNode : null; }
         get isConnected() { return this === doc || Boolean(this.parentNode?.isConnected) || Boolean(this.host?.isConnected); }
         getRootNode() { return this.parentNode ? this.parentNode.getRootNode() : this; }
         append(node) { node.parentNode = this; this.children.push(node); return node; }
         remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(node => node !== this); this.parentNode = null; }
+        getAttribute(name) { return this.attributes.get(name) ?? null; }
+        setAttribute(name, value) { this.attributes.set(name, String(value)); }
+        removeAttribute(name) { this.attributes.delete(name); }
         querySelectorAll(selector) {
             const all = this.children.flatMap(node => [node, ...node.querySelectorAll('*')]);
             return selector === '*' ? all : all.filter(node => ['VIDEO', 'AUDIO'].includes(node.tagName));
@@ -48,18 +51,29 @@ function fixture() {
         pause() { this.pauseCalls++; this.paused = true; this.emit('pause'); }
         load() { this.loadCalls++; throw new Error('Must never reload'); }
     }
-    const doc = new Node(); doc.tagName = undefined;
+    const doc = new Node(); doc.tagName = undefined; doc.URL = 'https://player.example.test/offline'; doc.readyState = 'complete';
     doc.documentElement = doc.append(new Node('html'));
     const mutations = [], sizes = [];
     const view = new Events();
     Object.assign(view, { innerWidth: 1280, innerHeight: 720,
         getComputedStyle: node => ({ display: 'block', visibility: 'visible', opacity: '1', ...node.style }),
-        MutationObserver: class { constructor(callback) { this.callback = callback; this.targets = new Set(); mutations.push(this); } observe(node) { this.targets.add(node); } disconnect() { this.targets.clear(); } },
+        MutationObserver: class { constructor(callback) { this.callback = callback; this.targets = new Set(); this.options = new Map(); mutations.push(this); } observe(node, options) { this.targets.add(node); this.options.set(node, options); } disconnect() { this.targets.clear(); this.options.clear(); } },
         ResizeObserver: class { constructor(callback) { this.callback = callback; this.targets = new Set(); sizes.push(this); } observe(node) { this.targets.add(node); } unobserve(node) { this.targets.delete(node); } disconnect() { this.targets.clear(); } } });
     doc.defaultView = view;
+    const childDocument = (frame, url = 'about:blank') => {
+        const child = new Node(); child.tagName = undefined; child.host = frame; child.URL = url; child.readyState = 'complete';
+        child.documentElement = child.append(new Node('html'));
+        child.documentElement.append(new Node('head')); child.body = child.documentElement.append(new Node('body'));
+        child.defaultView = Object.assign(new Events(), { frameElement: frame });
+        return child;
+    };
+    const addFrame = (parent = doc.documentElement, url = 'about:blank') => {
+        const frame = parent.append(new Node('iframe')); frame.setAttribute('src', url);
+        frame.contentDocument = childDocument(frame, url); return frame;
+    };
     const add = (tag = 'video', parent = doc.documentElement) => parent.append(new Media(tag));
     const mount = (scope = doc) => createMediaController({ document: doc, scope, clock });
-    return { doc, view, Node, Media, add, mount, clock, tick, mutations, sizes,
+    return { doc, view, Node, Media, add, addFrame, childDocument, mount, clock, tick, mutations, sizes,
         mutate: () => mutations.forEach(observer => observer.callback([])) };
 }
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
@@ -93,13 +107,168 @@ test('empty proof requires working observers and rejects embedded documents and 
     const broken = refused.mount(); assert.equal((await broken.execute({ action: 'setMuted', value: true, guard: true })).state.emptyGuardConfirmed, false); broken.dispose();
 });
 
+test('a hidden same-origin about:blank child is fully observed and permits honest empty proof', async () => {
+    const f = fixture(), frame = f.addFrame(); frame.style.visibility = 'hidden';
+    const child = frame.contentDocument, controller = f.mount();
+    const result = await controller.execute({ action: 'setMuted', value: true, guard: true });
+    assert.equal(result.code, 'NO_MEDIA'); assert.equal(result.state.emptyGuardConfirmed, true);
+    assert.equal(result.state.available, false); assert.equal(result.state.muted, null); assert.equal(result.state.volume, null);
+    assert.equal(result.state.muteGuardActive, true); assert.equal(result.state.muteSupported, false);
+    assert.equal(f.mutations[0].targets.has(child), true);
+    for (const attribute of ['src', 'srcdoc', 'sandbox']) assert.ok(f.mutations[0].options.get(f.doc).attributeFilter.includes(attribute));
+    controller.dispose(); assert.equal(frame.count(), 0); assert.equal(child.count(), 0); assert.equal(child.defaultView.count(), 0);
+});
+
+test('late child media and its open shadow audio are guarded without becoming the primary player', async () => {
+    const f = fixture(), frame = f.addFrame(), child = frame.contentDocument, reports = [], controller = f.mount();
+    controller.subscribe(result => reports.push(result));
+    await controller.execute({ action: 'setMuted', value: true, guard: true });
+    const video = f.add('video', child.body), host = child.body.append(new f.Node('open-player'));
+    host.shadowRoot = new f.Node(); host.shadowRoot.tagName = undefined; host.shadowRoot.host = host;
+    const audio = f.add('audio', host.shadowRoot); audio.hidden = true;
+    f.mutations[0].callback([{ type: 'childList', addedNodes: [video, host], removedNodes: [] }]);
+    assert.equal(reports.at(-1).state.emptyGuardConfirmed, false);
+    assert.equal(reports.at(-1).state.muteGuardActive, true, 'navigation and new routes retain the requested guard');
+    f.tick(80); const result = controller.getState();
+    assert.equal(result.code, 'NO_MEDIA'); assert.equal(result.state.available, false); assert.equal(result.state.mediaId, null);
+    assert.equal(result.state.muted, true); assert.equal(result.state.volume, null); assert.equal(result.state.muteSupported, true);
+    assert.equal(result.state.emptyGuardConfirmed, false); assert.ok(f.mutations[0].targets.has(host.shadowRoot));
+    for (const node of [video, audio]) {
+        assert.equal(node.muted, true); assert.equal(node.volume, .8);
+        assert.deepEqual([node.playCalls, node.pauseCalls, node.loadCalls], [0, 0, 0]);
+    }
+    assert.equal((await controller.execute({ action: 'recover' })).code, 'NO_MEDIA');
+    controller.dispose(); assert.equal(video.count(), 0); assert.equal(audio.count(), 0);
+});
+
+test('nested unknown frames cannot hide behind confirmed muted child media', async () => {
+    for (const unknown of ['cross-origin', 'custom', 'failed-read']) {
+        const f = fixture(), frame = f.addFrame(), child = frame.contentDocument;
+        const audio = f.add('audio', child.body); audio.hidden = true;
+        if (unknown === 'custom') child.body.append(new f.Node('closed-player'));
+        else {
+            const nested = child.body.append(new f.Node('iframe'));
+            if (unknown === 'failed-read') Object.defineProperty(nested, 'contentDocument', { get() { throw new Error('denied'); } });
+            else nested.contentDocument = null;
+        }
+        const controller = f.mount(), result = await controller.execute({ action: 'setMuted', value: true, guard: true });
+        assert.equal(audio.muted, true); assert.equal(result.code, 'NOT_APPLIED', unknown);
+        assert.equal(result.state.emptyGuardConfirmed, false); assert.equal(result.state.muted, null);
+        assert.equal(result.state.muteSupported, false); assert.equal(result.state.muteGuardActive, true);
+        controller.dispose();
+    }
+});
+
+test('a frame load revokes proof, replaces observed documents and removes stale document listeners', async () => {
+    const f = fixture(), frame = f.addFrame(), old = frame.contentDocument, reports = [], controller = f.mount();
+    controller.subscribe(result => reports.push(result));
+    await controller.execute({ action: 'setMuted', value: true, guard: true });
+    const child = f.childDocument(frame, 'https://player.example.test/settled'); frame.setAttribute('src', child.URL); frame.contentDocument = child;
+    frame.emit('load'); assert.equal(reports.at(-1).state.emptyGuardConfirmed, false);
+    assert.equal(reports.at(-1).state.muteGuardActive, true);
+    f.tick(80); assert.equal(controller.getState().state.emptyGuardConfirmed, true);
+    assert.equal(f.mutations[0].targets.has(old), false); assert.equal(f.mutations[0].targets.has(child), true);
+    assert.equal(old.count(), 0); assert.equal(old.defaultView.count(), 0);
+    old.emit('pointerdown', { isTrusted: true }); assert.equal(controller.getState().state.audioUserRevision, 0);
+    controller.dispose(); assert.equal(child.count(), 0); assert.equal(child.defaultView.count(), 0); assert.equal(frame.count(), 0);
+    frame.emit('load'); assert.equal(f.clock.timers.size, 0);
+});
+
+test('iframe navigation attributes immediately withdraw proof until a settled load', async () => {
+    for (const attribute of ['src', 'srcdoc', 'sandbox']) {
+        const f = fixture(), frame = f.addFrame(), reports = [], controller = f.mount();
+        controller.subscribe(result => reports.push(result));
+        await controller.execute({ action: 'setMuted', value: true, guard: true });
+        frame.setAttribute(attribute, attribute === 'src' ? 'https://player.example.test/new' : '');
+        f.mutations[0].callback([{ type: 'attributes', attributeName: attribute, target: frame }]);
+        assert.equal(reports.at(-1).state.emptyGuardConfirmed, false, attribute);
+        f.tick(80); assert.equal(controller.getState().state.emptyGuardConfirmed, false);
+        frame.contentDocument = f.childDocument(frame, attribute === 'src' ? 'https://player.example.test/new' : attribute === 'srcdoc' ? 'about:srcdoc' : 'about:blank');
+        frame.emit('load'); f.tick(80); assert.equal(controller.getState().state.emptyGuardConfirmed, true, attribute);
+        controller.dispose(); assert.equal(f.clock.timers.size, 0);
+    }
+});
+
+test('a readable initial blank document for a pending URL or srcdoc never authorizes opening', async () => {
+    for (const source of ['https://foreign.example.test/player', '/same-origin-pending', 'srcdoc']) {
+        const f = fixture(), frame = f.addFrame();
+        if (source === 'srcdoc') frame.setAttribute('srcdoc', '<p>not loaded yet</p>'); else frame.setAttribute('src', source);
+        const controller = f.mount(), result = await controller.execute({ action: 'setMuted', value: true, guard: true });
+        assert.equal(result.code, 'NOT_APPLIED'); assert.equal(result.state.emptyGuardConfirmed, false);
+        assert.equal(f.mutations[0].targets.has(frame.contentDocument), false);
+        controller.dispose();
+    }
+});
+
+test('a child navigating through pagehide to an unreadable destination withdraws proof and can recover after a readable load', async () => {
+    const f = fixture(), frame = f.addFrame(), old = frame.contentDocument, reports = [], controller = f.mount();
+    controller.subscribe(result => reports.push(result));
+    await controller.execute({ action: 'setMuted', value: true, guard: true });
+    old.defaultView.emit('pagehide'); assert.equal(reports.at(-1).state.emptyGuardConfirmed, false);
+    f.tick(80); assert.equal(controller.getState().state.emptyGuardConfirmed, false);
+    frame.contentDocument = null; frame.emit('load'); f.tick(80);
+    const opaque = controller.getState(); assert.equal(opaque.code, 'NOT_APPLIED'); assert.equal(opaque.state.emptyGuardConfirmed, false);
+    frame.contentDocument = f.childDocument(frame); frame.emit('load'); f.tick(80);
+    assert.equal(controller.getState().state.emptyGuardConfirmed, true);
+    controller.dispose();
+});
+
+test('a departed child WindowProxy denying listener access cannot throw during scan or disposal', async () => {
+    for (const disposeDirectly of [false, true]) {
+        const f = fixture(), frame = f.addFrame(), child = frame.contentDocument, controller = f.mount();
+        await controller.execute({ action: 'setMuted', value: true, guard: true });
+        Object.defineProperty(child.defaultView, 'removeEventListener', { get() { throw Object.assign(new Error('cross-origin WindowProxy'), { name: 'SecurityError' }); } });
+        if (!disposeDirectly) {
+            frame.contentDocument = null; frame.emit('load');
+            assert.doesNotThrow(() => f.tick(80));
+            const result = controller.getState(); assert.equal(result.code, 'NOT_APPLIED'); assert.equal(result.state.emptyGuardConfirmed, false);
+        } else Object.defineProperty(frame, 'removeEventListener', { get() { throw new Error('frame cleanup refused'); } });
+        assert.doesNotThrow(() => controller.dispose());
+        assert.equal(child.count(), 0); assert.equal(controller.getState().state.emptyGuardConfirmed, false);
+        frame.emit('load'); assert.equal(f.clock.timers.size, 0);
+    }
+});
+
+test('trusted child document controls revoke the guard while synthetic controls do not', async () => {
+    for (const type of ['pointerdown', 'keydown']) {
+        const f = fixture(), frame = f.addFrame(), child = frame.contentDocument, audio = f.add('audio', child.body), controller = f.mount();
+        await controller.execute({ action: 'setMuted', value: true, guard: true });
+        child.emit(type, { isTrusted: false }); audio.muted = false; f.tick(80); assert.equal(audio.muted, true);
+        child.emit(type, { isTrusted: true }); assert.equal(controller.getState().state.audioUserRevision, 1);
+        assert.equal(controller.getState().state.muteGuardActive, false);
+        audio.muted = false; f.tick(80); assert.equal(audio.muted, false);
+        controller.dispose(); assert.equal(child.count(), 0); assert.equal(child.defaultView.count(), 0);
+    }
+});
+
+test('a failed child root observer, unreadable query or a document cycle cannot prove silence', async () => {
+    for (const failure of ['observe', 'query', 'cycle', 'depth']) {
+        const f = fixture(), frame = f.addFrame(), child = frame.contentDocument;
+        if (failure === 'observe') f.view.MutationObserver = class { observe(root) { if (root === child) throw new Error('refused'); } disconnect() {} };
+        if (failure === 'query') child.querySelectorAll = () => { throw new Error('unreadable'); };
+        if (failure === 'cycle') frame.contentDocument = f.doc;
+        if (failure === 'depth') { let nested = frame; for (let index = 0; index < 18; index++) nested = f.addFrame(nested.contentDocument.body); }
+        const controller = f.mount(), result = await controller.execute({ action: 'setMuted', value: true, guard: true });
+        assert.equal(result.code, 'NOT_APPLIED', failure); assert.equal(result.state.emptyGuardConfirmed, false, failure);
+        controller.dispose(); assert.equal(child.count(), 0); assert.equal(child.defaultView.count(), 0); assert.equal(frame.count(), 0);
+    }
+});
+
+test('opaque ancillary frames preserve the existing visible primary control contract', async () => {
+    const f = fixture(), video = f.add(); f.doc.documentElement.append(new f.Node('iframe'));
+    const controller = f.mount(), result = await controller.execute({ action: 'setMuted', value: true, guard: true });
+    assert.equal(result.ok, true); assert.equal(result.state.available, true); assert.equal(result.state.muted, true);
+    assert.equal(video.muted, true); assert.equal(result.state.emptyGuardConfirmed, false);
+    controller.dispose();
+});
+
 test('custom players with inaccessible shadow roots cannot prove an empty guarded inventory', async () => {
     const f = fixture(), host = f.doc.documentElement.append(new f.Node('closed-player'));
     const closedRoot = new f.Node(); closedRoot.tagName = undefined; closedRoot.host = host;
     const hiddenAudio = f.add('audio', closedRoot); hiddenAudio.hidden = true;
     host.shadowRoot = null;
     const controller = f.mount(), result = await controller.execute({ action: 'setMuted', value: true, guard: true });
-    assert.equal(result.code, 'NO_MEDIA'); assert.equal(result.state.emptyGuardConfirmed, false);
+    assert.equal(result.code, 'NOT_APPLIED'); assert.equal(result.state.emptyGuardConfirmed, false);
     assert.equal(result.state.muted, null); assert.equal(result.state.volume, null);
     assert.equal(hiddenAudio.muted, false, 'inaccessible audio cannot be claimed as controlled');
     assert.equal(f.mutations[0].targets.has(closedRoot), false);

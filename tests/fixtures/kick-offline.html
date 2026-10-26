@@ -1,0 +1,12 @@
+<!doctype html>
+<!-- Observed Kick offline structure reproduced, not the original full HTML:
+     offline text, no media/custom elements, and a hidden empty about:blank
+     document containing only html/head/body. The model starts at the observed
+     settled /yinlove/offline URL, without contacting a live redirect. -->
+<html><head><meta charset="utf-8"><title>KICK - Player</title>
+<style>html,body{margin:0;background:#101010;color:white;font:16px sans-serif}main{display:grid;place-content:center;height:100vh}.offline-panel{text-align:center}</style>
+</head><body>
+<main id="offline-root"><div class="offline-panel"><a href="https://kick.com/yinlove"><div>Offline</div><h2>yinlove is offline</h2></a><a href="https://kick.com/yinlove/videos">yinlove's latest stream</a></div></main>
+<iframe id="kick-offline-blank" src="about:blank" style="display:block!important;position:absolute;top:0;left:0;visibility:hidden" aria-hidden="true" tabindex="-1"></iframe>
+<!-- FIXTURE_INSTRUMENT -->
+</body></html>

@@ -200,21 +200,26 @@ test('stress: target identity replacement during held peer ACK never inherits an
     assert.equal(f.clock.pending, 0);
 });
 
-function hiddenControllerFixture(fakeClock, populated = true) {
+function hiddenControllerFixture(fakeClock, { populated = true, observable = false } = {}) {
     const { createMediaController } = require('../browser-extension/shared/media-controller.js');
+    const observed = new Set();
     const view = new EventTarget();
     Object.assign(view, { innerWidth: 1280, innerHeight: 720, getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }) });
+    if (observable) view.MutationObserver = class {
+        observe(target) { observed.add(target); }
+        disconnect() { observed.clear(); }
+    };
     const media = new EventTarget();
     Object.assign(media, { tagName: 'AUDIO', isConnected: true, hidden: true, muted: false, volume: 0.63, paused: false, ended: false, readyState: 4, error: null,
         getBoundingClientRect: () => ({ width: 640, height: 360, left: 0, top: 0 }), querySelectorAll: () => [], play() { throw new Error('No playback changes allowed'); } });
     const doc = new EventTarget();
     Object.assign(doc, { defaultView: view, documentElement: { clientWidth: 1280, clientHeight: 720 }, querySelectorAll: () => populated ? [media] : [] });
     const controller = createMediaController({ document: doc, clock: fakeClock });
-    return { controller, media };
+    return { controller, media, observed };
 }
 
 test('stress: real media controller can guard a hidden-only peer reporting NO_MEDIA before target opens', async () => {
-    const f = fixture(2), [a, b] = f.items, hidden = hiddenControllerFixture(f.clock);
+    const f = fixture(2), [a, b] = f.items, hidden = hiddenControllerFixture(f.clock, { observable: true });
     b.ready = false; b.readable = true;
     const initial = hidden.controller.getState();
     assert.equal(initial.ok, false); assert.equal(initial.code, 'NO_MEDIA');
@@ -234,11 +239,31 @@ test('stress: real media controller can guard a hidden-only peer reporting NO_ME
     assert.deepEqual(f.calls.filter(call => call.key === b.key), [{ key: b.key, action: 'setMuted', value: true, guard: true }]);
     assert.equal(hidden.controller.getState().state.available, false);
     assert.equal(hidden.controller.getState().state.muteGuardActive, true);
+    assert.equal(hidden.observed.size, 1, 'the complete hidden-media inventory has a registered observer');
+    hidden.controller.dispose(); f.flow.cancel(); assert.equal(f.clock.pending, 0);
+});
+
+test('stress: muting known hidden media without observers cannot claim silence for every possible peer route', async () => {
+    const f = fixture(2), [a, b] = f.items, hidden = hiddenControllerFixture(f.clock);
+    b.ready = false; b.readable = true;
+    const guard = await hidden.controller.execute({ action: 'setMuted', value: true, guard: true });
+    assert.equal(hidden.media.muted, true, 'the directly known route is muted');
+    assert.equal(guard.ok, false); assert.equal(guard.code, 'NOT_APPLIED');
+    assert.equal(guard.state.muted, null); assert.equal(guard.state.muteSupported, false);
+    assert.equal(guard.state.muteGuardActive, true); assert.equal(guard.state.emptyGuardConfirmed, false);
+    assert.equal(hidden.observed.size, 0);
+    const read = f.settings.read, write = f.settings.write;
+    f.settings.read = item => item.key === b.key ? hidden.controller.getState() : read(item);
+    f.settings.write = async (item, command) => item.key === b.key ? hidden.controller.execute(command) : write(item, command);
+    await f.flow.prepare(1);
+    assert.equal((await f.flow.restore(1, f.focus(a))).code, 'PARTIAL');
+    assert.equal(a.state.muted, true); assert.equal(a.state.volume, 0.3);
+    assert.equal(f.calls.some(call => call.key === a.key && (call.action === 'setVolume' || call.value === false)), false);
     hidden.controller.dispose(); f.flow.cancel(); assert.equal(f.clock.pending, 0);
 });
 
 test('stress: an empty NO_MEDIA peer cannot claim confirmed silence merely by arming an empty guard', async () => {
-    const f = fixture(2), [a, b] = f.items, hidden = hiddenControllerFixture(f.clock, false);
+    const f = fixture(2), [a, b] = f.items, hidden = hiddenControllerFixture(f.clock, { populated: false });
     b.ready = false; b.readable = true;
     const read = f.settings.read, write = f.settings.write;
     f.settings.read = item => item.key === b.key ? hidden.controller.getState() : read(item);
@@ -251,7 +276,7 @@ test('stress: an empty NO_MEDIA peer cannot claim confirmed silence merely by ar
 });
 
 test('stress: hidden-only target still cannot be opened through peer guard fallback', async () => {
-    const f = fixture(2), [a] = f.items, hidden = hiddenControllerFixture(f.clock);
+    const f = fixture(2), [a] = f.items, hidden = hiddenControllerFixture(f.clock, { observable: true });
     a.ready = false; a.readable = true;
     const read = f.settings.read, write = f.settings.write;
     f.settings.read = item => item.key === a.key ? hidden.controller.getState() : read(item);

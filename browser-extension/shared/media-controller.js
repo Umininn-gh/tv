@@ -6,6 +6,8 @@
     const PLAY_TIMEOUT = 3000;
     const GUARD_WINDOW = 2000;
     const GUARD_REPAIR_LIMIT = 8;
+    const ROOT_DEPTH_LIMIT = 16;
+    const FRAME_ATTRIBUTES = ['src', 'srcdoc', 'sandbox'];
     function createMediaController(options = {}) {
         const doc = options.document || root.document;
         if (!doc) throw new TypeError('A document is required');
@@ -40,15 +42,24 @@
         let waiting = false;
         let lastNotification = '';
         let observedRoots = new Set();
-        let watchedRoots = new Set(), emptyInventoryVerified = false;
+        let watchedRoots = new Set(), emptyInventoryVerified = false, guardInventoryVerified = false;
         let observedMedia = new Set();
+        const childFrames = new Map();
         const MO = view.MutationObserver || root.MutationObserver;
         const RO = view.ResizeObserver || root.ResizeObserver;
         const mutations = typeof MO === 'function' ? new MO(records => {
             // Decorative offline banners must not repeatedly revoke a proven
             // empty guard. New media or opaque player routes revoke it at once.
-            if (!records?.length || records.some(record =>
-                [...(record.addedNodes || []), ...(record.removedNodes || [])].some(containsMediaRoute))) emptyInventoryVerified = false;
+            let changed = !records?.length;
+            for (const record of records || []) {
+                if (record.type === 'attributes' && FRAME_ATTRIBUTES.includes(record.attributeName) && isFrame(record.target)) {
+                    const frame = trackFrame(record.target);
+                    if (frame) frame.pending = true;
+                    changed = true;
+                }
+                if ([...(record.addedNodes || []), ...(record.removedNodes || [])].some(node => containsMediaRoute(node))) changed = true;
+            }
+            if (changed) { emptyInventoryVerified = false; guardInventoryVerified = false; }
             scheduleScan();
             notify();
         }) : null;
@@ -59,21 +70,98 @@
         };
         const number = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
         const isMedia = node => node && ['VIDEO', 'AUDIO'].includes(String(node.tagName).toUpperCase());
+        const isFrame = node => String(node?.tagName).toUpperCase() === 'IFRAME';
         const isOpaqueRoute = node => {
             const tag = String(node?.tagName).toUpperCase();
             // A custom player may hide media in a closed shadow root. Only an
             // accessible open root can participate in an observed empty proof.
-            return ['IFRAME', 'OBJECT', 'EMBED'].includes(tag) || tag.includes('-') && !node.shadowRoot;
+            return ['OBJECT', 'EMBED'].includes(tag) || tag.includes('-') && !node.shadowRoot;
         };
-        function containsMediaRoute(container) {
+        function containsMediaRoute(container, depth = 0) {
             if (!container) return false;
-            const routed = node => isMedia(node) || isOpaqueRoute(node);
+            if (depth >= ROOT_DEPTH_LIMIT) return true;
+            const routed = node => isMedia(node) || isFrame(node) || isOpaqueRoute(node);
             if (routed(container)) return true;
             // Even an empty new open root needs observation before its future
             // media can be covered by the current silence proof.
-            if (container.shadowRoot && (!watchedRoots.has(container.shadowRoot) || containsMediaRoute(container.shadowRoot))) return true;
+            if (container.shadowRoot && (!watchedRoots.has(container.shadowRoot) || containsMediaRoute(container.shadowRoot, depth + 1))) return true;
             return [...(container.querySelectorAll?.('*') || [])].some(node => routed(node) ||
-                node.shadowRoot && (!watchedRoots.has(node.shadowRoot) || containsMediaRoute(node.shadowRoot)));
+                node.shadowRoot && (!watchedRoots.has(node.shadowRoot) || containsMediaRoute(node.shadowRoot, depth + 1)));
+        }
+        function invalidateFrame(frame, pending) {
+            if (disposed) return;
+            frame.pending = pending;
+            emptyInventoryVerified = false;
+            guardInventoryVerified = false;
+            scheduleScan();
+            notify();
+        }
+        function removeListener(target, type, listener, capture) {
+            // An old child WindowProxy may already be cross-origin while its
+            // frame's load callback is cleaning up the previous document.
+            try { target?.removeEventListener?.(type, listener, capture); } catch (_) {}
+        }
+        function bindChildDocument(frame, child) {
+            if (frame.document === child) return true;
+            if (frame.document) {
+                removeListener(frame.document, 'pointerdown', onNativeIntent, true);
+                removeListener(frame.document, 'keydown', onNativeIntent, true);
+                removeListener(frame.view, 'pagehide', frame.onPageHide);
+                removeListener(frame.view, 'pageshow', frame.onPageShow);
+            }
+            frame.document = null; frame.view = null;
+            if (!child) return true;
+            let childView;
+            try {
+                childView = child.defaultView;
+                if (typeof child.addEventListener !== 'function' || typeof childView?.addEventListener !== 'function') return false;
+                child.addEventListener('pointerdown', onNativeIntent, true);
+                child.addEventListener('keydown', onNativeIntent, true);
+                childView.addEventListener('pagehide', frame.onPageHide);
+                childView.addEventListener('pageshow', frame.onPageShow);
+                frame.document = child; frame.view = childView;
+                return true;
+            } catch (_) {
+                removeListener(child, 'pointerdown', onNativeIntent, true);
+                removeListener(child, 'keydown', onNativeIntent, true);
+                removeListener(childView, 'pagehide', frame.onPageHide);
+                removeListener(childView, 'pageshow', frame.onPageShow);
+                return false;
+            }
+        }
+        function trackFrame(element) {
+            let frame = childFrames.get(element);
+            if (frame) return frame;
+            frame = { element, pending: false, document: null, view: null };
+            frame.onLoad = () => invalidateFrame(frame, false);
+            frame.onPageHide = () => invalidateFrame(frame, true);
+            frame.onPageShow = () => invalidateFrame(frame, false);
+            try {
+                if (typeof element.addEventListener !== 'function') return null;
+                element.addEventListener('load', frame.onLoad);
+                childFrames.set(element, frame);
+                return frame;
+            } catch (_) { removeListener(element, 'load', frame.onLoad); return null; }
+        }
+        function readableChild(frame) {
+            try {
+                const child = frame.element.contentDocument;
+                if (frame.pending || !child?.documentElement || !child.defaultView || child.readyState === 'loading') return null;
+                const source = String(frame.element.getAttribute?.('src') || '').trim();
+                const srcdoc = frame.element.getAttribute?.('srcdoc') != null;
+                const address = String(child.URL || child.documentURI || '');
+                // A frame starts as readable about:blank even when a foreign
+                // destination is still loading. That initial document is not a
+                // settled empty destination and must not authorize opening.
+                if (!address || srcdoc && address !== 'about:srcdoc' || !srcdoc && /^about:blank(?:[?#]|$)/i.test(address) &&
+                    source && !/^about:blank(?:[?#]|$)/i.test(source)) return null;
+                return child;
+            } catch (_) { return null; }
+        }
+        function removeFrame(frame) {
+            removeListener(frame.element, 'load', frame.onLoad);
+            bindChildDocument(frame, null);
+            childFrames.delete(frame.element);
         }
         function connected(node) { return Boolean(node && read(node, 'isConnected', true)); }
         function parentOf(node) { return node.parentElement || node.getRootNode?.().host || null; }
@@ -110,27 +198,41 @@
         function collect() {
             const roots = new Set();
             const found = new Set();
+            const guarded = new Set();
             const embedded = new Set();
-            function visit(container) {
-                if (!container || roots.has(container)) return;
+            const frames = new Set();
+            function visit(container, nested = false, depth = 0) {
+                if (!container || roots.has(container) || depth >= ROOT_DEPTH_LIMIT) return false;
                 roots.add(container);
-                if (isMedia(container)) found.add(container);
-                for (const node of container.querySelectorAll?.('video,audio') || []) found.add(node);
-                if (container.shadowRoot) visit(container.shadowRoot);
-                if (isOpaqueRoute(container)) embedded.add(container);
-                for (const node of container.querySelectorAll?.('*') || []) {
+                if (isMedia(container)) { guarded.add(container); if (!nested) found.add(container); }
+                for (const node of container.querySelectorAll?.('video,audio') || []) { guarded.add(node); if (!nested) found.add(node); }
+                for (const node of [container, ...(container.querySelectorAll?.('*') || [])]) {
                     if (isOpaqueRoute(node)) embedded.add(node);
-                    if (node.shadowRoot) visit(node.shadowRoot);
+                    if (node.shadowRoot && !visit(node.shadowRoot, nested, depth + 1)) embedded.add(node);
+                    if (isFrame(node)) {
+                        frames.add(node);
+                        const frame = trackFrame(node), child = frame && readableChild(frame);
+                        let readable = false;
+                        try { readable = Boolean(frame && child && bindChildDocument(frame, child) && visit(child, true, depth + 1)); } catch (_) {}
+                        if (!readable) {
+                            embedded.add(node);
+                            if (frame && !child) bindChildDocument(frame, null);
+                        }
+                    }
                 }
+                return true;
             }
             visit(scope);
-            return { roots, candidates: [...found], embedded: [...embedded] };
+            for (const [element, frame] of childFrames) if (!frames.has(element)) removeFrame(frame);
+            return { roots, candidates: [...found], guarded: [...guarded], embedded: [...embedded] };
         }
         function state() {
             const available = !disposed && connected(media);
             const volume = available ? number(read(media, 'volume')) : null;
             const guarded = muteGuard ? [...guardMedia].filter(connected) : [];
-            const muted = muteGuard && guarded.length ? guarded.every(node => read(node, 'muted') === true) :
+            // With no primary, known hidden media cannot stand in for an
+            // unreadable sibling route. Keep the ordinary primary contract.
+            const muted = muteGuard && !available && !guardInventoryVerified ? null : muteGuard && guarded.length ? guarded.every(node => read(node, 'muted') === true) :
                 available && typeof read(media, 'muted') === 'boolean' ? media.muted : null;
             const paused = available && typeof read(media, 'paused') === 'boolean' ? media.paused : null;
             const ended = available && typeof read(media, 'ended') === 'boolean' ? media.ended : null;
@@ -143,11 +245,12 @@
                 recoverSupported: available && typeof media.play === 'function', volumeSupported: available && volume !== null,
                 muteSupported: (available || guarded.length > 0) && muted !== null, muteGuardActive: !disposed && muteGuard,
                 focusRestorePending: !disposed && guardOwned.size > 0,
-                emptyGuardConfirmed: !disposed && muteGuard && !guardFailure && emptyInventoryVerified && connected(scope),
+                emptyGuardConfirmed: !disposed && muteGuard && !guardFailure && guardInventoryVerified && emptyInventoryVerified && connected(scope),
                 audioUserRevision, disposed };
         }
         function result(ok = true, code = 'OK', message = '') { return { ok, code, message, state: state() }; }
-        function currentResult() { return disposed ? result(false, 'DISPOSED', '控制器已關閉') : muteGuard && guardFailure ?
+        function currentResult() { return disposed ? result(false, 'DISPOSED', '控制器已關閉') : muteGuard && !connected(media) && !guardInventoryVerified ?
+            result(false, 'NOT_APPLIED', '尚未確認所有嵌入頁面的靜音保護') : muteGuard && guardFailure ?
             result(false, 'NOT_APPLIED', '平台沒有保留全部影片的靜音設定，請重新按放大') : connected(media) ? result() : result(false, 'NO_MEDIA', '未找到可見的影片或音訊'); }
         function clearMuteGuard(preserveOwned = false) {
             if (guardTimer !== null) clear(guardTimer);
@@ -299,7 +402,7 @@
                 watchedRoots = new Set();
                 for (const container of roots) {
                     try { mutations.observe(container, { childList: true, subtree: true, attributes: true,
-                        attributeFilter: ['style', 'class', 'hidden', 'width', 'height'] }); watchedRoots.add(container); } catch (_) {}
+                        attributeFilter: ['style', 'class', 'hidden', 'width', 'height', ...FRAME_ATTRIBUTES] }); watchedRoots.add(container); } catch (_) {}
                 }
                 observedRoots = roots;
             }
@@ -313,16 +416,17 @@
             if (disposed || scanning) return;
             scanning = true;
             emptyInventoryVerified = false;
+            guardInventoryVerified = false;
             try {
-                const { roots, candidates, embedded } = collect();
-                observe(roots, candidates);
+                const { roots, candidates, guarded, embedded } = collect();
+                observe(roots, guarded);
                 const ranked = candidates.map(node => ({ node, area: visibleArea(node), video: String(node.tagName).toUpperCase() === 'VIDEO' }))
                     .filter(item => item.area > 0).sort((a, b) => Number(b.video) - Number(a.video) || b.area - a.area || Number(b.node === media) - Number(a.node === media));
                 bind(ranked[0]?.node || null);
-                observeGuard(candidates);
+                observeGuard(guarded);
                 repairGuard();
-                emptyInventoryVerified = Boolean(mutations && !candidates.some(connected) && !embedded.some(connected) &&
-                    [...roots].every(container => watchedRoots.has(container)));
+                guardInventoryVerified = Boolean(mutations && !embedded.some(connected) && [...roots].every(container => watchedRoots.has(container)));
+                emptyInventoryVerified = guardInventoryVerified && !guarded.some(connected);
             } finally { scanning = false; }
             notify();
         }
@@ -424,6 +528,7 @@
             scanTimer = null;
             mutations?.disconnect();
             sizes?.disconnect();
+            for (const frame of childFrames.values()) removeFrame(frame);
             clearMuteGuard();
             scope.removeEventListener?.('pointerdown', onNativeIntent, true);
             scope.removeEventListener?.('keydown', onNativeIntent, true);

@@ -44,6 +44,14 @@
             state.muted == null && state.volume == null);
     }
 
+    function retainedGuardResult(result) {
+        const state = { ...result?.state };
+        const silent = confirmedSilentPeer(state), muted = silent && state.muted === true;
+        // An empty document has no real mute value to acknowledge. Preserve
+        // its NO_MEDIA proof so the layout flow can validate that distinction.
+        return { ok: muted, code: muted ? 'OK' : silent && result?.code === 'NO_MEDIA' ? 'NO_MEDIA' : 'NOT_APPLIED', state };
+    }
+
     function renderAudioControls(entry, state, activeElement) {
         const volume = state?.volume;
         const volumeKnown = typeof volume === 'number' && Number.isFinite(volume) && volume >= 0 && volume <= 1;
@@ -608,8 +616,7 @@
             // own bounded repair budget and could fight a platform forever.
             if (guard && audioFocusIntent?.automatic && entry.result?.state?.muteGuardActive === true) {
                 guardedEntries.set(entry, generation);
-                return { ok: entry.result.state.muted === true, code: entry.result.state.muted === true ? 'OK' : 'NOT_APPLIED',
-                    state: { ...entry.result.state } };
+                return retainedGuardResult(entry.result);
             }
             if (guard && audioFocusIntent) {
                 const writes = audioFocusIntent.guardWrites ||= new Map();
@@ -719,13 +726,18 @@
                 if (intent.unified) {
                     if (!validUnifiedTarget(intent)) { clearAudioIntent(); showAudioFocusStatus({ phase: 'removed' }); return; }
                     const fingerprint = audioFingerprint();
-                    if (!intent.dirty && intent.lastFingerprint === fingerprint || intent.repairs >= 4) return;
+                    // Our own getState replies mark the running intent dirty.
+                    // They cannot spend repair attempts on an unchanged cohort.
+                    if (intent.lastFingerprint === fingerprint) { intent.dirty = false; return; }
                     intent.dirty = false;
                     const cohort = audioFocusSnapshot();
-                    const needsRepair = cohort.some(item => item.key !== intent.target && !confirmedSilentPeer(item.state)) ||
-                        !intent.focused;
+                    const unsafePeers = cohort.some(item => item.key !== intent.target && !confirmedSilentPeer(item.state));
+                    const needsRepair = unsafePeers || !intent.focused;
                     if (!needsRepair) { intent.lastFingerprint = fingerprint; return; }
-                    intent.repairs++;
+                    // A late, newly proven silent peer can release a withheld
+                    // target without rearming the unsafe platform's guard.
+                    if (unsafePeers && intent.repairs >= 4) { intent.lastFingerprint = fingerprint; return; }
+                    if (unsafePeers) intent.repairs++;
                     intent.automatic = true;
                     void restoreUnifiedFocus(intent, intent.ticket);
                     return;
@@ -1762,7 +1774,7 @@
         }
         return { start, dispose, scan };
     }
-    if (typeof module === 'object' && module.exports) module.exports = { createSiteController, validResult, aggregateAudio, canControl, confirmedSilentPeer, renderAudioControls, unifiedFocusFailures, isWatchStartTarget, isRecoveryReady, createReadinessPass, createAudioFocusFlow };
+    if (typeof module === 'object' && module.exports) module.exports = { createSiteController, validResult, aggregateAudio, canControl, confirmedSilentPeer, retainedGuardResult, renderAudioControls, unifiedFocusFailures, isWatchStartTarget, isRecoveryReady, createReadinessPass, createAudioFocusFlow };
     // Firefox's content-script global inherits from Window but is not Window itself.
     const contentWindow = root.window;
     if (contentWindow && config && media && runtime && contentWindow.top === contentWindow && config.isSiteUrl(contentWindow.location.href) && !contentWindow.document.getElementById('umininn-player-control-host')) {
