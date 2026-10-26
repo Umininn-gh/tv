@@ -7,6 +7,7 @@ const source = name => {
     return require(fs.existsSync(migrated) ? migrated : path.join(__dirname, '..', name + '.js'));
 };
 const G = source('player-geometry'), L = source('player-layout'), operations = L.createOperations({ geometry: G });
+const { assertCompact, assertBestDocking } = require('./helpers/player-layout-compaction.cjs');
 const measure = { width: 1400, height: 830, columnGap: 10, rowGap: 10 };
 const keys = n => Array.from({ length: n }, (_, i) => 'sizing-' + i);
 const visual = layout => [...layout.items].sort((a, b) => a.row - b.row || a.column - b.column).map(item => item.key);
@@ -58,8 +59,7 @@ test('sizing engine fits explicit growth and its reflow through the same final-e
     const order = keys(9), key = order[2];
     const layout = freeze(G.build({ keys: order, columns: 3, focus: { key, span: 2, row: 2, column: 1 } }));
     const plan = operations.grow(layout, key), fitted = fit(plan);
-    assert.equal(focus(fitted).column + focus(fitted).span, fitted.columns);
-    assert.equal(focus(fitted).row + focus(fitted).span, fitted.rows);
+    assertBestDocking(layout, fitted, key); assertCompact(fitted);
     const reflowed = operations.reflow({ keys: visual(plan.next), focus: focus(plan.next),
         pending: { ...plan.next, intent: 'size', growthAnchor: plan.growthAnchor } }, { ...measure, previous: layout }).next;
     assert.deepEqual(canonical(reflowed), canonical(fitted));
@@ -67,19 +67,49 @@ test('sizing engine fits explicit growth and its reflow through the same final-e
     valid(fitted, order);
 });
 
-test('sizing engine shrink keeps the established origin and normal span-one fitting', () => {
+test('sizing engine shrink keeps feasible edges without interior holes, including normal span-one fitting', () => {
     const order = keys(8), key = order[0];
     const layout = freeze(G.build({ keys: order, columns: 4, focus: { key, span: 3, row: 1, column: 1 } }));
     const plan = operations.shrink(layout, key);
     assert.equal(plan.kind, 'size'); assert.equal(plan.span, 2);
     assert.deepEqual(cell(plan.next, key), { key, span: 2, row: 1, column: 1 });
-    assert.equal(Object.hasOwn(plan, 'growthAnchor'), false);
-    const first = fit(plan), normalPlan = operations.shrink(first, key), normal = fit(normalPlan);
+    assert.deepEqual(plan.growthAnchor, { key, span: 2, right: true, bottom: true, left: false, top: false });
+    const first = fit(plan), smaller = cell(first, key);
+    assertBestDocking(layout, first, key); assertCompact(first);
+    const normalPlan = operations.shrink(first, key), normal = fit(normalPlan);
     assert.equal(normalPlan.span, 1); assert.equal(focus(normal), undefined);
+    assert.equal(normalPlan.growthAnchor.span, 1);
+    assertBestDocking(first, normal, key); assertCompact(normal);
     const expected = L.choose({ ...measure, count: order.length, force: true });
     assert.equal(normal.columns, expected.columns); assert.equal(normal.rows, expected.rows);
     valid(normal, order);
     assert.equal(operations.shrink(normal, key).kind, 'none');
+});
+
+test('sizing engine plus and minus keep the most feasible docked edges while removing all middle gaps', t => {
+    let checked = 0;
+    for (const count of [5, 9, 17, 32]) for (const dimensions of [measure,
+        { ...measure, width: 420, height: 880 }, { ...measure, width: 1900, height: 520 }]) {
+        const order = keys(count), key = order[0], span = 4, columns = 6;
+        const rows = Math.ceil((count + span * span - 1) / columns);
+        for (const position of [
+            { row: 0, column: 0 }, { row: 0, column: columns - span },
+            { row: rows - span, column: 0 }, { row: rows - span, column: columns - span },
+            { row: 0, column: 1 }, { row: 1, column: 0 },
+            { row: 1, column: columns - span }, { row: rows - span, column: 1 }
+        ]) {
+            let layout = freeze(G.build({ keys: order, columns, focus: { key, span, ...position } }));
+            for (const action of ['shrink', 'shrink', 'grow', 'shrink']) {
+                const original = JSON.stringify(layout), old = cell(layout, key), plan = operations[action](layout, key);
+                const next = fit(plan, dimensions), item = cell(next, key);
+                assertBestDocking(layout, next, key); assertCompact(next);
+                assert.equal(JSON.stringify(layout), original, 'sizing never mutates the previous geometry');
+                assert.equal(Object.hasOwn(next, 'growthAnchor'), false, 'docking is an action intent, not persisted layout state');
+                valid(next, order); layout = freeze(next); checked++;
+            }
+        }
+    }
+    assert.equal(checked, 384); t.diagnostic('shrink docking coverage ' + checked);
 });
 
 test('sizing engine corner requests retain only the fixed opposite docked edges, including full-width ties', () => {
@@ -88,15 +118,15 @@ test('sizing engine corner requests retain only the fixed opposite docked edges,
     for (const corner of ['nw', 'ne', 'sw', 'se']) {
         const plan = operations.resize(full, key, 2, corner);
         assert.equal(plan.preserveAnchor, true);
-        assert.deepEqual(plan.growthAnchor, { key, span: 2, right: corner.endsWith('w'), bottom: false });
+        assert.deepEqual(plan.growthAnchor, { key, span: 2, right: corner.endsWith('w'), bottom: false,
+            left: corner.endsWith('e'), top: corner.startsWith('s') });
     }
     const bottom = freeze(G.build({ keys: order, columns: 3, focus: { key, span: 2, row: 2, column: 1 } }));
     for (const corner of ['nw', 'ne', 'sw', 'se']) {
         const plan = operations.resize(bottom, key, 3, corner), fitted = fit(plan);
         assert.equal(plan.growthAnchor.right, corner.endsWith('w'));
         assert.equal(plan.growthAnchor.bottom, corner.startsWith('n'));
-        if (plan.growthAnchor.right) assert.equal(focus(fitted).column + 3, fitted.columns);
-        if (plan.growthAnchor.bottom) assert.equal(focus(fitted).row + 3, fitted.rows);
+        assertCompact(fitted);
         valid(fitted, order);
     }
 });

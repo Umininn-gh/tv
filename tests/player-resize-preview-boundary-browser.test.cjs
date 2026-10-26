@@ -1,4 +1,5 @@
 'use strict';
+const { assertCompact, dockScore, maximumDockScore } = require('./helpers/player-layout-compaction.cjs');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -135,12 +136,12 @@ test('resize preview: nine, eleven and seventeen player corner gestures retain t
             await f.page.mouse.up(); await waitSpan(f, key, span);
             assert.equal(await f.page.locator('.player-resize-preview').isVisible(), false);
             const next = await layout(f), cell = next.items.find(item => item.key === key), old = before.items.find(item => item.key === key);
-            if (span > 1) {
-                if (corner.endsWith('w') && old.column + old.span === before.columns)
-                    assert.equal(cell.column + span, next.columns, 'an opposite right edge remains docked after the final fit');
-                if (corner.startsWith('n') && old.row + old.span === before.rows)
-                    assert.equal(cell.row + span, next.rows, 'an opposite bottom edge remains docked after the final fit');
-            }
+            const docks = { right: corner.endsWith('w') && old.column + old.span === before.columns,
+                bottom: corner.startsWith('n') && old.row + old.span === before.rows,
+                left: corner.endsWith('e') && old.column === 0, top: corner.startsWith('s') && old.row === 0 };
+            assertCompact(next);
+            assert.equal(dockScore(next, key, docks), maximumDockScore({ count: next.items.length, span, docks,
+                ...(span === 1 ? { columns: next.columns } : {}) }), 'release only the corner edges that conflict with compact packing');
             await leave(f);
         }
         await assertContinuity(f, continuity);

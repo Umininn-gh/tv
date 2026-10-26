@@ -281,7 +281,7 @@
     }
 
     function choose({ keys, width, height, columnGap = 0, rowGap = 0, previous,
-        focus, force = false, preserveAnchor = false, growthAnchor } = {}) {
+        focus, force = false, preserveAnchor = false, growthAnchor, compact = false } = {}) {
         keys = uniqueKeys(keys);
         if (!keys.length) return { ...build(), area: 0 };
         focus = getFocus(keys, focus);
@@ -289,43 +289,89 @@
         const growing = focus && growthAnchor?.key === focus.key && growthAnchor.span === span;
         const right = growing && growthAnchor.right === true;
         const bottom = growing && growthAnchor.bottom === true;
-        const minimum = preserveAnchor && focus && !right ? focus.column + span : span;
+        const compactFocus = compact === true && focus;
+        const requested = compactFocus && {
+            right, bottom,
+            left: growing && typeof growthAnchor.left === 'boolean' ? growthAnchor.left : focus.column === 0,
+            top: growing && typeof growthAnchor.top === 'boolean' ? growthAnchor.top : focus.row === 0
+        };
+        const desired = compactFocus && {
+            row: growing && Number.isInteger(growthAnchor.row) && growthAnchor.row >= 0 ? growthAnchor.row : focus.row,
+            column: growing && Number.isInteger(growthAnchor.column) && growthAnchor.column >= 0 ? growthAnchor.column : focus.column
+        };
+        const minimum = !compactFocus && preserveAnchor && focus && !right ? focus.column + span : span;
         // Beyond this width all ordinary players already fit beside the square.
-        const maximum = Math.max(minimum, span + keys.length - 1);
+        const maximum = compactFocus ? span + Math.floor((keys.length - 1) / (span - 1)) :
+            Math.max(minimum, span + keys.length - 1);
         const occupiedArea = keys.length + span * span - 1;
         const oldColumns = previous?.columns;
         const validPrevious = Number.isInteger(oldColumns) && oldColumns >= minimum && oldColumns <= maximum;
         const nonnegative = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
         width = nonnegative(width); height = nonnegative(height);
         columnGap = nonnegative(columnGap); rowGap = nonnegative(rowGap);
-        if (!(width > 0 && height > 0)) {
+        if (!(width > 0 && height > 0) && !compactFocus) {
             const columns = validPrevious ? oldColumns : Math.max(minimum, Math.ceil(Math.sqrt(occupiedArea)));
             return { ...build({ keys, columns, focus }), area: 0 };
+        }
+        function compactAnchor(columns, rows) {
+            // All basic cells before the last occupied cell must be filled.
+            // The square fits that packed prefix exactly when its final cell
+            // ends no later than occupiedArea. Trailing capacity is harmless.
+            const boundary = occupiedArea - (span - 1) * columns - span;
+            const lastRow = Math.floor(boundary / columns), lastColumn = columns - span;
+            const clamp = (value, maximum) => Math.max(0, Math.min(value, maximum));
+            // Every row except the final feasible one allows the full width.
+            // These points therefore include the nearest anchor for each edge
+            // combination without enumerating a potentially large cell matrix.
+            const candidateRows = new Set([0, lastRow, Math.max(0, lastRow - 1),
+                clamp(desired.row, lastRow), clamp(desired.row, Math.max(0, lastRow - 1))]);
+            if (rows >= span && rows - span <= lastRow) candidateRows.add(rows - span);
+            let best;
+            for (const row of candidateRows) {
+                const maximumColumn = Math.min(lastColumn, boundary - row * columns);
+                if (maximumColumn < 0) continue;
+                for (const column of new Set([0, maximumColumn, clamp(desired.column, maximumColumn)])) {
+                    const edges = Number(requested.left && column === 0) + Number(requested.right && column + span === columns) +
+                        Number(requested.top && row === 0) + Number(requested.bottom && row + span === rows);
+                    const distance = Math.abs(row - desired.row) + Math.abs(column - desired.column);
+                    const candidate = { key: focus.key, span, row, column, edges, distance };
+                    if (!best || edges > best.edges || edges === best.edges && (distance < best.distance ||
+                        distance === best.distance && (row < best.row || row === best.row && column < best.column))) best = candidate;
+                }
+            }
+            return best;
         }
         function measure(columns) {
             // Position an explicitly growing square against the candidate's
             // final edges before scoring it. Old-track clamping must not choose
             // its anchor before the new number of rows/columns is known.
-            const rows = Math.max(1, Math.ceil(occupiedArea / columns), focus ? bottom ? span : focus.row + span : 0);
-            const candidateFocus = focus && { ...focus,
+            const rows = compactFocus ? Math.max(1, Math.ceil(occupiedArea / columns)) :
+                Math.max(1, Math.ceil(occupiedArea / columns), focus ? bottom ? span : focus.row + span : 0);
+            const compactCandidate = compactFocus && compactAnchor(columns, rows);
+            const candidateFocus = compactFocus ? { key: focus.key, span,
+                row: compactCandidate.row, column: compactCandidate.column } : focus && { ...focus,
                 column: right ? columns - span : Math.min(focus.column, columns - span),
                 row: bottom ? rows - span : focus.row };
             const cellWidth = Math.max(0, (width - columnGap * (columns - 1)) / columns);
             const cellHeight = Math.max(0, (height - rowGap * (rows - 1)) / rows);
             const videoWidth = Math.min(cellWidth, cellHeight * ASPECT);
-            return { columns, rows, area: videoWidth * videoWidth / ASPECT, focus: candidateFocus };
+            return { columns, rows, area: videoWidth * videoWidth / ASPECT, focus: candidateFocus,
+                ...(compactFocus ? { edges: compactCandidate.edges, distance: compactCandidate.distance } : {}) };
         }
         let best = measure(minimum);
         for (let columns = minimum + 1; columns <= maximum; columns++) {
             const candidate = measure(columns);
             const difference = candidate.area - best.area;
-            if (difference > 0.01 || (Math.abs(difference) <= 0.01 &&
-                candidate.columns * candidate.rows < best.columns * best.rows)) best = candidate;
+            if (compactFocus ? candidate.edges > best.edges || candidate.edges === best.edges &&
+                (difference > 0.01 || Math.abs(difference) <= 0.01 && (candidate.distance < best.distance ||
+                    candidate.distance === best.distance && candidate.columns * candidate.rows < best.columns * best.rows)) :
+                difference > 0.01 || (Math.abs(difference) <= 0.01 &&
+                    candidate.columns * candidate.rows < best.columns * best.rows)) best = candidate;
         }
         if (!force && validPrevious) {
             const current = measure(oldColumns);
             const gain = focus ? FOCUS_SWITCH_GAIN : SWITCH_GAIN;
-            if (best.area <= current.area * (1 + gain)) best = current;
+            if ((!compactFocus || current.edges === best.edges) && best.area <= current.area * (1 + gain)) best = current;
         }
         return { ...build({ keys, columns: best.columns, focus: best.focus }), area: best.area };
     }

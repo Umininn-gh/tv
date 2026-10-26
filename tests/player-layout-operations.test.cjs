@@ -1,4 +1,5 @@
 'use strict';
+const { assertCompact } = require('./helpers/player-layout-compaction.cjs');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -284,7 +285,7 @@ test('normal exchanges do not consume an outstanding hidden bookmark or restore 
     }
 });
 
-test('reflow retains legacy visible policy while hidden panes preserve confirmed tracks and anchors', () => {
+test('reflow compacts explicit size actions while retaining legacy viewport, restore and hidden-anchor behavior', () => {
     let compared = 0;
     for (const count of [0, 1, 2, 5, 17, 32]) {
         const list = keys(count);
@@ -313,6 +314,10 @@ test('reflow retains legacy visible policy while hidden panes preserve confirmed
                             if (pending?.columns <= 768) assert.ok(plan.next.columns >= pending.columns);
                             assert.ok(plan.next.columns <= 768);
                             assertCells(plan.next, list);
+                        } else if (activeFocus && pending?.intent === 'size') {
+                            assertCompact(plan.next); assertCells(plan.next, list);
+                            assert.equal(plan.next.items.find(item => item.key === focus.key).span, focus.span);
+                            assert.equal(plan.pending, null);
                         } else assert.deepEqual(plan, expected);
                         assert.equal(JSON.stringify({ input, options }), before, 'planning is read-only');
                         compared++;

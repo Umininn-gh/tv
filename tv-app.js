@@ -841,7 +841,7 @@ function applyPlayerSize(next, { optimize = true, growthAnchor } = {}) {
     // Capture the reflowed order before the final shrink returns to normal tracks.
     playerLayoutState.commit(next);
     playerLayoutState.setFocus(next.items.find(item => item.span > 1) || null);
-    playerLayoutState.setPending(playerLayoutState.focus ? { ...next, intent: optimize ? 'size' : 'drag',
+    playerLayoutState.setPending(playerLayoutState.focus || (optimize && growthAnchor?.span === 1) ? { ...next, intent: optimize ? 'size' : 'drag',
         ...(optimize && growthAnchor ? { growthAnchor } : {}) } : null);
     updatePlayerLayout({ force: true });
     playerLayoutState.rememberOrder();
@@ -864,7 +864,7 @@ function shrinkPlayer(key) {
     const current = playerLayoutState.enlargedGeometry?.items.find(item => item.key === key);
     if (!current || current.span <= 1) return false;
     const plan = playerLayoutOperations.shrink(playerLayoutState.enlargedGeometry, key);
-    return plan.kind !== 'none' && applyPlayerSize(plan.next);
+    return plan.kind !== 'none' && applyPlayerSize(plan.next, { growthAnchor: plan.growthAnchor });
 }
 
 function closePlayer(key) {

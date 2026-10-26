@@ -1,4 +1,5 @@
 'use strict';
+const { assertCompact, assertBestDocking } = require('./helpers/player-layout-compaction.cjs');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -106,7 +107,7 @@ test('BND-001: trusted plus actions keep native and foreign right-docked players
     });
 });
 
-test('BND-002: moving native and foreign players down to the bottom then pressing plus retains both final bottom and right edges', browserCase, async t => {
+test('BND-002: moving native and foreign players down then pressing plus keeps feasible edges without middle gaps', browserCase, async t => {
     for (const platform of ['native', 'foreign']) await t.test(platform, async st => {
         const f = await setup(st, { players: 9, width: 1400, height: 880 }); if (!f) return;
         const before = await snapshot(f), order = await keys(f), key = order[platform === 'native' ? 0 : 2];
@@ -119,20 +120,18 @@ test('BND-002: moving native and foreign players down to the bottom then pressin
         const bottom = await read(f), start = item(bottom, key);
         assert.equal(start.row + start.span, bottom.rows); assert.equal(start.column + start.span, bottom.columns);
         const trace = [];
-        let enlarged;
+        let enlarged, previous = bottom;
         for (const span of [3, 4]) {
             enlarged = await enlargeWithWindowButton(f, key, span);
             const cell = item(enlarged, key);
-            assert.equal(cell.row + span, enlarged.rows, 'bottom docking uses the FINAL row count');
-            assert.equal(cell.column + span, enlarged.columns, 'the bottom-right corner preserves both independent edges');
+            assertBestDocking(previous, enlarged, key); assertCompact(enlarged);
+            previous = enlarged;
             trace.push({ columns: enlarged.columns, rows: enlarged.rows, focus: cell });
         }
-        // Docking describes this explicit growth operation only. The established
-        // shrink action still keeps its legal top-left origin.
-        const large = item(enlarged, key);
+        // Explicit +/- actions share docking against the newly fitted tracks.
         await actualMouseWindowAction(f, key, 'shrink'); await waitSpan(f, key, 3); await waitWindowGeometry(f);
         const smaller = await read(f), cell = item(smaller, key);
-        assert.equal(cell.row, large.row); assert.equal(cell.column, large.column);
+        assertBestDocking(enlarged, smaller, key); assertCompact(smaller);
         await assertRendered(f);
         t.diagnostic(JSON.stringify({ issue: 'BND-002', platform, resolved: true, before: start, trace, shrink: cell }));
         await assertContinuity(f, before);

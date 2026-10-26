@@ -116,21 +116,27 @@
                 focus: next.items.find(item => item.span > 1),
                 sourceKey: layout.items.find(item => item.span > 1).key, targetKey };
         }
+        function sizeAnchor(layout, current, span) {
+            // Explicit +/- actions capture docking before choosing new tracks.
+            // Prefer left/top when the old square touches both opposite edges.
+            return { key: current.key, span,
+                right: current.column > 0 && current.column + current.span === layout.columns,
+                bottom: current.row > 0 && current.row + current.span === layout.rows,
+                left: current.column === 0, top: current.row === 0,
+                ...(span === 1 ? { row: current.row, column: current.column } : {}) };
+        }
         function grow(layout, key) {
             const current = layout?.items?.find(item => item.key === key);
             if (!current) return none(layout, 'missing-growth-target');
             const next = geometry.grow(layout, key);
-            // This intent belongs only to this + action. Prefer left/top when
-            // the old square touches both opposite edges; never persist docking.
-            return { kind: 'size', next, growthAnchor: { key, span: current.span + 1,
-                right: current.column > 0 && current.column + current.span === layout.columns,
-                bottom: current.row > 0 && current.row + current.span === layout.rows } };
+            return { kind: 'size', next, growthAnchor: sizeAnchor(layout, current, current.span + 1) };
         }
         function shrink(layout, key) {
             const current = layout?.items?.find(item => item.key === key);
             if (!current || !(current.span > 1)) return none(layout, 'missing-shrink-target');
             const next = geometry.shrink(layout, key);
-            return { kind: 'size', next, span: next.items.find(item => item.key === key).span };
+            const span = next.items.find(item => item.key === key).span;
+            return { kind: 'size', next, span, growthAnchor: sizeAnchor(layout, current, span) };
         }
         function resize(layout, key, span, corner = 'se') {
             const current = layout?.items?.find(item => item.key === key);
@@ -144,15 +150,36 @@
             return { kind: 'size', next, span, corner, preserveAnchor: true,
                 growthAnchor: { key, span,
                     right: corner.endsWith('w') && current.column + current.span === layout.columns,
-                    bottom: corner.startsWith('n') && current.row + current.span === layout.rows } };
+                    bottom: corner.startsWith('n') && current.row + current.span === layout.rows,
+                    left: corner.endsWith('e') && current.column === 0,
+                    top: corner.startsWith('s') && current.row === 0,
+                    ...(span === 1 ? { row: current.row, column: current.column } : {}) } };
         }
-        function fitSize({ keys = [], focus, growthAnchor, preserveAnchor = false } = {}, options = {}) {
+        function fitSize({ keys = [], focus, growthAnchor, preserveAnchor = false, compact = true } = {}, options = {}) {
             keys = Array.isArray(keys) ? [...new Set(keys)] : [];
             focus = keys.length > 1 && keys.includes(focus?.key) && focus.span > 1 ? focus : null;
-            if (focus) return { ...geometry.choose({ ...options, keys, focus, growthAnchor, preserveAnchor, force: true }),
+            if (focus) return { ...geometry.choose({ ...options, keys, focus, growthAnchor, preserveAnchor, compact, force: true }),
                 count: keys.length };
             const fitted = choose({ ...options, count: keys.length, force: true });
-            return { ...fitted, ...geometry.build({ keys, columns: fitted.columns }), count: keys.length };
+            let normal = geometry.build({ keys, columns: fitted.columns });
+            if (compact && growthAnchor?.span === 1 && keys.includes(growthAnchor.key)) {
+                // Normal tracks remain dense. Keep whichever requested edges
+                // have an occupied slot; never add a hole to retain a corner.
+                const anchor = growthAnchor, rank = item => [
+                    Number(anchor.left === true && item.column === 0) + Number(anchor.top === true && item.row === 0) +
+                    Number(anchor.right === true && item.column + 1 === normal.columns) +
+                    Number(anchor.bottom === true && item.row + 1 === normal.rows),
+                    Math.abs(item.row - (anchor.row || 0)) + Math.abs(item.column - (anchor.column || 0))
+                ];
+                const slots = [...normal.items].sort((a, b) => {
+                    const x = rank(a), y = rank(b);
+                    return y[0] - x[0] || x[1] - y[1] || a.row - b.row || a.column - b.column;
+                });
+                const target = slots[0], at = normal.items.findIndex(item => item.key === target.key);
+                const ordered = keys.filter(key => key !== anchor.key); ordered.splice(at, 0, anchor.key);
+                normal = geometry.build({ keys: ordered, columns: fitted.columns });
+            }
+            return { ...fitted, ...normal, count: keys.length };
         }
         function previewSize(layout, key, span, corner, measure = {}) {
             const plan = resize(layout, key, span, corner);
@@ -207,6 +234,8 @@
         function reflow({ keys, focus, pending }, options) {
             focus = keys.includes(focus?.key) && keys.length > 1 ? focus : null;
             if (!focus) {
+                if (pending?.intent === 'size' && pending.growthAnchor?.span === 1)
+                    return { next: fitSize({ keys, growthAnchor: pending.growthAnchor }, options), pending: null };
                 if (pending?.intent === 'bookmark') {
                     const columns = Math.max(1, Math.min(keys.length || 1, pending.columns));
                     return { next: { count: keys.length, columns, rows: Math.max(1, Math.ceil(keys.length / columns)), area: 0 },
@@ -231,7 +260,8 @@
             } else if (pending?.intent === 'size' || pending?.intent === 'restore') {
                 next = fitSize({ keys, focus,
                     growthAnchor: pending.intent === 'size' ? pending.growthAnchor : undefined,
-                    preserveAnchor: pending.intent === 'size' && pending.preserveAnchor === true }, options);
+                    preserveAnchor: pending.intent === 'size' && pending.preserveAnchor === true,
+                    compact: pending.intent === 'size' }, options);
             } else if (pending) {
                 const columns = Math.max(focus.span, Math.min(pending.columns, focus.span + keys.length - 1));
                 next = geometry.build({ keys, columns, focus });

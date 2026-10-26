@@ -10,6 +10,7 @@ const source = name => {
 };
 const G = source('player-geometry'), L = source('player-layout');
 const operations = L.createOperations({ geometry: G });
+const { assertCompact, assertBestDocking } = require('./helpers/player-layout-compaction.cjs');
 const keys = count => Array.from({ length: count }, (_, index) => 'anchor-' + index);
 const visual = layout => [...layout.items].sort((a, b) => a.row - b.row || a.column - b.column).map(item => item.key);
 const cell = (layout, key) => layout.items.find(item => item.key === key);
@@ -19,10 +20,11 @@ const pane = { width: 1400, height: 830, columnGap: 10, rowGap: 10 };
 // Match the app's explicit +/− transaction, including its size-intent reflow.
 // Looking at grow() alone misses the later change in the number of tracks.
 function sizeTransaction(layout, key, action = 'grow', dimensions = pane) {
-    const growth = action === 'grow' ? operations.grow(layout, key) : null;
-    const draft = growth ? growth.next : G[action](layout, key), order = visual(draft), enlarged = focus(draft);
+    const operation = operations[action](layout, key);
+    const draft = operation.next, order = visual(draft), enlarged = focus(draft);
     const plan = operations.reflow({ keys: order, focus: enlarged,
-        pending: enlarged ? { ...draft, intent: 'size', ...(growth ? { growthAnchor: growth.growthAnchor } : {}) } : null },
+        pending: enlarged || operation.growthAnchor?.span === 1 ? { ...draft, intent: 'size',
+            ...(operation.growthAnchor ? { growthAnchor: operation.growthAnchor } : {}) } : null },
     { ...dimensions, count: order.length, previous: layout });
     return plan.next.items ? plan.next : { ...plan.next, ...G.build({ keys: order, columns: plan.next.columns }) };
 }
@@ -87,7 +89,7 @@ test('BND-001: growing a right-docked 2x2 player to 3x3 keeps it at the FINAL ri
             'preserve the pre-growth right-edge intent after choosing the final grid');
     });
 
-test('BND-002: a player moved down to the bottom stays at the FINAL bottom edge after growth',
+test('BND-002: growth after a bottom placement retains feasible edges without introducing middle gaps',
     () => {
         const order = keys(9), key = order[2];
         let layout = G.build({ keys: order, columns: 3, focus: { key, row: 0, column: 1, span: 2 } });
@@ -98,11 +100,10 @@ test('BND-002: a player moved down to the bottom stays at the FINAL bottom edge 
         assert.equal(cell(layout, key).row + cell(layout, key).span, layout.rows);
         const next = sizeTransaction(layout, key);
         validate(next, order);
-        assert.equal(cell(next, key).row + cell(next, key).span, next.rows,
-            'growth after a deliberate downward placement must retain bottom-edge intent');
+        assertCompact(next); assertBestDocking(layout, next, key);
     });
 
-test('growth docking: all four corners stay on their chosen edges through repeated final-grid choices', t => {
+test('growth docking: all four corners retain the most feasible edges through repeated compact final-grid choices', t => {
     let checked = 0;
     for (const count of [5, 9, 17, 32]) for (const dimensions of [pane,
         { ...pane, width: 420, height: 880 }, { ...pane, width: 1900, height: 520 }]) {
@@ -116,10 +117,7 @@ test('growth docking: all four corners stay on their chosen edges through repeat
                 const old = cell(layout, key), expectRight = old.column > 0 && old.column + old.span === layout.columns;
                 const expectBottom = old.row > 0 && old.row + old.span === layout.rows;
                 const next = sizeTransaction(layout, key, 'grow', dimensions), grown = cell(next, key);
-                if (expectRight) assert.equal(grown.column + grown.span, next.columns);
-                else if (old.column === 0) assert.equal(grown.column, 0);
-                if (expectBottom) assert.equal(grown.row + grown.span, next.rows);
-                else if (old.row === 0) assert.equal(grown.row, 0);
+                assertBestDocking(layout, next, key); assertCompact(next);
                 assert.equal(grown.span, old.span + 1);
                 validate(next, order); layout = next; checked++;
             }
@@ -129,11 +127,11 @@ test('growth docking: all four corners stay on their chosen edges through repeat
     t.diagnostic('growth docking coverage ' + checked);
 });
 
-test('growth docking: intent is target/span scoped and never affects shrink, drag or restore', () => {
+test('growth docking: intent is target/span scoped and never replays into another span, drag or restore', () => {
     const order = keys(9), key = order[2];
     const layout = G.build({ keys: order, columns: 3, focus: { key, span: 2, row: 2, column: 1 } });
     const growth = operations.grow(layout, key), enlarged = focus(growth.next);
-    assert.deepEqual(growth.growthAnchor, { key, span: 3, right: true, bottom: true });
+    assert.deepEqual(growth.growthAnchor, { key, span: 3, right: true, bottom: true, left: false, top: false });
     const options = { ...pane, keys: visual(growth.next), focus: enlarged, force: true };
     const plain = G.choose(options);
     for (const bad of [{ ...growth.growthAnchor, key: 'stale' }, { ...growth.growthAnchor, span: 2 }])
@@ -166,13 +164,11 @@ test('anchor audit: a bottom placement, bookmark-style reflow and hidden pane pr
     }
 });
 
-test('anchor audit: shrink keeps the established top-left origin until returning to 1x1', () => {
-    // This is the existing shrink contract. Bottom/right docking on shrink is
-    // a separate product choice, not a bounds failure or part of BND-001/002.
+test('anchor audit: explicit shrink keeps feasible edges and dense packing through the final 1x1 step', () => {
     const order = keys(8), key = order[0];
     let layout = G.build({ keys: order, columns: 4, focus: { key, row: 1, column: 1, span: 3 } });
     const next = sizeTransaction(layout, key, 'shrink');
-    assert.equal(cell(next, key).row, 1); assert.equal(cell(next, key).column, 1);
+    assertBestDocking(layout, next, key); assertCompact(next);
     assert.equal(cell(next, key).span, 2); validate(next, order);
     layout = sizeTransaction(next, key, 'shrink');
     assert.ok(layout.items.every(item => item.span === 1)); validate(layout, order);
