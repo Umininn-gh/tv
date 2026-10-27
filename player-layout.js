@@ -109,12 +109,28 @@
             const next = geometry.build({ keys, columns: pending?.columns || layout.columns, focus });
             return { kind: 'exchange', keys, next, pending, focus, enlarged };
         }
-        function swapFocus(layout, targetKey) {
-            const next = geometry.swapFocus(layout, targetKey);
+        function swapFocus(layout, targetKey, memory = null) {
+            let next = geometry.swapFocus(layout, targetKey);
             if (next === layout) return none(layout, 'no-focus-target');
+            const source = layout.items.find(item => item.span > 1);
+            const remembered = memory && !Array.isArray(memory) &&
+                typeof memory.large === 'string' && typeof memory.small === 'string' && memory.large !== memory.small &&
+                memory.large === source.key && layout.items.some(item => item.key === memory.small && item.span === 1);
+            let small = source.key, restoredKey = null;
+            if (remembered && memory.small !== targetKey) {
+                // Restore the previous temporary promotion in memory only,
+                // then promote the requested tile. The page commits once.
+                const restored = geometry.swapFocus(layout, memory.small);
+                next = geometry.swapFocus(restored, targetKey);
+                small = memory.small;
+                restoredKey = memory.small;
+            }
             return { kind: 'swap-focus', next, keys: visualKeys(next),
                 focus: next.items.find(item => item.span > 1),
-                sourceKey: layout.items.find(item => item.span > 1).key, targetKey };
+                sourceKey: source.key, targetKey, restoredKey,
+                // Returning home ends the temporary pair instead of seeding
+                // a reverse pair that would displace it on the next promotion.
+                memory: remembered && memory.small === targetKey ? null : { large: targetKey, small } };
         }
         function sizeAnchor(layout, current, span) {
             // Explicit +/- actions capture docking before choosing new tracks.

@@ -50,6 +50,15 @@ function swapped(layout, target) {
     return { ...layout, items: layout.items.map(value => value.key === target ? { ...focus, key: target } :
         value.key === focus.key ? { ...small, key: focus.key } : value) };
 }
+function rememberedSwap(layout, target, memory = null) {
+    const large = layout.items.find(value => value.span > 1);
+    const previousSmall = memory && item(layout, memory.small);
+    const valid = memory && memory.large === large.key && memory.small !== large.key && previousSmall?.span === 1;
+    const restored = valid && memory.small !== target ? swapped(layout, memory.small) : layout;
+    const finalPreviousLarge = restored.items.find(value => value.span > 1).key;
+    return { next: swapped(restored, target), memory: valid && memory.small === target ? null :
+        { large: target, small: finalPreviousLarge } };
+}
 function swapButton(f, key) {
     return f.page.locator(`.player-window-cell[data-player-key=${JSON.stringify(key)}] [data-player-action="swap-focus"]`);
 }
@@ -212,11 +221,13 @@ test('focus swap: missing, current-focus and no-focus requests are inert and nev
 test('focus swap: trusted clicks solo foreign and wrapped-native targets at 100% while retaining play and pause state', browserCase, async t => {
     const f = await setup(t, { audioUserscript: true }); if (!f) return;
     const { keys } = await prepare(f), before = await snapshot(f);
+    let memory = null;
     for (const [target, mediaIndex] of [[keys[2], 3], [keys[3], 4], [keys[4], 2]]) {
         const initial = await geometry(f), soundBefore = await snapshot(f);
         await actualMouseWindowAction(f, target, 'swap-focus');
         const soundAfter = await waitOnlyAudible(f, mediaIndex); await settle(f);
-        assert.deepEqual(await geometry(f), swapped(initial, target));
+        const expected = rememberedSwap(initial, target, memory); memory = expected.memory;
+        assert.deepEqual(await geometry(f), expected.next);
         const oldMedia = [...soundBefore.main, ...soundBefore.frames.flatMap(frame => frame.media)];
         const newMedia = [...soundAfter.main, ...soundAfter.frames.flatMap(frame => frame.media)];
         for (let index = 0; index < oldMedia.length; index++) if (index !== mediaIndex)
@@ -233,7 +244,8 @@ test('focus swap: rapid B then C clicks during delayed capture leave C in the or
     await actualMouseWindowAction(f, keys[4], 'swap-focus');
     assert.deepEqual(await geometry(f), initial, 'both requested mutations wait for the existing audio capture');
     await releaseCapture(f); await waitOnlyAudible(f, 2);
-    assert.deepEqual(await geometry(f), swapped(swapped(initial, keys[2]), keys[4]),
+    const first = rememberedSwap(initial, keys[2]);
+    assert.deepEqual(await geometry(f), rememberedSwap(first.next, keys[4], first.memory).next,
         'queued swaps resolve against the latest committed geometry');
     await f.page.waitForTimeout(350); await waitOnlyAudible(f, 2);
     await assertAudioContinuity(f, before);

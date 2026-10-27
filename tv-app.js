@@ -539,6 +539,7 @@ const playerRegistry = PlayerLifecycle.create({
 const activePlayers = playerRegistry.entries;
 const PLAYER_POSITION_STORAGE_KEY = 'playerPositionOrder';
 const PLAYER_ENLARGEMENT_STORAGE_KEY = 'playerEnlargementLayout';
+const PLAYER_FOCUS_SWAP_STORAGE_KEY = 'playerFocusSwapMemory';
 // Shared duration for the viewing page's temporary menus and editing overlays.
 const PLAYER_OVERLAY_TIMEOUT_SECONDS = 30;
 const playerLayoutState = PlayerLayout.createState({ buildGeometry: PlayerGeometry.build });
@@ -919,10 +920,20 @@ function swapPlayerPositions(sourceKey, targetKey) {
 
 function swapPlayerWithFocus(key) {
     if (!activePlayers.has(key)) return false;
-    const plan = playerLayoutOperations.swapFocus(getCurrentPlayerGeometry(), key);
+    const layout = getCurrentPlayerGeometry();
+    const signature = value => JSON.stringify([value.columns, value.rows, [...value.items]
+        .sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0)
+        .map(item => [item.key, item.row, item.column, item.span])]);
+    let memory = null;
+    try {
+        const saved = JSON.parse(localStorage.getItem(PLAYER_FOCUS_SWAP_STORAGE_KEY));
+        if (saved?.version === 1 && activePlayers.has(saved.large) && activePlayers.has(saved.small) &&
+            saved.layout === signature(layout)) memory = saved;
+    } catch (_) {}
+    const plan = playerLayoutOperations.swapFocus(layout, key, memory);
     if (plan.kind === 'none' || !activePlayers.has(plan.sourceKey)) return false;
-    // Exchange the occupants of two existing slots. Do not run the movement or
-    // automatic packing rules: every other cell must keep its exact rectangle.
+    // Apply the final occupants once, including an optional previous-pair undo.
+    // Connected players and the large rectangle never move through an interim state.
     playerLayoutState.commit(plan.next);
     playerLayoutState.setFocus(plan.focus);
     playerLayoutState.setPending(null);
@@ -931,6 +942,12 @@ function swapPlayerWithFocus(key) {
     playerLayoutState.rememberOrder();
     try { localStorage.setItem(PLAYER_POSITION_STORAGE_KEY, JSON.stringify(playerLayoutState.preferredOrder)); } catch (_) {}
     savePlayerEnlargement();
+    try {
+        if (!plan.memory) localStorage.removeItem(PLAYER_FOCUS_SWAP_STORAGE_KEY);
+        else localStorage.setItem(PLAYER_FOCUS_SWAP_STORAGE_KEY, JSON.stringify({
+            version: 1, ...plan.memory, layout: signature(playerLayoutState.geometry)
+        }));
+    } catch (_) {}
     playerPositionEditor?.refresh();
     playerNameOverlay?.refresh();
     playerWindowControls?.refresh();
