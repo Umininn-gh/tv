@@ -43,8 +43,8 @@ A,alancml01,twitch
 987,ppkkkp,twitch
 WJ,woojungx4,twitch
 金剛2,kingkong_tv,vaughn
-美22,meidingdang,vaughn
-美12,triplestarhunters,vaughn
+美4,meidingdang,vaughn
+美5,triplestarhunters,vaughn
 zard,zard46,vaughn
 RachelW,rachelw,twitch
 G,ourchickenlife,twitch
