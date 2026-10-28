@@ -5,10 +5,11 @@
     const ChannelList = root.ChannelList || (typeof require === 'function' ? require('./channel-list.js') : null);
     const ChannelSync = root.ChannelSync || (typeof require === 'function' ? require('./channel-sync.js') : null);
     const SOURCE_URL = 'https://skknower.com/user/ctvhiki49713';
+    const CURRENT_API_URL = 'https://skknower.com/api/userlive/ctvhiki49713';
     const API_URL = 'https://live.sk-knower.com/skgamerversion_api.php?page=ctvhiki49713';
-    const FETCH_URLS = Object.freeze([
-        'https://young-cloud-e59f.chicktv001.workers.dev/?quest=' + encodeURIComponent(API_URL),
-        'https://wispy-sound-ef1a.for-api.workers.dev/?quest=' + encodeURIComponent(API_URL)
+    const PROXIES = Object.freeze([
+        'https://young-cloud-e59f.chicktv001.workers.dev/?quest=',
+        'https://wispy-sound-ef1a.for-api.workers.dev/?quest='
     ]);
     const MAX_BYTES = 1024 * 1024;
     const SLUG = /^[a-zA-Z0-9_][a-zA-Z0-9_-]{0,79}$/;
@@ -115,10 +116,12 @@
         } else if (rawPlatform === 'okru') platform = 'ok';
         else if (rawPlatform === 'angelthump') platform = 'at';
         if (platform === 'm3u8') {
-            if (plainId('gosh', details)) return { channel: validated({ name, id: details, platform: 'gosh' }) };
+            const goshId = plainId('gosh', details) || officialUrlId('gosh', details) || officialUrlId('gosh', sourceUrl);
+            if (goshId) return { channel: validated({ name, id: goshId, platform: 'gosh' }) };
             for (const value of [details, sourceUrl]) {
                 const url = publicUrl(value);
-                if (url && /\.m3u8$/i.test(url.pathname)) return { channel: validated({ name, id: value, platform: 'm3u8' }) };
+                // Gosh playback links expire. Only the account identity belongs in a saved list.
+                if (url && !/(?:^|\.)gosh\d*\.app$/i.test(url.hostname) && /\.m3u8$/i.test(url.pathname)) return { channel: validated({ name, id: value, platform: 'm3u8' }) };
             }
             return { reason: 'unmappable_hls' };
         }
@@ -131,15 +134,29 @@
         return { channel: validated({ name, id, platform }) };
     }
 
+    function currentRow(item) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+        return {
+            displayname: item.name,
+            details: item.details,
+            platform: item.platform,
+            url: typeof item.embed === 'string' && item.embed.trim() ? item.embed : typeof item.play?.url === 'string' ? item.play.url : ''
+        };
+    }
+
     function parse(payload) {
         dependencies();
-        if (!payload || typeof payload !== 'object' || Array.isArray(payload) || !Array.isArray(payload.channels) || !payload.channels.length) {
+        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
             throw failure('invalid_data', 'SKLive 未回傳有效的頻道清單，原有頻道沒有更動。');
         }
+        const current = Array.isArray(payload.sources);
+        if (current && payload.id !== 'ctvhiki49713') throw failure('invalid_data', 'SKLive 回傳的來源並非指定頻道，原有頻道沒有更動。');
+        const rows = current ? payload.sources.map(currentRow) : payload.channels;
+        if (!Array.isArray(rows) || !rows.length) throw failure('invalid_data', 'SKLive 未回傳有效的頻道清單，原有頻道沒有更動。');
         const channels = [], duplicates = [], skipped = [];
         const seen = new Map();
         let hidden = 0;
-        payload.channels.forEach((item, offset) => {
+        rows.forEach((item, offset) => {
             const index = offset + 1;
             if (!item || typeof item !== 'object' || Array.isArray(item)) { skipped.push({ index, reason: 'invalid_entry' }); return; }
             const displayName = typeof item.displayname === 'string' ? item.displayname : '';
@@ -155,7 +172,7 @@
             seen.set(key, index);
             channels.push(mapped.channel);
         });
-        return { channels, received: payload.channels.length, hidden, duplicates, skipped, sourceUrl: SOURCE_URL, checkedAt: new Date().toISOString() };
+        return { channels, received: rows.length, hidden, duplicates, skipped, sourceUrl: SOURCE_URL, checkedAt: new Date().toISOString() };
     }
 
     async function readLimited(response, maximum) {
@@ -186,28 +203,58 @@
         if (typeof fetcher !== 'function') throw failure('configuration', '瀏覽器未能讀取 SKLive，請重新整理頁面。');
         const timeoutMs = Number.isFinite(options.timeoutMs) && options.timeoutMs > 0 ? Math.min(options.timeoutMs, 60000) : 20000;
         const maximum = Number.isFinite(options.maxBytes) && options.maxBytes > 0 ? Math.min(options.maxBytes, MAX_BYTES) : MAX_BYTES;
-        let lastError;
-        for (const url of FETCH_URLS) {
-            const controller = new AbortController();
-            let timer;
-            const deadline = new Promise((_resolve, reject) => {
-                timer = setTimeout(() => { controller.abort(); reject(failure('timeout', '讀取 SKLive 逾時，原有頻道沒有更動。')); }, timeoutMs);
-            });
-            try {
-                return await Promise.race([Promise.resolve().then(async () => {
-                    const response = await fetcher(url, { method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', headers: { Accept: 'application/json' }, signal: controller.signal });
-                    if (!response || !response.ok) throw failure('http', 'SKLive 暫時未能讀取，原有頻道沒有更動。');
-                    const text = await readLimited(response, maximum);
-                    let payload;
-                    try { payload = JSON.parse(text); } catch (_) { throw failure('invalid_data', 'SKLive 回傳的資料格式不正確，原有頻道沒有更動。'); }
-                    return parse(payload);
-                }), deadline]);
-            } catch (error) {
-                controller.abort();
-                lastError = error && error.isSKLiveImportError ? error : failure('network', '未能連接 SKLive，原有頻道沒有更動。');
-            } finally { clearTimeout(timer); }
+        async function readSource(apiUrl, current) {
+            let lastError;
+            for (const proxy of PROXIES) {
+                const url = proxy + encodeURIComponent(apiUrl);
+                const controller = new AbortController();
+                let timer;
+                const deadline = new Promise((_resolve, reject) => {
+                    timer = setTimeout(() => { controller.abort(); reject(failure('timeout', '讀取 SKLive 逾時，原有頻道沒有更動。')); }, timeoutMs);
+                });
+                try {
+                    return await Promise.race([Promise.resolve().then(async () => {
+                        const response = await fetcher(url, { method: 'GET', cache: 'no-store', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', headers: { Accept: 'application/json' }, signal: controller.signal });
+                        if (!response || !response.ok) throw failure('http', 'SKLive 暫時未能讀取，原有頻道沒有更動。');
+                        const text = await readLimited(response, maximum);
+                        let payload;
+                        try { payload = JSON.parse(text); } catch (_) { throw failure('invalid_data', 'SKLive 回傳的資料格式不正確，原有頻道沒有更動。'); }
+                        if (!payload || !Array.isArray(current ? payload.sources : payload.channels)) throw failure('invalid_data', 'SKLive 回傳的資料格式不正確，原有頻道沒有更動。');
+                        const report = parse(payload);
+                        // Keep raw rows inside this call only; reports never copy private settings or temporary URLs.
+                        return { report, rows: current ? payload.sources.map(currentRow) : payload.channels,
+                            hiddenRows: current ? [] : payload.channels.filter(item => item && typeof item.displayname === 'string' && /:hide:/i.test(item.displayname)) };
+                    }), deadline]);
+                } catch (error) {
+                    controller.abort();
+                    lastError = error && error.isSKLiveImportError ? error : failure('network', '未能連接 SKLive，原有頻道沒有更動。');
+                } finally { clearTimeout(timer); }
+            }
+            throw lastError;
         }
-        throw lastError;
+        // The current page owns visible entries. The older API is read solely to
+        // retain explicitly hidden entries, without resurrecting stale visible rows.
+        const [current, legacy] = await Promise.allSettled([
+            readSource(CURRENT_API_URL, true), readSource(API_URL, false)
+        ]);
+        if (current.status === 'rejected' && legacy.status === 'rejected') throw current.reason;
+        const sourceWarnings = [];
+        const sourceApis = [];
+        if (current.status === 'rejected') {
+            sourceWarnings.push('目前版 SKLive 清單暫時讀取失敗；只核對舊版來源，未能確認最新可見入口。');
+            sourceApis.push(API_URL);
+            return { ...legacy.value.report, sourceWarnings, sourceApis };
+        }
+        sourceApis.push(CURRENT_API_URL);
+        const report = current.value.report;
+        if (legacy.status === 'rejected') {
+            sourceWarnings.push('舊版隱藏入口暫時讀取失敗；本次只核對目前版可見入口。');
+            return { ...report, sourceWarnings, sourceApis };
+        }
+        sourceApis.push(API_URL);
+        if (legacy.value.report.skipped.length) sourceWarnings.push('舊版來源有未能識別的資料；隱藏入口可能未完成核對。');
+        if (!legacy.value.hiddenRows.length) return { ...report, sourceWarnings, sourceApis };
+        return { ...parse({ channels: [...current.value.rows, ...legacy.value.hiddenRows] }), sourceWarnings, sourceApis };
     }
 
     function compare(existing, incoming) {
@@ -228,7 +275,7 @@
         return { channels, added, alreadyPresent, existingCount: existing.length };
     }
 
-    const api = Object.freeze({ parse, load, compare, sourceUrl: SOURCE_URL, apiUrl: API_URL });
+    const api = Object.freeze({ parse, load, compare, sourceUrl: SOURCE_URL, apiUrl: API_URL, currentApiUrl: CURRENT_API_URL, legacyApiUrl: API_URL });
     root.SKLiveImport = api;
     if (typeof module === 'object' && module.exports) module.exports = api;
 })(globalThis);

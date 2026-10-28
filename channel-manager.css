@@ -120,3 +120,8 @@ fieldset { padding: 0; margin: 0; border: 0; min-width: 0; }
     .row-actions button { padding: 8px 9px; font-size: 12px; }
     .channel-name { font-size: 14px; }
 }
+
+.sklive-audit { margin-top: 14px; font-size: 13px; }
+.sklive-audit ul { margin: 10px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
+.sklive-audit li + li { margin-top: 7px; }
+#sklive-skipped:empty { display: none; }

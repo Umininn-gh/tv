@@ -231,8 +231,9 @@
         const proxyUrl = 'https://gosh.chicktv02.workers.dev/?channelId=' + encodeURIComponent(slug);
         const liveResponse = await request(ctx, proxyUrl, { direct: true });
         const liveData = usable(liveResponse) && json(liveResponse.text);
-        const validLive = liveData && !liveData.error && !liveData.errors && liveData.success !== false && typeof liveData.isLive === 'boolean' && (!liveData.channelId || String(liveData.channelId).toLowerCase() === slug);
-        events.push(evidence(proxyUrl, liveResponse, validLive ? '已取得直播狀態輔助資料；沒有保存播放網址。' : '直播狀態輔助服務暫未能確認。', 'Gosh 直播狀態輔助'));
+        const failedStatus = liveData && [liveData.status, liveData.statusCode].some(value => Number(value) >= 400 || /^(?:error|failed|failure)$/i.test(String(value)));
+        const validLive = liveData && !failedStatus && !liveData.error && !liveData.errors && liveData.success !== false && typeof liveData.isLive === 'boolean' && (!liveData.channelId || String(liveData.channelId).toLowerCase() === slug);
+        events.push(evidence(proxyUrl, liveResponse, validLive ? '已取得直播狀態輔助資料；沒有保存播放網址。' : failedStatus ? '輔助服務回報上游錯誤，不能據此判定離線。' : '直播狀態輔助服務暫未能確認。', 'Gosh 直播狀態輔助'));
         const identity = accountId(person.identifier && typeof person.identifier === 'object' ? person.identifier.value : person.identifier);
         const extra = identity ? { accountId: identity } : undefined;
         if (validLive) return record(liveData.isLive ? 'live' : 'offline', liveData.isLive ? '官方帳戶存在，輔助服務顯示正在直播。' : '官方帳戶存在，目前沒有直播。', events, extra);

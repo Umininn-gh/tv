@@ -16,6 +16,8 @@
     };
     const ids = ['connection-form', 'github-token', 'connect-button', 'disconnect-button', 'connection-state', 'connection-badge', 'repository-owner', 'repository-name', 'manager-status', 'new', 'channel-form', 'channel-fields', 'editor-heading', 'cancel-edit', 'channel-name', 'channel-platform', 'channel-id', 'channel-id-label', 'channel-id-help', 'goodgame-fields', 'channel-gg-username', 'save-channel', 'save-hint', 'refresh-channels', 'channel-count', 'channel-search', 'channel-list', 'empty-list', 'legacy-channels', 'legacy-summary', 'legacy-list', 'sync-sklive', 'sklive-hint', 'sklive-result', 'sklive-summary', 'sklive-additions'];
     const ui = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
+    ui['sklive-entries'] = document.getElementById('sklive-entries');
+    ui['sklive-skipped'] = document.getElementById('sklive-skipped');
     const views = {
         manage: ['掛台管理', '查看及修改已掛台的名稱、平台與入口。'],
         new: ['加台', '手動新增直播入口，加入所有人共用的清單。'],
@@ -430,15 +432,54 @@
         return { ok: await save({ action: 'delete', previous: current }, false) };
     }
 
-    function showSKLiveResult(report, additions, saved) {
+    function skliveSourceWarnings(report) {
+        return (Array.isArray(report.sourceWarnings) ? report.sourceWarnings : []).filter(value => typeof value === 'string' && value.trim()).slice(0, 4);
+    }
+
+    function showSKLiveResult(report, additions, saved, currentChannels = []) {
         ui['sklive-result'].hidden = false;
         const skipped = report.skipped.length;
         const duplicates = report.duplicates.length;
+        const sourceWarnings = skliveSourceWarnings(report);
+        const current = new Map(currentChannels.map(channel => [ChannelList.channelKey(channel), channel]));
+        const added = new Set(additions.map(ChannelList.channelKey));
+        const included = report.channels.filter(channel => current.has(ChannelList.channelKey(channel))).length;
+        const checkedAt = typeof report.checkedAt === 'string' && Number.isFinite(Date.parse(report.checkedAt))
+            ? new Date(report.checkedAt).toLocaleString('zh-HK', { timeZone: 'Asia/Hong_Kong', hour12: false }) + '（香港時間）' : '未提供';
+        const coverage = !report.channels.length ? ' 沒有可識別的入口，清單沒有更動。'
+            : additions.length ? saved ? ' 已補回 ' + additions.length + ' 台；來源的 ' + included + ' / ' + report.channels.length + ' 個入口現已在本站。'
+                : ' 本站已有 ' + included + ' 個入口，另缺 ' + additions.length + ' 台（尚未儲存）。'
+                : included !== report.channels.length ? ' 本站只確認 ' + included + ' / ' + report.channels.length + ' 個入口，請重新核對。'
+                    : sourceWarnings.length ? ' 本次只確認成功讀取的 ' + included + ' 個入口，部分來源未完成核對。'
+                    : skipped ? ' 已識別的 ' + included + ' 個入口均已在本站；未識別項目未加入。'
+                        : ' 已核對 ' + included + ' 個入口，均已在本站；沒有新增或刪除。';
         ui['sklive-summary'].textContent = '來源共 ' + report.received + ' 筆（' + report.hidden + ' 筆標記隱藏），識別到 ' + report.channels.length + ' 個不同入口。' +
             (duplicates ? ' 合併 ' + duplicates + ' 筆重複。' : '') +
             (skipped ? ' ' + skipped + ' 筆未能識別，沒有自動加入。' : '') +
-            (additions.length ? (saved ? ' 已補回 ' : ' 缺少 ') + additions.length + ' 台：' : !report.channels.length ? ' 沒有可識別的入口，清單沒有更動。' : skipped ? ' 已識別的入口均已包括；未識別項目未加入。' : ' 本站已全部包括，沒有漏台。');
+            coverage + (sourceWarnings.length ? ' 來源核對未完成：' + sourceWarnings.join('；') + '。' : '') +
+            ' 核對時間：' + checkedAt + '。已在本站只代表清單已有入口，不代表正在直播；主頁看不到時，可先關閉「隱藏離線」核對。';
         ui['sklive-additions'].replaceChildren(...additions.map(channel => make('li', '', channel.name + ' · ' + (PLATFORMS[channel.platform]?.label || channel.platform) + ' · ' + channel.id)));
+        if (ui['sklive-entries']) ui['sklive-entries'].replaceChildren(...report.channels.map(channel => {
+            const key = ChannelList.channelKey(channel);
+            const existing = current.get(key);
+            const status = saved && added.has(key) && existing ? '已補回' : existing ? '已在本站' : '未加入（漏台）';
+            const localName = existing && existing.name !== channel.name ? '（本站名稱：' + existing.name + '）' : '';
+            return make('li', 'sklive-entry', status + ' · ' + channel.name + ' · ' + (PLATFORMS[channel.platform]?.label || channel.platform) + ' · ' + channel.id + localName);
+        }));
+        if (ui['sklive-skipped']) {
+            const reasons = {
+                invalid_entry: '資料不是有效的頻道項目', missing_name: '缺少台名', ambiguous_platform: '平台標記無法判定',
+                unsupported_platform: '本站尚未支援此平台', unmappable_hls: '沒有可保存的固定直播入口',
+                conflicting_identity: '平台 ID 與網址不一致', unmappable_identity: '無法辨識頻道 ID', invalid_public_fields: '頻道欄位不符合共用清單格式'
+            };
+            ui['sklive-skipped'].replaceChildren(...report.skipped.map((item, offset) => {
+                const index = Number.isInteger(item.index) && item.index > 0 ? item.index : offset + 1;
+                const name = typeof item.name === 'string' && item.name.trim() ? item.name : '未命名';
+                const platform = typeof item.platform === 'string' && item.platform ? ' · ' + (PLATFORMS[item.platform]?.label || item.platform) : '';
+                return make('li', '', '第 ' + index + ' 筆 · ' + name + platform + '：' + (reasons[item.reason] || '未能確認可用的公開入口，請人工核對'));
+            }));
+            ui['sklive-skipped'].hidden = !skipped;
+        }
     }
 
     async function syncSKLive() {
@@ -471,13 +512,16 @@
             if (writable && additions.length) {
                 try { published = ChannelList.publishSharedSnapshot(localStorage, result.raw, before && before.raw, [result.baseRaw]) !== false; } catch (_) { published = false; }
             }
-            showSKLiveResult(report, additions, writable);
+            showSKLiveResult(report, additions, writable, result.channels);
             const skipped = report.skipped.length;
+            const sourceWarnings = skliveSourceWarnings(report);
             const text = additions.length
                 ? writable ? '已補回 ' + additions.length + ' 台，保留所有現有台及名稱。' + (!published ? ' GitHub 已儲存，網站部署完成後會更新。' : '')
                     : '找到 ' + additions.length + ' 個漏台；連線 GitHub 後，再按一次便可補回。'
-                : '已核對 SKLive 的 ' + report.channels.length + ' 個' + (skipped ? '已識別入口，均已包括；沒有修改清單。' : '入口，本站全部已包括；沒有修改清單。');
-            message(text + (skipped ? ' 另有 ' + skipped + ' 筆未能識別，詳見核對結果。' : ''), skipped || !published || (!writable && additions.length) ? 'warning' : 'success');
+                : sourceWarnings.length ? '已核對本次成功讀取的 ' + report.channels.length + ' 個入口；部分來源未完成核對，不能確認全部台已包括。沒有修改清單。'
+                    : '已核對 SKLive 的 ' + report.channels.length + ' 個' + (skipped ? '已識別入口，均已包括；沒有修改清單。' : '入口，本站全部已包括；沒有修改清單。');
+            message(text + (skipped ? ' 另有 ' + skipped + ' 筆未能識別，詳見核對結果。' : '') +
+                (sourceWarnings.length ? ' ' + sourceWarnings.join('；') : ''), skipped || sourceWarnings.length || !published || (!writable && additions.length) ? 'warning' : 'success');
         } catch (error) {
             if (authGeneration !== state.authGeneration) return;
             if (stage === 'source') message('暫時讀不到有效的 SKLive 清單；沒有新增或刪除任何台，請稍後再試。', 'error');

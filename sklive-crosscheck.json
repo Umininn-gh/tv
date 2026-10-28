@@ -1,276 +1,153 @@
 {
-  "checkedOn": "2026-10-16",
-  "timezone": "Asia/Hong_Kong",
-  "checkedAt": "2026-10-15T20:43:24.265Z",
+  "checkedAt": "2026-10-28T20:16:03.922Z",
   "sourceUrl": "https://skknower.com/user/ctvhiki49713",
-  "sourceApi": "https://live.sk-knower.com/skgamerversion_api.php?page=ctvhiki49713",
-  "website": "https://umininn-gh.github.io/tv/",
-  "summary": {
-    "sourceRecords": 19,
-    "hiddenSourceRecords": 3,
-    "distinctSourceChannels": 19,
-    "websiteChannels": 51,
-    "alreadyIncluded": 19,
-    "missing": 0,
-    "unrecognized": 0,
-    "duplicateSourceRecords": 0
-  },
-  "action": "no-change",
-  "notes": [
-    "來源標記隱藏的入口也逐一比對；沒有套用來源的隱藏狀態到本站。",
-    "同一平台和帳號視為同一台，保留本站的名稱和排序。",
-    "這是核查當時的來源快照，將來可在頻道管理重新按鍵核對。",
-    "自動判斷永久失效及刪台已擱置；此工具只補漏，不會刪台。"
+  "sourceApis": [
+    "https://skknower.com/api/userlive/ctvhiki49713",
+    "https://live.sk-knower.com/skgamerversion_api.php?page=ctvhiki49713"
   ],
+  "sourceWarnings": [],
+  "sourceCount": 19,
+  "visibleSourceCount": 16,
+  "hiddenSourceCount": 3,
+  "recognized": 19,
+  "websiteCount": 51,
+  "missing": [],
+  "added": [],
+  "skipped": [],
+  "duplicates": [],
   "entries": [
     {
-      "source": {
-        "name": "友寶",
-        "id": "yaubotai",
-        "platform": "kick"
-      },
-      "websiteMatch": {
-        "name": "友",
-        "id": "yaubotai",
-        "platform": "kick"
-      },
-      "action": "already-included"
+      "sourceName": "友寶G",
+      "websiteName": "友寶G",
+      "platform": "gosh",
+      "id": "yaubotai01",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "友寶2",
-        "id": "yaubotaibackup",
-        "platform": "kick"
-      },
-      "websiteMatch": {
-        "name": "友2",
-        "id": "yaubotaibackup",
-        "platform": "kick"
-      },
-      "action": "already-included"
+      "sourceName": "哥普",
+      "websiteName": "哥普",
+      "platform": "twitch",
+      "id": "zero_cobra",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "友寶G",
-        "id": "yaubotai01",
-        "platform": "gosh"
-      },
-      "websiteMatch": {
-        "name": "友寶G",
-        "id": "yaubotai01",
-        "platform": "gosh"
-      },
-      "action": "already-included"
+      "sourceName": "哥2",
+      "websiteName": "哥2",
+      "platform": "gosh",
+      "id": "godzilla_2027",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "哥普",
-        "id": "zero_cobra",
-        "platform": "twitch"
-      },
-      "websiteMatch": {
-        "name": "哥普",
-        "id": "zero_cobra",
-        "platform": "twitch"
-      },
-      "action": "already-included"
+      "sourceName": "雀",
+      "websiteName": "雀",
+      "platform": "kick",
+      "id": "jeukpo",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "哥2",
-        "id": "godzilla_2027",
-        "platform": "gosh"
-      },
-      "websiteMatch": {
-        "name": "哥2",
-        "id": "godzilla_2027",
-        "platform": "gosh"
-      },
-      "action": "already-included"
+      "sourceName": "西野",
+      "websiteName": "西野",
+      "platform": "kick",
+      "id": "nanase-maru525",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "雀",
-        "id": "jeukpo",
-        "platform": "kick"
-      },
-      "websiteMatch": {
-        "name": "雀",
-        "id": "jeukpo",
-        "platform": "kick"
-      },
-      "action": "already-included"
+      "sourceName": "WC",
+      "websiteName": "WC",
+      "platform": "gosh",
+      "id": "no25no2501",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "西野",
-        "id": "nanase-maru525",
-        "platform": "kick"
-      },
-      "websiteMatch": {
-        "name": "西野",
-        "id": "nanase-maru525",
-        "platform": "kick"
-      },
-      "action": "already-included"
+      "sourceName": "ATV",
+      "websiteName": "ATV",
+      "platform": "kick",
+      "id": "collartv",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "WC",
-        "id": "no25no2501",
-        "platform": "gosh"
-      },
-      "websiteMatch": {
-        "name": "WC",
-        "id": "no25no2501",
-        "platform": "gosh"
-      },
-      "action": "already-included"
+      "sourceName": "汁仔",
+      "websiteName": "汁仔",
+      "platform": "kick",
+      "id": "whw9457",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "ATV",
-        "id": "collartv",
-        "platform": "kick"
-      },
-      "websiteMatch": {
-        "name": "ATV",
-        "id": "collartv",
-        "platform": "kick"
-      },
-      "action": "already-included"
+      "sourceName": "然",
+      "websiteName": "然",
+      "platform": "kick",
+      "id": "yinlove",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "汁仔",
-        "id": "whw9457",
-        "platform": "kick"
-      },
-      "websiteMatch": {
-        "name": "汁仔",
-        "id": "whw9457",
-        "platform": "kick"
-      },
-      "action": "already-included"
+      "sourceName": "羅拔",
+      "websiteName": "羅拔",
+      "platform": "kick",
+      "id": "baggio1967",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "白汁",
-        "id": "10268974521971",
-        "platform": "ok"
-      },
-      "websiteMatch": {
-        "name": "w",
-        "id": "10268974521971",
-        "platform": "ok"
-      },
-      "action": "already-included"
+      "sourceName": "火",
+      "websiteName": "火",
+      "platform": "kick",
+      "id": "falconjurer",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "然",
-        "id": "yinlove",
-        "platform": "kick"
-      },
-      "websiteMatch": {
-        "name": "然",
-        "id": "yinlove",
-        "platform": "kick"
-      },
-      "action": "already-included"
+      "sourceName": "金剛",
+      "websiteName": "金剛",
+      "platform": "gosh",
+      "id": "kingkong_tv",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "羅拔",
-        "id": "baggio1967",
-        "platform": "kick"
-      },
-      "websiteMatch": {
-        "name": "羅拔",
-        "id": "baggio1967",
-        "platform": "kick"
-      },
-      "action": "already-included"
+      "sourceName": "美1",
+      "websiteName": "美1",
+      "platform": "gosh",
+      "id": "meidingdang",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "火",
-        "id": "falconjurer",
-        "platform": "kick"
-      },
-      "websiteMatch": {
-        "name": "火",
-        "id": "falconjurer",
-        "platform": "kick"
-      },
-      "action": "already-included"
+      "sourceName": "美2",
+      "websiteName": "美2",
+      "platform": "gosh",
+      "id": "meidingdang0",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "金剛",
-        "id": "kingkong_tv",
-        "platform": "gosh"
-      },
-      "websiteMatch": {
-        "name": "金剛",
-        "id": "kingkong_tv",
-        "platform": "gosh"
-      },
-      "action": "already-included"
+      "sourceName": "有片",
+      "websiteName": "有片",
+      "platform": "gosh",
+      "id": "fish3345678",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "美1",
-        "id": "meidingdang",
-        "platform": "gosh"
-      },
-      "websiteMatch": {
-        "name": "美1",
-        "id": "meidingdang",
-        "platform": "gosh"
-      },
-      "action": "already-included"
+      "sourceName": "KA",
+      "websiteName": "KA",
+      "platform": "gosh",
+      "id": "kinganime",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "美2",
-        "id": "meidingdang0",
-        "platform": "gosh"
-      },
-      "websiteMatch": {
-        "name": "美2",
-        "id": "meidingdang0",
-        "platform": "gosh"
-      },
-      "action": "already-included"
+      "sourceName": "友寶",
+      "websiteName": "友",
+      "platform": "kick",
+      "id": "yaubotai",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "有片",
-        "id": "fish3345678",
-        "platform": "gosh"
-      },
-      "websiteMatch": {
-        "name": "有片",
-        "id": "fish3345678",
-        "platform": "gosh"
-      },
-      "action": "already-included"
+      "sourceName": "友寶2",
+      "websiteName": "友2",
+      "platform": "kick",
+      "id": "yaubotaibackup",
+      "status": "already-present"
     },
     {
-      "source": {
-        "name": "KA",
-        "id": "kinganime",
-        "platform": "gosh"
-      },
-      "websiteMatch": {
-        "name": "KA",
-        "id": "kinganime",
-        "platform": "gosh"
-      },
-      "action": "already-included"
+      "sourceName": "白汁",
+      "websiteName": "w",
+      "platform": "ok",
+      "id": "10268974521971",
+      "status": "already-present"
     }
-  ],
-  "skipped": [],
-  "duplicates": []
+  ]
 }

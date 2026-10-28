@@ -207,16 +207,12 @@ const PLATFORMS = {
     icon: 'Ⓖ',
     type: 'hls',
     status: async (ch) => {
-        try {
-            const data = await getGoshMetadata(ch);
-            return data.isLive === true ? 'live' : 'not-live';
-        } catch (e) {
-            console.warn('[Gosh status error]', e);
-            throw e;
-        }
+        const data = await getGoshMetadata(ch);
+        return data.isLive ? 'live' : 'not-live';
     },
     getStreamUrl: async (ch) => {
         const data = await getGoshMetadata(ch);
+        if (!data.isLive) throw new Error('主播目前未開播');
         return data.m3u8Url;
     },
     idPlaceholder: 'Gosh 頻道 ID (例: meidingdang0)'
@@ -657,12 +653,82 @@ const HLS_CONFIG = {
 };
 
 function getGoshMetadata(channel) {
-    return goshMetadataRequests.run(channel.id, () => StreamPerformance.withRequestTimeout(async signal => {
-        const proxy = getNextGoshProxy();
-        const response = await fetch(`${proxy}/?channelId=${encodeURIComponent(channel.id)}`, { signal });
-        if (!response.ok) throw new Error('Gosh channel unavailable');
-        return response.json();
-    }));
+    const id = typeof channel?.id === 'string' ? channel.id.trim().toLowerCase() : '';
+    const unavailable = () => new Error('Gosh 直播資料暫時未能取得');
+    if (!/^[a-z0-9_][a-z0-9_-]{0,79}$/.test(id)) return Promise.reject(unavailable());
+
+    function validated(data) {
+        if (!data || typeof data !== 'object' || Array.isArray(data) ||
+            typeof data.isLive !== 'boolean' || data.error || data.errors || data.success === false) throw unavailable();
+        for (const key of ['status', 'statusCode', 'code']) {
+            const value = data[key];
+            if (value !== undefined && value !== null &&
+                (Number(value) >= 400 || /(?:error|failed|forbidden|unauthori[sz]ed)/i.test(String(value)))) throw unavailable();
+        }
+        const identity = data.channelId ?? data.cid;
+        if (identity !== undefined && String(identity).toLowerCase() !== id) throw unavailable();
+        if (!data.isLive) return { isLive: false, m3u8Url: '' };
+        if (typeof data.m3u8Url !== 'string' || data.m3u8Url.length > 8192) throw unavailable();
+        let url;
+        try { url = new URL(data.m3u8Url); } catch (_) { throw unavailable(); }
+        const host = url.hostname;
+        if (url.protocol !== 'https:' || url.username || url.password || url.port || !/\.m3u8$/i.test(url.pathname) ||
+            !host.includes('.') || host.startsWith('[') || /(?:^|\.)(?:localhost|local|internal|test|invalid)$/.test(host)) throw unavailable();
+        if (/^\d+(?:\.\d+){3}$/.test(host)) {
+            const [a, b] = host.split('.').map(Number);
+            if (a === 0 || a === 10 || a === 127 || a >= 224 || (a === 169 && b === 254) ||
+                (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+                (a === 100 && b >= 64 && b <= 127) || (a === 198 && (b === 18 || b === 19))) throw unavailable();
+        }
+        return { isLive: true, m3u8Url: url.href };
+    }
+
+    async function readMetadata(response) {
+        const maximum = 64 * 1024;
+        if (!response || !response.ok || Number(response.headers?.get('content-length')) > maximum) throw unavailable();
+        let body = '';
+        if (response.body && typeof response.body.getReader === 'function') {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8', { fatal: true });
+            let bytes = 0;
+            try {
+                while (true) {
+                    const part = await reader.read();
+                    if (part.done) break;
+                    bytes += part.value.byteLength;
+                    if (bytes > maximum) { reader.cancel().catch(() => {}); throw unavailable(); }
+                    body += decoder.decode(part.value, { stream: true });
+                }
+                body += decoder.decode();
+            } finally { try { reader.releaseLock(); } catch (_) {} }
+        } else {
+            body = await response.text();
+            if (new TextEncoder().encode(body).byteLength > maximum) throw unavailable();
+        }
+        let data;
+        try { data = JSON.parse(body); } catch (_) { throw unavailable(); }
+        return validated(data);
+    }
+
+    return goshMetadataRequests.run(id, async () => {
+        const first = getNextGoshProxy();
+        const workers = [first, ...GOSH_PROXY_LIST.filter(proxy => proxy !== first)].slice(0, 2);
+        const metadataUrl = 'https://skknower.com/api/userlive/gosh?cid=' + encodeURIComponent(id);
+        // Only public channel metadata goes to these fixed proxies. The returned
+        // temporary playback URL stays in memory and is fetched directly by HLS.
+        const urls = PROXY_LIST.slice(0, 2).map(proxy => proxy + '/?quest=' + encodeURIComponent(metadataUrl)).concat(
+            workers.map(proxy => proxy + '/?channelId=' + encodeURIComponent(id)));
+        for (const url of urls) {
+            try {
+                return await StreamPerformance.withRequestTimeout(async signal => {
+                    const response = await fetch(url, { method: 'GET', credentials: 'omit', cache: 'no-store',
+                        redirect: 'error', referrerPolicy: 'no-referrer', headers: { Accept: 'application/json' }, signal });
+                    return readMetadata(response);
+                }, { timeoutMs: 4500 });
+            } catch (_) { /* A transport or provider error is not an offline finding. */ }
+        }
+        throw unavailable();
+    });
 }
 
 function preparePlayerPresentationReplace(entry, current) {
