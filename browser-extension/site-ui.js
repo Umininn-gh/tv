@@ -861,16 +861,24 @@
             if (automatic) await layoutCompletion;
             if (disposed || generation !== recoveryStartGeneration) return;
             const ticket = layoutTicket, epoch = layoutUserEpoch;
-            await afterAudioFocus(() => {
-                if (disposed || generation !== recoveryStartGeneration) return;
-                return recoveryFlow.run({ reason });
-            }, automatic);
-            if (automatic && !disposed && ticket !== null && ticket === layoutTicket && epoch === layoutUserEpoch)
-                await layoutAudioFlow?.restore(ticket);
-            if (!disposed && generation === recoveryStartGeneration) automaticRecoveryReason = null;
+            try {
+                await afterAudioFocus(() => {
+                    if (disposed || generation !== recoveryStartGeneration) return;
+                    return recoveryFlow.run({ reason });
+                }, automatic);
+                if (automatic && !disposed && ticket !== null && ticket === layoutTicket && epoch === layoutUserEpoch)
+                    await layoutAudioFlow?.restore(ticket);
+                if (!disposed && generation === recoveryStartGeneration) automaticRecoveryReason = null;
+            } finally {
+                // Readiness finishes before the recovery flow consumes this
+                // cohort. Release it only after its own run is done, and never
+                // clear the cohort belonging to a newer recovery.
+                if (generation === recoveryStartGeneration) preparedCohort.clear();
+            }
         }
         function cancelPendingRecovery() {
             recoveryStartGeneration++;
+            preparedCohort.clear();
             if (watchStartTimer !== null) win.clearTimeout(watchStartTimer);
             watchStartTimer = null;
         }
@@ -959,6 +967,11 @@
             entry.row?.remove();
             entries.delete(entry.element);
             guardedEntries.delete(entry);
+            for (const intent of new Set([audioFocusIntent, ...layoutFocusCandidates.values()])) intent?.guardWrites?.delete(entry);
+            // A connected wrapper may be getting a fresh iframe/controller.
+            // Keep that slot in the current recovery while retiring old nodes.
+            if (!entry.element.isConnected || entry.element.parentElement !== doc.getElementById('multi-stream-container'))
+                preparedCohort.delete(entry.element);
         }
         function scan() {
             scanTimer = null;

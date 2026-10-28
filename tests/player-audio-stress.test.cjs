@@ -207,6 +207,7 @@ function hiddenControllerFixture(fakeClock, { populated = true, observable = fal
     Object.assign(view, { innerWidth: 1280, innerHeight: 720, getComputedStyle: () => ({ display: 'block', visibility: 'visible', opacity: '1' }) });
     if (observable) view.MutationObserver = class {
         observe(target) { observed.add(target); }
+        takeRecords() { return []; }
         disconnect() { observed.clear(); }
     };
     const media = new EventTarget();

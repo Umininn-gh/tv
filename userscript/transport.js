@@ -62,8 +62,8 @@
             if (!container || !container.isConnected) return [];
             return Array.from(container.children).map(element => element.tagName === 'IFRAME' ? element : element.querySelector('iframe')).filter(frame => frame?.isConnected);
         }
-        function current(record) {
-            if (!record.frame.isConnected || !frames().includes(record.frame) || record.frame.contentWindow !== record.source) return false;
+        function current(record, cohort = new Set(frames())) {
+            if (!record.frame.isConnected || !cohort.has(record.frame) || record.frame.contentWindow !== record.source) return false;
             const url = playerUrl(record.frame);
             return Boolean(url && url.href === record.href && url.origin === record.origin);
         }
@@ -79,7 +79,9 @@
             record.frame.removeEventListener('load', record.onLoad);
             for (const [id, request] of pending) if (request.record === record) finish(id, fail('STALE_FRAME', '播放器已更換，請重新偵測'));
         }
-        function prune() { for (const record of registry.values()) if (!current(record)) forget(record); }
+        // A batch shares one fresh cohort. Commands and replies still take a
+        // synchronous snapshot, independently of MutationObserver delivery.
+        function prune(cohort = new Set(frames())) { for (const record of registry.values()) if (!current(record, cohort)) forget(record); }
         function clear(code) {
             for (const timer of resumeTimers) win.clearTimeout(timer);
             resumeTimers.clear();
@@ -91,15 +93,16 @@
             const message = event.data;
             if (isEnvelope(config, message, 'frame:ready')) {
                 if (!validFrame(message.frameId) || !validToken(message.token) || !validToken(message.documentId) || !object(message.result) || typeof message.result.ok !== 'boolean') return;
-                const frame = frames().find(value => value.contentWindow === event.source);
+                const cohort = new Set(frames());
+                const frame = [...cohort].find(value => value.contentWindow === event.source);
                 if (!frame) return;
                 const url = playerUrl(frame);
                 if (!url || url.origin !== event.origin) return;
-                prune();
+                prune(cohort);
                 const collision = registry.get(message.frameId);
                 if (collision && collision.frame !== frame) return;
                 const previous = [...registry.values()].find(record => record.frame === frame);
-                if (previous && previous.frameId === message.frameId && previous.token === message.token && previous.documentId === message.documentId && current(previous)) return;
+                if (previous && previous.frameId === message.frameId && previous.token === message.token && previous.documentId === message.documentId && current(previous, cohort)) return;
                 if (previous) forget(previous);
                 if (registry.size >= 128) return;
                 const record = { frame, source: event.source, href: url.href, origin: url.origin, frameId: message.frameId, token: message.token, documentId: message.documentId };
@@ -164,8 +167,9 @@
                 const timer = win.setTimeout(() => {
                     resumeTimers.delete(timer);
                     if (disposed || suspended || !config.isSiteUrl(win.location.href)) return;
-                    prune();
-                    for (const frame of frames().slice(0, 128)) {
+                    const cohort = new Set(frames());
+                    prune(cohort);
+                    for (const frame of [...cohort].slice(0, 128)) {
                         if ([...registry.values()].some(record => record.frame === frame)) continue;
                         const url = playerUrl(frame);
                         if (url) try { frame.contentWindow.postMessage(envelope(config, 'frame:probe'), url.origin); } catch (_) {}
@@ -178,13 +182,50 @@
             if (disposed) return;
             disposed = true;
             clear('DISPOSED');
-            observer?.disconnect();
+            paneObserver?.disconnect();
+            structureObserver?.disconnect();
+            observedPane = null;
+            observedAncestors = [];
             win.removeEventListener('message', onMessage);
             win.removeEventListener('pagehide', onHide);
             win.removeEventListener('pageshow', onShow);
         }
-        const observer = typeof win.MutationObserver === 'function' ? new win.MutationObserver(prune) : null;
-        if (doc.documentElement) observer?.observe(doc.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
+        let observedPane = null, observedAncestors = [];
+        const paneObserver = typeof win.MutationObserver === 'function' ? new win.MutationObserver(onPaneMutation) : null;
+        const structureObserver = typeof win.MutationObserver === 'function' ? new win.MutationObserver(onStructureMutation) : null;
+        function bindObservers() {
+            const candidate = doc.getElementById('multi-stream-container');
+            const pane = candidate?.isConnected ? candidate : null, ancestors = [];
+            for (let ancestor = pane?.parentNode; ancestor; ancestor = ancestor.parentNode) ancestors.push(ancestor);
+            if (pane === observedPane && ancestors.length === observedAncestors.length && ancestors.every((node, index) => node === observedAncestors[index])) return false;
+            paneObserver?.disconnect();
+            structureObserver?.disconnect();
+            observedPane = pane; observedAncestors = ancestors;
+            if (pane) {
+                paneObserver?.observe(pane, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'id'] });
+                // Watch only direct ancestor children: chat decorations elsewhere
+                // cannot trigger a player registry walk. Moving/replacing any
+                // ancestor rebinds this chain, including moves of the same pane.
+                for (const ancestor of ancestors) structureObserver?.observe(ancestor, { childList: true });
+            } else {
+                structureObserver?.observe(doc, { childList: true, subtree: true, attributes: true, attributeFilter: ['id'] });
+            }
+            return true;
+        }
+        function onStructureMutation(records) {
+            if (disposed) return;
+            if (bindObservers() || !records?.length) prune();
+        }
+        function containsFrame(node) { return node?.tagName === 'IFRAME' || Boolean(node?.querySelector?.('iframe')); }
+        function onPaneMutation(records) {
+            if (disposed) return;
+            if (bindObservers() || !records?.length || records.some(record =>
+                record.type === 'attributes' ? record.attributeName === 'src' && record.target?.tagName === 'IFRAME' :
+                record.type === 'childList' && (record.target === observedPane || [...record.addedNodes, ...record.removedNodes].some(containsFrame)))) prune();
+        }
+        // Start in discovery mode even when the container is not present yet.
+        if (!bindObservers() && !observedPane)
+            structureObserver?.observe(doc, { childList: true, subtree: true, attributes: true, attributeFilter: ['id'] });
         win.addEventListener('message', onMessage);
         win.addEventListener('pagehide', onHide);
         win.addEventListener('pageshow', onShow);
@@ -208,8 +249,9 @@
         }
         function announce() {
             if (!controller || !identity) return;
-            // A delayed command reply can describe an older mute setting.
-            // Announcements represent the current controller, not that old reply.
+            // A subscription can precede an unobservable late shadow route or
+            // a delayed command result. Rediscover current media before sending
+            // any parent-facing silence proof, even for a coalesced report.
             try { lastResult = safeResult(controller.getState()); } catch (_) { return; }
             send('frame:ready', { result: lastResult });
         }
@@ -260,9 +302,11 @@
                 return ownController.execute({ ...message.command });
             }).then(result => {
                 if (disposed || suspended || currentGeneration !== generation) return;
-                lastResult = safeResult(result);
-                reply(lastResult);
-                report(lastResult);
+                reply(safeResult(result));
+                // A delayed reply may describe a setting older than the latest
+                // guard notification. Refresh once at this explicit command
+                // boundary instead of publishing that obsolete result.
+                try { report(ownController.getState()); } catch (_) {}
             }, () => {
                 if (!disposed && !suspended && currentGeneration === generation) reply(fail('CONTROL_FAILED', '未能控制此播放器'));
             }).finally(() => { if (currentGeneration === generation) active--; });

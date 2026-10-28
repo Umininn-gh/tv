@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const originalConfig = require('../browser-extension/shared/config.js');
+const { createMediaController } = require('../browser-extension/shared/media-controller.js');
 const { createSiteTransport, createFrameClient } = require('../userscript/transport.js');
 const config = { ...originalConfig, CHANNEL: 'umininn-tv-userscript' };
 const SITE = 'https://umininn-gh.github.io/tv/';
@@ -62,10 +63,30 @@ function fakeWindow(href) {
 function siteFixture() {
     const win = fakeWindow(SITE), frameWindow = fakeWindow(PLAYER);
     const frame = { ...eventTarget(), tagName: 'IFRAME', src: PLAYER, contentWindow: frameWindow, isConnected: true };
-    const container = { isConnected: true, children: [frame] };
-    let mutation;
-    win.MutationObserver = class { constructor(callback) { mutation = callback; } observe() {} disconnect() {} };
-    win.document.getElementById = id => id === 'multi-stream-container' ? container : null;
+    const container = { isConnected: true, children: [frame], parentNode: win.document.documentElement };
+    win.document.documentElement.parentNode = win.document;
+    frame.parentNode = container;
+    let pane = container;
+    const observers = [];
+    win.MutationObserver = class {
+        constructor(callback) { this.callback = callback; this.targets = new Map(); observers.push(this); }
+        observe(target, options) { this.targets.set(target, options); }
+        disconnect() { this.targets.clear(); }
+    };
+    win.document.getElementById = id => id === 'multi-stream-container' ? pane : null;
+    function mutate(records) {
+        for (const observer of observers) {
+            if (!observer.targets.size) continue;
+            if (!records) { observer.callback(); continue; }
+            const matches = records.filter(record => [...observer.targets].some(([target, options]) => {
+                let inside = record.target === target;
+                if (options.subtree) for (let node = record.target?.parentNode; !inside && node; node = node.parentNode) inside = node === target;
+                return inside && (record.type === 'childList' ? options.childList : options.attributes &&
+                    (!options.attributeFilter || options.attributeFilter.includes(record.attributeName)));
+            }));
+            if (matches.length) observer.callback(matches);
+        }
+    }
     const transport = createSiteTransport({ window: win, config });
     function ready(fields = {}, origin = PLAYER_ORIGIN, source = frameWindow) {
         win.emit('message', { source, origin, data: envelope('frame:ready', { frameId: 7, token: TOKEN, documentId: DOCUMENT, result: snapshot(), ...fields }) });
@@ -76,16 +97,16 @@ function siteFixture() {
     function result(request = frameWindow.sent.at(-1).message, fields = {}, origin = PLAYER_ORIGIN, source = frameWindow) {
         win.emit('message', { source, origin, data: envelope('userscript:result', { requestId: request.requestId, sessionId: request.sessionId, sequence: request.sequence, frameId: request.frameId, token: request.token, documentId: request.documentId, result: snapshot(), ...fields }) });
     }
-    return { win, frameWindow, frame, container, transport, ready, command, result, mutate: () => mutation() };
+    return { win, frameWindow, frame, container, transport, ready, command, result, mutate, observers, setPane(value) { pane = value; } };
 }
 function frameFixture(href = PLAYER, embedded = true) {
     const win = fakeWindow(href), parent = fakeWindow(SITE);
     if (embedded) { win.parent = parent; win.top = parent; }
     const calls = [], reports = new Set();
-    let created = 0, twitchCreated = 0, disposed = 0, state = snapshot();
-    const behavior = { execute: () => state };
+    let created = 0, twitchCreated = 0, disposed = 0, stateReads = 0, state = snapshot();
+    const behavior = { execute: () => state, getState: () => state };
     const controller = {
-        getState: () => state,
+        getState() { stateReads++; return behavior.getState(); },
         execute(command) { calls.push(command); return behavior.execute(command); },
         subscribe(callback) { reports.add(callback); callback(state); return () => reports.delete(callback); },
         dispose() { disposed++; }
@@ -102,7 +123,7 @@ function frameFixture(href = PLAYER, embedded = true) {
     }
     function report(value) { state = value; for (const callback of reports) callback(value); }
     return { win, parent, client, controller, behavior, calls, reports, probe, command, report,
-        get created() { return created; }, get twitchCreated() { return twitchCreated; }, get disposed() { return disposed; } };
+        get created() { return created; }, get twitchCreated() { return twitchCreated; }, get disposed() { return disposed; }, get stateReads() { return stateReads; } };
 }
 
 test('site transport routes all four controls through the configured channel and exact iframe origin', async () => {
@@ -277,6 +298,92 @@ test('src navigation, iframe replacement, removal and load invalidate pending ro
     }
 });
 
+test('a multi-player registry validates a mutation batch with one linear cohort walk', () => {
+    const f = siteFixture(); let frameQueries = 0;
+    const frames = Array.from({ length: 24 }, (_, index) => index ?
+        { ...eventTarget(), tagName: 'IFRAME', src: PLAYER, contentWindow: fakeWindow(PLAYER), isConnected: true } : f.frame);
+    f.container.children = frames.map(frame => {
+        const wrapper = { tagName: 'DIV', parentNode: f.container, querySelector(selector) { assert.equal(selector, 'iframe'); frameQueries++; return frame; } };
+        frame.parentNode = wrapper;
+        return wrapper;
+    });
+    frames.forEach((frame, index) => f.ready({ frameId: index + 7 }, PLAYER_ORIGIN, frame.contentWindow));
+    frameQueries = 0;
+    f.mutate([{ type: 'childList', target: f.container, addedNodes: [], removedNodes: [] }]);
+    assert.equal(frameQueries, frames.length, 'batch work grows with the cohort, not cohort times registry size');
+    f.transport.dispose();
+    assert.ok(f.observers.every(observer => observer.targets.size === 0));
+});
+
+test('chat decorations and non-player descendants do not enumerate the player cohort', async () => {
+    const f = siteFixture(); let frameQueries = 0;
+    const wrapper = { tagName: 'DIV', parentNode: f.container, querySelector() { frameQueries++; return f.frame; } };
+    f.frame.parentNode = wrapper; f.container.children = [wrapper]; f.ready(); frameQueries = 0;
+    const chat = { parentNode: f.win.document.documentElement }, decoration = { tagName: 'SPAN', parentNode: wrapper };
+    for (let i = 0; i < 100; i++) {
+        f.mutate([{ type: 'childList', target: chat, addedNodes: [{ tagName: 'SPAN' }], removedNodes: [] }]);
+        f.mutate([{ type: 'childList', target: wrapper, addedNodes: [decoration], removedNodes: [] }]);
+    }
+    // Even a direct sibling replacement on a watched ancestor has no player work.
+    f.mutate([{ type: 'childList', target: f.win.document.documentElement, addedNodes: [chat], removedNodes: [] }]);
+    assert.equal(frameQueries, 0);
+    const response = f.command(); f.result(); assert.equal((await response).ok, true);
+    assert.ok(frameQueries > 0, 'explicit commands and replies still verify a fresh cohort');
+    f.transport.dispose();
+});
+
+test('removing the first nested iframe retires its route and requires the remaining frame to handshake', async () => {
+    const f = siteFixture(), secondWindow = fakeWindow(PLAYER);
+    const second = { ...eventTarget(), tagName: 'IFRAME', src: PLAYER, contentWindow: secondWindow, isConnected: true };
+    let first = f.frame;
+    const wrapper = { tagName: 'DIV', parentNode: f.container, querySelector() { return first; } };
+    f.frame.parentNode = wrapper; second.parentNode = wrapper; f.container.children = [wrapper]; f.ready();
+    const pending = f.command(); first = second;
+    f.mutate([{ type: 'childList', target: wrapper, addedNodes: [], removedNodes: [f.frame] }]);
+    assert.equal((await pending).code, 'STALE_FRAME');
+    assert.equal((await f.command()).code, 'FRAME_UNAVAILABLE');
+    f.ready({}, PLAYER_ORIGIN, secondWindow);
+    const response = f.command();
+    f.result(secondWindow.sent.at(-1).message, {}, PLAYER_ORIGIN, secondWindow);
+    assert.equal((await response).ok, true); f.transport.dispose();
+});
+
+test('container and ancestor replacement rebind scoped observation and retire removed frames', async () => {
+    const f = siteFixture(); f.ready(); const pending = f.command();
+    const root = f.win.document.documentElement, ancestor = { parentNode: root };
+    f.container.parentNode = ancestor;
+    f.mutate([{ type: 'childList', target: root, addedNodes: [ancestor], removedNodes: [f.container] }]);
+    assert.ok(f.observers.some(observer => observer.targets.has(ancestor)), 'moving the same pane refreshes its ancestor chain');
+    const replacement = { isConnected: true, parentNode: root, children: [] };
+    f.setPane(replacement); f.container.isConnected = false;
+    f.mutate([{ type: 'childList', target: root, addedNodes: [replacement], removedNodes: [ancestor] }]);
+    assert.equal((await pending).code, 'STALE_FRAME');
+    assert.ok(f.observers.some(observer => observer.targets.has(replacement)));
+    assert.ok(f.observers.every(observer => !observer.targets.has(f.container) && !observer.targets.has(ancestor)));
+    assert.equal((await f.command()).code, 'FRAME_UNAVAILABLE'); f.transport.dispose();
+});
+
+test('a missing or renamed player pane uses temporary discovery and returns to scoped observation', async () => {
+    const f = siteFixture(), doc = f.win.document;
+    f.ready(); const pending = f.command(); f.setPane(null);
+    f.mutate([{ type: 'attributes', target: f.container, attributeName: 'id' }]);
+    assert.equal((await pending).code, 'STALE_FRAME');
+    assert.ok(f.observers.some(observer => observer.targets.get(doc)?.subtree === true));
+    f.setPane(f.container);
+    f.mutate([{ type: 'attributes', target: f.container, attributeName: 'id' }]);
+    assert.ok(f.observers.some(observer => observer.targets.get(f.container)?.subtree === true));
+    assert.ok(f.observers.every(observer => observer.targets.get(doc)?.subtree !== true), 'broad discovery ends once the pane returns');
+    f.ready(); const response = f.command(); f.result(); assert.equal((await response).ok, true); f.transport.dispose();
+});
+
+test('commands and replies reject src or cohort changes before mutation observers run', async () => {
+    for (const change of [f => { f.frame.src = 'https://player.kick.com/changed'; }, f => { f.container.children = []; }]) {
+        const f = siteFixture(); f.ready(); const pending = f.command(); change(f);
+        f.result(); assert.equal((await pending).code, 'STALE_FRAME');
+        assert.equal((await f.command()).code, 'FRAME_UNAVAILABLE'); f.transport.dispose();
+    }
+});
+
 test('a fresh frame document invalidates prior pending work, and frame ID collisions cannot steal another route', async () => {
     const f = siteFixture(); f.ready(); const old = f.command(); const token = 'e'.repeat(48), documentId = 'f'.repeat(48);
     f.ready({ token, documentId }); assert.equal((await old).code, 'STALE_FRAME'); assert.equal((await f.command()).code, 'FRAME_UNAVAILABLE');
@@ -382,6 +489,63 @@ test('frame preserves media and Twitch controls with sanitized responses and bou
     assert.equal(f.win.timers.size, 1); f.win.advance(99); assert.equal(f.parent.sent.filter(value => value.message.type === 'frame:ready').length, readyCount);
     f.win.advance(1); const latest = f.parent.sent.at(-1).message; assert.equal(latest.type, 'frame:ready'); assert.equal(latest.result.state.volume, 0.9); assert.equal(latest.result.state.secret, undefined); assert.equal(f.win.timers.size, 0);
     f.client.dispose();
+});
+
+test('each coalesced frame announcement reads one fresh state instead of forwarding the last subscription snapshot', async () => {
+    const f = frameFixture(); f.probe(); f.win.advance(100);
+    const initialReads = f.stateReads;
+    for (let i = 0; i < 25; i++) f.report({ ...snapshot(), state: { ...snapshot().state, volume: i / 25 } });
+    const fresh = { ...snapshot(), state: { ...snapshot().state, volume: .73, muted: true, muteGuardActive: true } };
+    f.behavior.getState = () => fresh;
+    f.win.advance(99); assert.equal(f.stateReads, initialReads);
+    f.win.advance(1); assert.equal(f.stateReads, initialReads + 1, 'one coalesced announcement performs one fresh read');
+    assert.deepEqual(f.parent.sent.at(-1).message.result, fresh);
+    f.probe(); assert.equal(f.stateReads, initialReads + 3, 'explicit probing and its announcement both refresh current state');
+    f.command(); await flush(); assert.equal(f.stateReads, initialReads + 4, 'command completion independently refreshes past an obsolete reply');
+    f.win.advance(100); assert.equal(f.stateReads, initialReads + 5, 'its later parent announcement is fresh too');
+    f.client.dispose(); assert.equal(f.win.timers.size, 0);
+});
+
+test('a queued real-controller announcement discovers late shadow audio before repeating an old empty silence proof', async () => {
+    const win = fakeWindow(PLAYER), parent = fakeWindow(SITE);
+    win.parent = parent; win.top = parent;
+    class Node {
+        constructor(tag = 'div') { Object.assign(this, eventTarget()); this.tagName = tag.toUpperCase(); this.children = [];
+            this.parentElement = null; this.isConnected = true; this.hidden = false; }
+        append(node) { node.parentElement = this; this.children.push(node); return node; }
+        getRootNode() { return this.parentElement ? this.parentElement.getRootNode() : this; }
+        querySelectorAll(selector) { const all = this.children.flatMap(node => [node, ...node.querySelectorAll('*')]);
+            return selector === '*' ? all : all.filter(node => ['VIDEO', 'AUDIO'].includes(node.tagName)); }
+        getBoundingClientRect() { return { left: 0, top: 0, width: 640, height: 360 }; }
+    }
+    const html = new Node('html'), host = html.append(new Node());
+    Object.assign(win.document, eventTarget(), { documentElement: html,
+        querySelectorAll(selector) { return selector === '*' ? [html, ...html.querySelectorAll('*')] : html.querySelectorAll(selector); } });
+    win.getComputedStyle = () => ({ display: 'block', visibility: 'visible', opacity: '1' });
+    win.MutationObserver = class { observe() {} disconnect() {} takeRecords() { return []; } };
+    const real = createMediaController({ document: win.document, clock: win });
+    let stateReads = 0;
+    const controller = { ...real, getState() { stateReads++; return real.getState(); } };
+    const client = createFrameClient({ window: win, config, media: { createMediaController: () => controller } });
+    win.emit('message', { source: parent, origin: SITE_ORIGIN, data: envelope('frame:probe') });
+    const identity = parent.sent.at(-1).message;
+    win.emit('message', { source: parent, origin: SITE_ORIGIN, data: envelope('userscript:command', {
+        frameId: identity.frameId, token: identity.token, documentId: identity.documentId,
+        requestId: 'd'.repeat(48) + '_1', sessionId: SESSION, sequence: 1,
+        command: { action: 'setMuted', value: true, guard: true }
+    }) });
+    await flush();
+    assert.equal(parent.sent.findLast(item => item.message.type === 'userscript:result').message.result.state.emptyGuardConfirmed, true);
+    host.shadowRoot = new Node(); host.shadowRoot.tagName = undefined; host.shadowRoot.host = host;
+    const audio = host.shadowRoot.append(new Node('audio')); audio.hidden = true; audio.volume = .6; audio.muted = false;
+    const before = stateReads;
+    // No observed mutation or media event announces the newly attached root.
+    win.advance(100);
+    assert.equal(stateReads, before + 1);
+    assert.equal(audio.muted, true, 'the announcement itself must rediscover and silence the new route');
+    const latest = parent.sent.findLast(item => item.message.type === 'frame:ready').message.result;
+    assert.equal(latest.state.emptyGuardConfirmed, false); assert.equal(latest.state.muted, true);
+    client.dispose(); assert.equal(win.timers.size, 0);
 });
 
 test('frame rejects forged sources, origins, capabilities and malformed commands', async () => {

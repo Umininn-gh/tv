@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.32
+// @version      1.0.33
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -30,7 +30,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.32",
+        userscriptVersion: "1.0.33",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -151,18 +151,7 @@
         const MO = view.MutationObserver || root.MutationObserver;
         const RO = view.ResizeObserver || root.ResizeObserver;
         const mutations = typeof MO === 'function' ? new MO(records => {
-            // Decorative offline banners must not repeatedly revoke a proven
-            // empty guard. New media or opaque player routes revoke it at once.
-            let changed = !records?.length;
-            for (const record of records || []) {
-                if (record.type === 'attributes' && FRAME_ATTRIBUTES.includes(record.attributeName) && isFrame(record.target)) {
-                    const frame = trackFrame(record.target);
-                    if (frame) frame.pending = true;
-                    changed = true;
-                }
-                if ([...(record.addedNodes || []), ...(record.removedNodes || [])].some(node => containsMediaRoute(node))) changed = true;
-            }
-            if (changed) { emptyInventoryVerified = false; guardInventoryVerified = false; }
+            inspectMutations(records, !records?.length);
             scheduleScan();
             notify();
         }) : null;
@@ -180,22 +169,58 @@
             // accessible open root can participate in an observed empty proof.
             return ['OBJECT', 'EMBED'].includes(tag) || tag.includes('-') && !node.shadowRoot;
         };
-        function containsMediaRoute(container, depth = 0) {
+        function containsMediaRoute(container) {
             if (!container) return false;
-            if (depth >= ROOT_DEPTH_LIMIT) return true;
             const routed = node => isMedia(node) || isFrame(node) || isOpaqueRoute(node);
             if (routed(container)) return true;
-            // Even an empty new open root needs observation before its future
-            // media can be covered by the current silence proof.
-            if (container.shadowRoot && (!watchedRoots.has(container.shadowRoot) || containsMediaRoute(container.shadowRoot, depth + 1))) return true;
-            return [...(container.querySelectorAll?.('*') || [])].some(node => routed(node) ||
-                node.shadowRoot && (!watchedRoots.has(node.shadowRoot) || containsMediaRoute(node.shadowRoot, depth + 1)));
+            // Empty roots are structural too: additions need observation and
+            // removals must release the old root and its document references.
+            if (container.shadowRoot) return true;
+            try { return [...(container.querySelectorAll?.('*') || [])].some(node => routed(node) || node.shadowRoot); }
+            catch (_) { return true; }
+        }
+        function invalidateInventory() {
+            emptyInventoryVerified = false;
+            guardInventoryVerified = false;
+        }
+        function hasUnwatchedRoot(node) {
+            for (; node; node = parentOf(node)) {
+                if (node.shadowRoot && !watchedRoots.has(node.shadowRoot)) return true;
+            }
+            return false;
+        }
+        function inspectMutations(records, unknown = false) {
+            let structural = unknown;
+            for (const record of records || []) {
+                if (record.type === 'attributes' && FRAME_ATTRIBUTES.includes(record.attributeName) && isFrame(record.target)) {
+                    const frame = trackFrame(record.target);
+                    if (frame) frame.pending = true;
+                    structural = true;
+                }
+                // attachShadow itself emits no mutation. A later attribute or
+                // child mutation on that host/ancestor path must not reuse an
+                // old empty proof before the new open root is observed.
+                if (hasUnwatchedRoot(record.target) ||
+                    [...(record.addedNodes || []), ...(record.removedNodes || [])].some(node => containsMediaRoute(node))) structural = true;
+            }
+            if (structural) invalidateInventory();
+        }
+        function flushMutations(requireFresh = true, queueRecords = false) {
+            if (!mutations) { if (requireFresh) invalidateInventory(); return false; }
+            // Commands need a synchronous view of pending frame navigation.
+            // A failed tail flush cannot confirm silence after page setters.
+            try {
+                if (typeof mutations.takeRecords !== 'function') { if (requireFresh) invalidateInventory(); return false; }
+                const records = mutations.takeRecords();
+                inspectMutations(records);
+                if (queueRecords && records.length) scheduleScan();
+                return true;
+            } catch (_) { if (requireFresh) invalidateInventory(); return false; }
         }
         function invalidateFrame(frame, pending) {
             if (disposed) return;
             frame.pending = pending;
-            emptyInventoryVerified = false;
-            guardInventoryVerified = false;
+            invalidateInventory();
             scheduleScan();
             notify();
         }
@@ -419,12 +444,15 @@
             // These events cover deferred platform sound restoration, ad/media
             // swaps and a new source without any permanent polling timer.
             if (!['volumechange', 'play', 'playing', 'loadedmetadata', 'canplay', 'emptied'].includes(event.type)) return;
+            // Coalesce platform volume fades and playback bursts. Every repair
+            // still performs full discovery, including late shadow routes. A
+            // control read or frame announcement can cover this pending work
+            // sooner without exposing an artificial unknown interval.
             if (guardTimer !== null) return;
             guardTimer = later(() => {
                 guardTimer = null;
                 if (!muteGuard || disposed) return;
                 scan();
-                notify();
             }, SCAN_DELAY);
         }
         function notify() {
@@ -517,19 +545,33 @@
         }
         function scan() {
             if (disposed || scanning) return;
+            if (scanTimer !== null) clear(scanTimer);
+            scanTimer = null;
+            if (guardTimer !== null) clear(guardTimer);
+            guardTimer = null;
+            flushMutations();
+            invalidateInventory();
             scanning = true;
-            emptyInventoryVerified = false;
-            guardInventoryVerified = false;
             try {
                 const { roots, candidates, guarded, embedded } = collect();
                 observe(roots, guarded);
+                observeGuard(guarded);
                 const ranked = candidates.map(node => ({ node, area: visibleArea(node), video: String(node.tagName).toUpperCase() === 'VIDEO' }))
                     .filter(item => item.area > 0).sort((a, b) => Number(b.video) - Number(a.video) || b.area - a.area || Number(b.node === media) - Number(a.node === media));
                 bind(ranked[0]?.node || null);
-                observeGuard(guarded);
                 repairGuard();
                 guardInventoryVerified = Boolean(mutations && !embedded.some(connected) && [...roots].every(container => watchedRoots.has(container)));
                 emptyInventoryVerified = guardInventoryVerified && !guarded.some(connected);
+                // Page handlers invoked by a media setter can synchronously
+                // add routes while applying the guard. Never publish a proof
+                // from the inventory that preceded those queued mutations.
+                if (!flushMutations(false, true)) {
+                    // Without a working synchronous flush, setter-side page
+                    // handlers may have added an unknown route since collect.
+                    // Withdraw proof without starting a permanent retry loop.
+                    guardInventoryVerified = false;
+                    emptyInventoryVerified = false;
+                }
             } finally { scanning = false; }
             notify();
         }
@@ -537,6 +579,8 @@
             if (disposed || scanTimer !== null) return;
             scanTimer = later(() => { scanTimer = null; scan(); }, SCAN_DELAY);
         }
+        // Every DOM/layout event retains a full discovery opportunity: a plain
+        // host may gain a shadow player without any mutation of that host.
         function getState() { scan(); return currentResult(); }
         async function execute(command) {
             if (disposed) return currentResult();
@@ -633,6 +677,9 @@
             sizes?.disconnect();
             for (const frame of childFrames.values()) removeFrame(frame);
             clearMuteGuard();
+            observedRoots.clear();
+            watchedRoots.clear();
+            observedMedia.clear();
             scope.removeEventListener?.('pointerdown', onNativeIntent, true);
             scope.removeEventListener?.('keydown', onNativeIntent, true);
             view.removeEventListener?.('resize', scheduleScan);
@@ -3260,16 +3307,24 @@
             if (automatic) await layoutCompletion;
             if (disposed || generation !== recoveryStartGeneration) return;
             const ticket = layoutTicket, epoch = layoutUserEpoch;
-            await afterAudioFocus(() => {
-                if (disposed || generation !== recoveryStartGeneration) return;
-                return recoveryFlow.run({ reason });
-            }, automatic);
-            if (automatic && !disposed && ticket !== null && ticket === layoutTicket && epoch === layoutUserEpoch)
-                await layoutAudioFlow?.restore(ticket);
-            if (!disposed && generation === recoveryStartGeneration) automaticRecoveryReason = null;
+            try {
+                await afterAudioFocus(() => {
+                    if (disposed || generation !== recoveryStartGeneration) return;
+                    return recoveryFlow.run({ reason });
+                }, automatic);
+                if (automatic && !disposed && ticket !== null && ticket === layoutTicket && epoch === layoutUserEpoch)
+                    await layoutAudioFlow?.restore(ticket);
+                if (!disposed && generation === recoveryStartGeneration) automaticRecoveryReason = null;
+            } finally {
+                // Readiness finishes before the recovery flow consumes this
+                // cohort. Release it only after its own run is done, and never
+                // clear the cohort belonging to a newer recovery.
+                if (generation === recoveryStartGeneration) preparedCohort.clear();
+            }
         }
         function cancelPendingRecovery() {
             recoveryStartGeneration++;
+            preparedCohort.clear();
             if (watchStartTimer !== null) win.clearTimeout(watchStartTimer);
             watchStartTimer = null;
         }
@@ -3358,6 +3413,11 @@
             entry.row?.remove();
             entries.delete(entry.element);
             guardedEntries.delete(entry);
+            for (const intent of new Set([audioFocusIntent, ...layoutFocusCandidates.values()])) intent?.guardWrites?.delete(entry);
+            // A connected wrapper may be getting a fresh iframe/controller.
+            // Keep that slot in the current recovery while retiring old nodes.
+            if (!entry.element.isConnected || entry.element.parentElement !== doc.getElementById('multi-stream-container'))
+                preparedCohort.delete(entry.element);
         }
         function scan() {
             scanTimer = null;
@@ -4259,8 +4319,8 @@
             if (!container || !container.isConnected) return [];
             return Array.from(container.children).map(element => element.tagName === 'IFRAME' ? element : element.querySelector('iframe')).filter(frame => frame?.isConnected);
         }
-        function current(record) {
-            if (!record.frame.isConnected || !frames().includes(record.frame) || record.frame.contentWindow !== record.source) return false;
+        function current(record, cohort = new Set(frames())) {
+            if (!record.frame.isConnected || !cohort.has(record.frame) || record.frame.contentWindow !== record.source) return false;
             const url = playerUrl(record.frame);
             return Boolean(url && url.href === record.href && url.origin === record.origin);
         }
@@ -4276,7 +4336,9 @@
             record.frame.removeEventListener('load', record.onLoad);
             for (const [id, request] of pending) if (request.record === record) finish(id, fail('STALE_FRAME', '播放器已更換，請重新偵測'));
         }
-        function prune() { for (const record of registry.values()) if (!current(record)) forget(record); }
+        // A batch shares one fresh cohort. Commands and replies still take a
+        // synchronous snapshot, independently of MutationObserver delivery.
+        function prune(cohort = new Set(frames())) { for (const record of registry.values()) if (!current(record, cohort)) forget(record); }
         function clear(code) {
             for (const timer of resumeTimers) win.clearTimeout(timer);
             resumeTimers.clear();
@@ -4288,15 +4350,16 @@
             const message = event.data;
             if (isEnvelope(config, message, 'frame:ready')) {
                 if (!validFrame(message.frameId) || !validToken(message.token) || !validToken(message.documentId) || !object(message.result) || typeof message.result.ok !== 'boolean') return;
-                const frame = frames().find(value => value.contentWindow === event.source);
+                const cohort = new Set(frames());
+                const frame = [...cohort].find(value => value.contentWindow === event.source);
                 if (!frame) return;
                 const url = playerUrl(frame);
                 if (!url || url.origin !== event.origin) return;
-                prune();
+                prune(cohort);
                 const collision = registry.get(message.frameId);
                 if (collision && collision.frame !== frame) return;
                 const previous = [...registry.values()].find(record => record.frame === frame);
-                if (previous && previous.frameId === message.frameId && previous.token === message.token && previous.documentId === message.documentId && current(previous)) return;
+                if (previous && previous.frameId === message.frameId && previous.token === message.token && previous.documentId === message.documentId && current(previous, cohort)) return;
                 if (previous) forget(previous);
                 if (registry.size >= 128) return;
                 const record = { frame, source: event.source, href: url.href, origin: url.origin, frameId: message.frameId, token: message.token, documentId: message.documentId };
@@ -4361,8 +4424,9 @@
                 const timer = win.setTimeout(() => {
                     resumeTimers.delete(timer);
                     if (disposed || suspended || !config.isSiteUrl(win.location.href)) return;
-                    prune();
-                    for (const frame of frames().slice(0, 128)) {
+                    const cohort = new Set(frames());
+                    prune(cohort);
+                    for (const frame of [...cohort].slice(0, 128)) {
                         if ([...registry.values()].some(record => record.frame === frame)) continue;
                         const url = playerUrl(frame);
                         if (url) try { frame.contentWindow.postMessage(envelope(config, 'frame:probe'), url.origin); } catch (_) {}
@@ -4375,13 +4439,50 @@
             if (disposed) return;
             disposed = true;
             clear('DISPOSED');
-            observer?.disconnect();
+            paneObserver?.disconnect();
+            structureObserver?.disconnect();
+            observedPane = null;
+            observedAncestors = [];
             win.removeEventListener('message', onMessage);
             win.removeEventListener('pagehide', onHide);
             win.removeEventListener('pageshow', onShow);
         }
-        const observer = typeof win.MutationObserver === 'function' ? new win.MutationObserver(prune) : null;
-        if (doc.documentElement) observer?.observe(doc.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['src'] });
+        let observedPane = null, observedAncestors = [];
+        const paneObserver = typeof win.MutationObserver === 'function' ? new win.MutationObserver(onPaneMutation) : null;
+        const structureObserver = typeof win.MutationObserver === 'function' ? new win.MutationObserver(onStructureMutation) : null;
+        function bindObservers() {
+            const candidate = doc.getElementById('multi-stream-container');
+            const pane = candidate?.isConnected ? candidate : null, ancestors = [];
+            for (let ancestor = pane?.parentNode; ancestor; ancestor = ancestor.parentNode) ancestors.push(ancestor);
+            if (pane === observedPane && ancestors.length === observedAncestors.length && ancestors.every((node, index) => node === observedAncestors[index])) return false;
+            paneObserver?.disconnect();
+            structureObserver?.disconnect();
+            observedPane = pane; observedAncestors = ancestors;
+            if (pane) {
+                paneObserver?.observe(pane, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'id'] });
+                // Watch only direct ancestor children: chat decorations elsewhere
+                // cannot trigger a player registry walk. Moving/replacing any
+                // ancestor rebinds this chain, including moves of the same pane.
+                for (const ancestor of ancestors) structureObserver?.observe(ancestor, { childList: true });
+            } else {
+                structureObserver?.observe(doc, { childList: true, subtree: true, attributes: true, attributeFilter: ['id'] });
+            }
+            return true;
+        }
+        function onStructureMutation(records) {
+            if (disposed) return;
+            if (bindObservers() || !records?.length) prune();
+        }
+        function containsFrame(node) { return node?.tagName === 'IFRAME' || Boolean(node?.querySelector?.('iframe')); }
+        function onPaneMutation(records) {
+            if (disposed) return;
+            if (bindObservers() || !records?.length || records.some(record =>
+                record.type === 'attributes' ? record.attributeName === 'src' && record.target?.tagName === 'IFRAME' :
+                record.type === 'childList' && (record.target === observedPane || [...record.addedNodes, ...record.removedNodes].some(containsFrame)))) prune();
+        }
+        // Start in discovery mode even when the container is not present yet.
+        if (!bindObservers() && !observedPane)
+            structureObserver?.observe(doc, { childList: true, subtree: true, attributes: true, attributeFilter: ['id'] });
         win.addEventListener('message', onMessage);
         win.addEventListener('pagehide', onHide);
         win.addEventListener('pageshow', onShow);
@@ -4405,8 +4506,9 @@
         }
         function announce() {
             if (!controller || !identity) return;
-            // A delayed command reply can describe an older mute setting.
-            // Announcements represent the current controller, not that old reply.
+            // A subscription can precede an unobservable late shadow route or
+            // a delayed command result. Rediscover current media before sending
+            // any parent-facing silence proof, even for a coalesced report.
             try { lastResult = safeResult(controller.getState()); } catch (_) { return; }
             send('frame:ready', { result: lastResult });
         }
@@ -4457,9 +4559,11 @@
                 return ownController.execute({ ...message.command });
             }).then(result => {
                 if (disposed || suspended || currentGeneration !== generation) return;
-                lastResult = safeResult(result);
-                reply(lastResult);
-                report(lastResult);
+                reply(safeResult(result));
+                // A delayed reply may describe a setting older than the latest
+                // guard notification. Refresh once at this explicit command
+                // boundary instead of publishing that obsolete result.
+                try { report(ownController.getState()); } catch (_) {}
             }, () => {
                 if (!disposed && !suspended && currentGeneration === generation) reply(fail('CONTROL_FAILED', '未能控制此播放器'));
             }).finally(() => { if (currentGeneration === generation) active--; });

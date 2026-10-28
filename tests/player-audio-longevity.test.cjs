@@ -85,7 +85,7 @@ function mediaFixture() {
     }
     const doc = new Node(); doc.defaultView = win; doc.documentElement = doc.append(new Node('HTML'));
     win.document = doc;
-    win.MutationObserver = class { constructor(fn) { this.fn = fn; mutations.push(this); } observe() {} disconnect() {} };
+    win.MutationObserver = class { constructor(fn) { this.fn = fn; mutations.push(this); } observe() {} takeRecords() { return []; } disconnect() {} };
     const add = (tag = 'VIDEO', parent = doc.documentElement) => parent.append(new Media(tag));
     const mount = () => createMediaController({ document: doc, clock });
     return { clock, win, doc, Node, Media, add, mount, mutate() { for (const observer of mutations) observer.fn([]); } };
@@ -95,7 +95,7 @@ function connectedFixture(options = {}) {
     const frame = Object.assign(new Events(), { tagName: 'IFRAME', src: PLAYER, contentWindow: f.win, isConnected: true });
     const container = { isConnected: true, children: [frame] };
     site.document = { documentElement: {}, getElementById: id => id === 'multi-stream-container' ? container : null };
-    site.MutationObserver = class { constructor(fn) { this.fn = fn; } observe() {} disconnect() {} };
+    site.MutationObserver = class { constructor(fn) { this.fn = fn; } observe() {} takeRecords() { return []; } disconnect() {} };
     f.win.parent = site; f.win.top = site;
     f.win.postMessage = (data, origin) => {
         assert.equal(origin, playerOrigin);

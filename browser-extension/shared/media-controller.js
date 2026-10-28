@@ -48,18 +48,7 @@
         const MO = view.MutationObserver || root.MutationObserver;
         const RO = view.ResizeObserver || root.ResizeObserver;
         const mutations = typeof MO === 'function' ? new MO(records => {
-            // Decorative offline banners must not repeatedly revoke a proven
-            // empty guard. New media or opaque player routes revoke it at once.
-            let changed = !records?.length;
-            for (const record of records || []) {
-                if (record.type === 'attributes' && FRAME_ATTRIBUTES.includes(record.attributeName) && isFrame(record.target)) {
-                    const frame = trackFrame(record.target);
-                    if (frame) frame.pending = true;
-                    changed = true;
-                }
-                if ([...(record.addedNodes || []), ...(record.removedNodes || [])].some(node => containsMediaRoute(node))) changed = true;
-            }
-            if (changed) { emptyInventoryVerified = false; guardInventoryVerified = false; }
+            inspectMutations(records, !records?.length);
             scheduleScan();
             notify();
         }) : null;
@@ -77,22 +66,58 @@
             // accessible open root can participate in an observed empty proof.
             return ['OBJECT', 'EMBED'].includes(tag) || tag.includes('-') && !node.shadowRoot;
         };
-        function containsMediaRoute(container, depth = 0) {
+        function containsMediaRoute(container) {
             if (!container) return false;
-            if (depth >= ROOT_DEPTH_LIMIT) return true;
             const routed = node => isMedia(node) || isFrame(node) || isOpaqueRoute(node);
             if (routed(container)) return true;
-            // Even an empty new open root needs observation before its future
-            // media can be covered by the current silence proof.
-            if (container.shadowRoot && (!watchedRoots.has(container.shadowRoot) || containsMediaRoute(container.shadowRoot, depth + 1))) return true;
-            return [...(container.querySelectorAll?.('*') || [])].some(node => routed(node) ||
-                node.shadowRoot && (!watchedRoots.has(node.shadowRoot) || containsMediaRoute(node.shadowRoot, depth + 1)));
+            // Empty roots are structural too: additions need observation and
+            // removals must release the old root and its document references.
+            if (container.shadowRoot) return true;
+            try { return [...(container.querySelectorAll?.('*') || [])].some(node => routed(node) || node.shadowRoot); }
+            catch (_) { return true; }
+        }
+        function invalidateInventory() {
+            emptyInventoryVerified = false;
+            guardInventoryVerified = false;
+        }
+        function hasUnwatchedRoot(node) {
+            for (; node; node = parentOf(node)) {
+                if (node.shadowRoot && !watchedRoots.has(node.shadowRoot)) return true;
+            }
+            return false;
+        }
+        function inspectMutations(records, unknown = false) {
+            let structural = unknown;
+            for (const record of records || []) {
+                if (record.type === 'attributes' && FRAME_ATTRIBUTES.includes(record.attributeName) && isFrame(record.target)) {
+                    const frame = trackFrame(record.target);
+                    if (frame) frame.pending = true;
+                    structural = true;
+                }
+                // attachShadow itself emits no mutation. A later attribute or
+                // child mutation on that host/ancestor path must not reuse an
+                // old empty proof before the new open root is observed.
+                if (hasUnwatchedRoot(record.target) ||
+                    [...(record.addedNodes || []), ...(record.removedNodes || [])].some(node => containsMediaRoute(node))) structural = true;
+            }
+            if (structural) invalidateInventory();
+        }
+        function flushMutations(requireFresh = true, queueRecords = false) {
+            if (!mutations) { if (requireFresh) invalidateInventory(); return false; }
+            // Commands need a synchronous view of pending frame navigation.
+            // A failed tail flush cannot confirm silence after page setters.
+            try {
+                if (typeof mutations.takeRecords !== 'function') { if (requireFresh) invalidateInventory(); return false; }
+                const records = mutations.takeRecords();
+                inspectMutations(records);
+                if (queueRecords && records.length) scheduleScan();
+                return true;
+            } catch (_) { if (requireFresh) invalidateInventory(); return false; }
         }
         function invalidateFrame(frame, pending) {
             if (disposed) return;
             frame.pending = pending;
-            emptyInventoryVerified = false;
-            guardInventoryVerified = false;
+            invalidateInventory();
             scheduleScan();
             notify();
         }
@@ -316,12 +341,15 @@
             // These events cover deferred platform sound restoration, ad/media
             // swaps and a new source without any permanent polling timer.
             if (!['volumechange', 'play', 'playing', 'loadedmetadata', 'canplay', 'emptied'].includes(event.type)) return;
+            // Coalesce platform volume fades and playback bursts. Every repair
+            // still performs full discovery, including late shadow routes. A
+            // control read or frame announcement can cover this pending work
+            // sooner without exposing an artificial unknown interval.
             if (guardTimer !== null) return;
             guardTimer = later(() => {
                 guardTimer = null;
                 if (!muteGuard || disposed) return;
                 scan();
-                notify();
             }, SCAN_DELAY);
         }
         function notify() {
@@ -414,19 +442,33 @@
         }
         function scan() {
             if (disposed || scanning) return;
+            if (scanTimer !== null) clear(scanTimer);
+            scanTimer = null;
+            if (guardTimer !== null) clear(guardTimer);
+            guardTimer = null;
+            flushMutations();
+            invalidateInventory();
             scanning = true;
-            emptyInventoryVerified = false;
-            guardInventoryVerified = false;
             try {
                 const { roots, candidates, guarded, embedded } = collect();
                 observe(roots, guarded);
+                observeGuard(guarded);
                 const ranked = candidates.map(node => ({ node, area: visibleArea(node), video: String(node.tagName).toUpperCase() === 'VIDEO' }))
                     .filter(item => item.area > 0).sort((a, b) => Number(b.video) - Number(a.video) || b.area - a.area || Number(b.node === media) - Number(a.node === media));
                 bind(ranked[0]?.node || null);
-                observeGuard(guarded);
                 repairGuard();
                 guardInventoryVerified = Boolean(mutations && !embedded.some(connected) && [...roots].every(container => watchedRoots.has(container)));
                 emptyInventoryVerified = guardInventoryVerified && !guarded.some(connected);
+                // Page handlers invoked by a media setter can synchronously
+                // add routes while applying the guard. Never publish a proof
+                // from the inventory that preceded those queued mutations.
+                if (!flushMutations(false, true)) {
+                    // Without a working synchronous flush, setter-side page
+                    // handlers may have added an unknown route since collect.
+                    // Withdraw proof without starting a permanent retry loop.
+                    guardInventoryVerified = false;
+                    emptyInventoryVerified = false;
+                }
             } finally { scanning = false; }
             notify();
         }
@@ -434,6 +476,8 @@
             if (disposed || scanTimer !== null) return;
             scanTimer = later(() => { scanTimer = null; scan(); }, SCAN_DELAY);
         }
+        // Every DOM/layout event retains a full discovery opportunity: a plain
+        // host may gain a shadow player without any mutation of that host.
         function getState() { scan(); return currentResult(); }
         async function execute(command) {
             if (disposed) return currentResult();
@@ -530,6 +574,9 @@
             sizes?.disconnect();
             for (const frame of childFrames.values()) removeFrame(frame);
             clearMuteGuard();
+            observedRoots.clear();
+            watchedRoots.clear();
+            observedMedia.clear();
             scope.removeEventListener?.('pointerdown', onNativeIntent, true);
             scope.removeEventListener?.('keydown', onNativeIntent, true);
             view.removeEventListener?.('resize', scheduleScan);

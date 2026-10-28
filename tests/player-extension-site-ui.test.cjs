@@ -30,7 +30,7 @@ function managedSlotScanFixture() {
     const view = new EventTarget(), container = new Node(), doc = new EventTarget(), entries = new Map(), created = [];
     Object.assign(view, { innerWidth: 1280, innerHeight: 720, setTimeout: clock.setTimeout.bind(clock), clearTimeout: clock.clearTimeout.bind(clock),
         getComputedStyle() { return { display: 'block', visibility: 'visible', opacity: '1' }; },
-        MutationObserver: class { observe() {} disconnect() {} } });
+        MutationObserver: class { observe() {} takeRecords() { return []; } disconnect() {} } });
     Object.assign(doc, { defaultView: view, documentElement: { clientWidth: 1280, clientHeight: 720 },
         getElementById(id) { return id === 'multi-stream-container' ? container : null; } });
     const state = { scanTimer: null, disposed: false, list: {}, doc, entries, sequence: 0, isManagedPlayerSlot,
@@ -221,6 +221,91 @@ function automaticGuardFixture(result) {
     const execute = vm.runInNewContext('(' + source.slice(start, end).trim() + ')', state);
     return { entry, writes, guarded, intent, execute: () => execute(entry, { action: 'setMuted', value: true, guard: true }) };
 }
+
+function retiredEntryFixture() {
+    const pane = {}, live = { element: { isConnected: true, parentElement: pane }, generation: 9 };
+    const intent = { guardWrites: new Map([[live, { generation: 9, count: 4 }]]) };
+    const fallback = { guardWrites: new Map([[live, { generation: 9, count: 3 }]]) };
+    const state = { revealedEntry: null, entries: new Map([[live.element, live]]), guardedEntries: new Map(),
+        preparedCohort: new Set([live.element]), audioFocusIntent: intent, layoutFocusCandidates: new Map([[1, fallback], [2, intent]]),
+        doc: { getElementById() { return pane; } }, clearProbeTimers(entry) { entry.probeTimers = []; } };
+    const source = fs.readFileSync(require.resolve('../browser-extension/site-ui.js'), 'utf8');
+    const start = source.indexOf('        function removeEntry(entry) {'), end = source.indexOf('\n        function scan()', start);
+    assert.ok(start > 0 && end > start, 'production entry retirement seam must exist');
+    const removeEntry = vm.runInNewContext('(' + source.slice(start, end).trim() + ')', state);
+    return { state, pane, live, intent, fallback, removeEntry };
+}
+
+test('retiring many players releases retained guard bookkeeping without resetting a live player budget', () => {
+    const f = retiredEntryFixture(); let disposed = 0, unsubscribed = 0;
+    const liveWrite = f.intent.guardWrites.get(f.live), fallbackWrite = f.fallback.guardWrites.get(f.live);
+    for (let i = 0; i < 200; i++) {
+        const entry = { element: { isConnected: false, parentElement: f.pane }, generation: i, probeTimers: [i],
+            controller: { dispose() { disposed++; } }, unsubscribe() { unsubscribed++; } };
+        f.state.entries.set(entry.element, entry); f.state.guardedEntries.set(entry, i);
+        f.state.preparedCohort.add(entry.element);
+        for (const intent of [f.intent, f.fallback]) intent.guardWrites.set(entry, { generation: i, count: 4 });
+        f.removeEntry(entry);
+        assert.equal(f.state.entries.has(entry.element), false); assert.equal(f.state.guardedEntries.has(entry), false);
+        assert.equal(f.state.preparedCohort.has(entry.element), false);
+    }
+    assert.equal(disposed, 200); assert.equal(unsubscribed, 200);
+    assert.equal(f.intent.guardWrites.size, 1); assert.equal(f.fallback.guardWrites.size, 1);
+    assert.equal(f.intent.guardWrites.get(f.live), liveWrite); assert.equal(liveWrite.count, 4);
+    assert.equal(f.fallback.guardWrites.get(f.live), fallbackWrite); assert.equal(fallbackWrite.count, 3);
+});
+
+test('retiring a controller keeps its connected slot in recovery until replacement is ready', () => {
+    const f = retiredEntryFixture();
+    f.removeEntry(f.live);
+    assert.equal(f.state.entries.has(f.live.element), false);
+    assert.equal(f.state.preparedCohort.has(f.live.element), true, 'a source/frame replacement keeps the same pending layout slot');
+    const elsewhere = { element: { isConnected: true, parentElement: {} }, generation: 0 };
+    f.state.preparedCohort.add(elsewhere.element); f.removeEntry(elsewhere);
+    assert.equal(f.state.preparedCohort.has(elsewhere.element), false, 'a slot moved out of the player pane cannot remain retained');
+});
+
+function recoveryLifetimeFixture() {
+    const makeDeferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+    const runs = [], restore = makeDeferred();
+    const state = { disposed: false, recoveryStartGeneration: 0, preparedCohort: new Set([{}]),
+        automaticRecoveryReason: 'start', layoutTicket: 42, layoutUserEpoch: 3, layoutCompletion: Promise.resolve(),
+        recoveryFlow: { run() { const run = makeDeferred(); runs.push(run); return run.promise; } },
+        layoutAudioFlow: { restore() { return restore.promise; } }, afterAudioFocus(action) { return action(); },
+        watchStartTimer: null, win: { clearTimeout() { assert.fail('no watch timer should exist'); } } };
+    const source = fs.readFileSync(require.resolve('../browser-extension/site-ui.js'), 'utf8');
+    const start = source.indexOf('        async function runRecovery(reason, generation = ++recoveryStartGeneration) {');
+    const end = source.indexOf('\n        function scheduleRecoveryAfterLayout(', start);
+    assert.ok(start > 0 && end > start, 'production recovery lifetime seam must exist');
+    const api = vm.runInNewContext(source.slice(start, end) + '\n({ runRecovery, cancelPendingRecovery })', state);
+    return { state, runs, restore, ...api };
+}
+
+test('a recovery retains its cohort through media checks and audio restoration then releases it', async () => {
+    const f = recoveryLifetimeFixture(), pending = f.runRecovery('start');
+    await new Promise(resolve => setImmediate(resolve)); assert.equal(f.runs.length, 1);
+    assert.equal(f.state.preparedCohort.size, 1);
+    f.runs[0].resolve(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.state.preparedCohort.size, 1, 'audio restoration still belongs to this recovery');
+    f.restore.resolve(); await pending;
+    assert.equal(f.state.preparedCohort.size, 0); assert.equal(f.state.automaticRecoveryReason, null);
+});
+
+test('cancelled or obsolete recovery completion cannot retain old nodes or clear a newer cohort', async () => {
+    const f = recoveryLifetimeFixture(), first = f.runRecovery('manual');
+    assert.equal(f.runs.length, 1); f.cancelPendingRecovery(); assert.equal(f.state.preparedCohort.size, 0);
+    const replacement = {}; f.state.preparedCohort = new Set([replacement]);
+    const second = f.runRecovery('manual'); assert.equal(f.runs.length, 2);
+    f.runs[0].resolve(); await first;
+    assert.equal(f.state.preparedCohort.has(replacement), true, 'the old generation cannot release new recovery data');
+    f.runs[1].resolve(); await second; assert.equal(f.state.preparedCohort.size, 0);
+});
+
+test('failed media recovery also releases its completed generation cohort', async () => {
+    const f = recoveryLifetimeFixture(); f.state.recoveryFlow.run = () => Promise.reject(new Error('player failure'));
+    await assert.rejects(f.runRecovery('manual'), /player failure/);
+    assert.equal(f.state.preparedCohort.size, 0);
+});
 
 test('automatic guard retains an empty NO_MEDIA acknowledgement without rearming an exhausted guard budget', async () => {
     const result = { ok: false, code: 'NO_MEDIA', state: { available: false, muted: null, volume: null,
