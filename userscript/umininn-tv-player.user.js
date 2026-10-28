@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.31
+// @version      1.0.32
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -30,7 +30,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.31",
+        userscriptVersion: "1.0.32",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -2412,6 +2412,11 @@
             (!result.state || typeof result.state === 'object');
     }
 
+    function isManagedPlayerSlot(element) {
+        return element?.getAttribute?.('data-umininn-player-slot') === '1' &&
+            Boolean(element.getAttribute('data-channel-key')?.trim());
+    }
+
     function aggregateAudio(states) {
         const present = states.filter(state => state && typeof state === 'object');
         const values = present.map(state => state.volume).filter(value => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1);
@@ -3362,7 +3367,9 @@
             if (container) for (const element of container.children) {
                 const frame = element.tagName === 'IFRAME' ? element : element.querySelector('iframe');
                 const video = element.matches('video,audio') ? element : element.querySelector('video,audio');
-                if (!frame && !video) continue;
+                // A managed slot remains a real channel while presenting
+                // loading, status or errors. Observe its current DOM normally.
+                if (!frame && !video && !isManagedPlayerSlot(element)) continue;
                 desired.add(element);
                 let entry = entries.get(element);
                 if (entry && (entry.frame !== frame || entry.source !== (frame?.src || ''))) { removeEntry(entry); entry = null; }
@@ -4050,7 +4057,7 @@
             detectButton.addEventListener('click', () => { void runRecovery('manual'); });
             quickDetect.addEventListener('click', () => { void runRecovery('manual'); });
             observer = new win.MutationObserver(() => { queueScan(); scheduleHighlights(); });
-            observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'class', 'style', 'hidden', 'data-channel-name', 'data-channel-key'] });
+            observer.observe(container, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'class', 'style', 'hidden', 'data-channel-name', 'data-channel-key', 'data-umininn-player-slot'] });
             highlightObserver = new win.MutationObserver(records => {
                 for (const record of records) {
                     if (record.type === 'childList') { updateHighlights(); break; }
@@ -4173,7 +4180,7 @@
         }
         return { start, dispose, scan };
     }
-    if (typeof module === 'object' && module.exports) module.exports = { createSiteController, validResult, aggregateAudio, canControl, confirmedSilentPeer, retainedGuardResult, renderAudioControls, unifiedFocusFailures, isWatchStartTarget, isRecoveryReady, createReadinessPass, createAudioFocusFlow };
+    if (typeof module === 'object' && module.exports) module.exports = { createSiteController, validResult, isManagedPlayerSlot, aggregateAudio, canControl, confirmedSilentPeer, retainedGuardResult, renderAudioControls, unifiedFocusFailures, isWatchStartTarget, isRecoveryReady, createReadinessPass, createAudioFocusFlow };
     // Firefox's content-script global inherits from Window but is not Window itself.
     const contentWindow = root.window;
     if (contentWindow && config && media && runtime && contentWindow.top === contentWindow && config.isSiteUrl(contentWindow.location.href) && !contentWindow.document.getElementById('umininn-player-control-host')) {

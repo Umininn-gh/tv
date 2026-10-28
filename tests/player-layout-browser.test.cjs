@@ -998,7 +998,11 @@ test('channel-name text is safely renamed without rebuilding players and follows
     await f.page.waitForFunction(()=>fixture.entries[1].resource.element.tagName==='DIV');assertNameGeometry(await waitNames(f));
     await f.page.evaluate(()=>{fixture.entries[1].resource.element.style.width='72%'});const replaced=await waitNames(f);assertNameGeometry(replaced);
     const after=await snapshot(f);
-    assert.deepEqual(after.main.map(stable),before.main.map((media,index)=>({...stable(media),...(index===1?{same:false}:{})})));
+    // Replacing a failed presentation retires that video's sound before it
+    // detaches; the other media keep their original playback and identity.
+    assert.deepEqual(after.main.map(stable),before.main.map((media,index)=>({...stable(media),...(index===1?{
+        same:false,muted:true,paused:true,actions:{...media.actions,pause:media.actions.pause+1}
+    }:{})})));
     assert.deepEqual(after.frames.map(frame=>({id:frame.id,media:frame.media.map(stable)})),before.frames.map(frame=>({id:frame.id,media:frame.media.map(stable)})));
     assert.deepEqual(await f.page.evaluate(()=>fixture.identity()),{elements:false,entries:true,windows:true,removals:1,frameSources:0,loads:[1,1]});
     assert.ok([...f.navigations.values()].every(count=>count===1));assert.deepEqual(f.errors,[]);assert.deepEqual(f.blocked,[]);

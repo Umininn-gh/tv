@@ -514,6 +514,7 @@ const RENDERERS = {
 
 function buildErrorDiv(msg) {
     const d = document.createElement('div');
+    d.dataset.umininnPlayerPlaceholder = 'error';
     d.style.cssText = 'color:var(--red);display:flex;align-items:center;justify-content:center;width:100%;height:100%;';
     d.textContent = msg;
     return d;
@@ -534,7 +535,8 @@ const playerResources = new WeakMap();
 const playerRegistry = PlayerLifecycle.create({
     render: renderChannelElement,
     getResource: element => playerResources.get(element),
-    dispose: disposePlayerResource
+    dispose: disposePlayerResource,
+    prepareReplace: preparePlayerPresentationReplace
 });
 const activePlayers = playerRegistry.entries;
 const PLAYER_POSITION_STORAGE_KEY = 'playerPositionOrder';
@@ -663,15 +665,53 @@ function getGoshMetadata(channel) {
     }));
 }
 
+function preparePlayerPresentationReplace(entry, current) {
+    // Every owned presentation replacement retires its old native routes, not
+    // only error UIs. Unconfirmed media stay attached and under sound control.
+    const routes = new Set(), roots = new Set();
+    if (entry.resource?.video) routes.add(entry.resource.video);
+    function collect(container, depth = 0) {
+        if (!container || roots.has(container)) return;
+        if (depth >= 16) throw new Error('Native media inventory is incomplete');
+        roots.add(container);
+        if (['VIDEO', 'AUDIO'].includes(String(container.tagName).toUpperCase())) routes.add(container);
+        for (const media of container.querySelectorAll?.('video,audio') || []) routes.add(media);
+        for (const node of [container, ...(container.querySelectorAll?.('*') || [])]) {
+            const tag = String(node.tagName).toUpperCase();
+            if (['IFRAME', 'OBJECT', 'EMBED'].includes(tag) || tag.includes('-') && !node.shadowRoot)
+                throw new Error('The current presentation contains an unconfirmed media route');
+            if (node.shadowRoot) collect(node.shadowRoot, depth + 1);
+        }
+    }
+    try { collect(current.element); } catch (_) { return false; }
+    for (const media of routes) {
+        try { media.muted = true; } catch (_) {}
+        try { media.pause(); } catch (_) {}
+        if (!playerRegistry.isCurrent(current)) return false;
+        try { if (media.muted !== true) return false; } catch (_) { return false; }
+    }
+    return playerRegistry.isCurrent(current);
+}
+
 function replacePlayerWithError(resource, message) {
     if (resource.disposed || resource.errorShown || !resource.element.isConnected) return;
     const lease = playerRegistry.leaseForResource(resource);
     if (!lease) return;
     const error = buildErrorDiv(message);
-    if (!playerRegistry.replaceElement(lease, error)) return;
+    for (const token of ['video', 'full-screen-video'])
+        error.classList.toggle(token, lease.element.classList.contains(token));
+    if (!playerRegistry.replaceElement(lease, error)) {
+        if (playerRegistry.isCurrent(lease)) lease.entry.failed = resource.failed = true;
+        return;
+    }
+    lease.entry.failed = true;
     resource.failed = true;
     resource.errorShown = true;
-    projectPlayerLayout();
+    // Overlay refreshes must not interrupt the provider's fatal-error cleanup.
+    for (const refresh of [projectPlayerLayout, () => playerNameOverlay?.refresh(),
+        () => playerWindowControls?.refresh(), () => playerPositionEditor?.refresh()]) {
+        try { refresh(); } catch (_) {}
+    }
 }
 
 /* ======================== 平台工具函式 ======================== */

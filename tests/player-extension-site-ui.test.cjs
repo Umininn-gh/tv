@@ -2,8 +2,132 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
-const { aggregateAudio, validResult, canControl, confirmedSilentPeer, retainedGuardResult, renderAudioControls, unifiedFocusFailures,
+const { aggregateAudio, validResult, isManagedPlayerSlot, canControl, confirmedSilentPeer, retainedGuardResult, renderAudioControls, unifiedFocusFailures,
     isWatchStartTarget, isRecoveryReady, createAudioFocusFlow } = require('../browser-extension/site-ui.js');
+const { createMediaController } = require('../browser-extension/shared/media-controller.js');
+
+function managedSlotScanFixture() {
+    const clock = { next: 0, timers: new Map(), setTimeout(fn) { const id = ++this.next; this.timers.set(id, fn); return id; }, clearTimeout(id) { this.timers.delete(id); } };
+    class Node extends EventTarget {
+        constructor(tag = 'div', attributes = {}) { super(); this.tagName = tag.toUpperCase(); this.attributes = new Map(Object.entries(attributes));
+            this.children = []; this.parentElement = null; this.isConnected = true; this.hidden = false; }
+        getAttribute(name) { return this.attributes.get(name) ?? null; }
+        matches(selector) { return selector.split(',').some(tag => tag.toUpperCase() === this.tagName); }
+        append(node) { node.parentElement = this; this.children.push(node); return node; }
+        querySelectorAll(selector) { const nodes = this.children.flatMap(node => [node, ...node.querySelectorAll('*')]);
+            return selector === '*' ? nodes : nodes.filter(node => node.matches(selector)); }
+        querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+        getBoundingClientRect() { return { left: 0, top: 0, width: 640, height: 360 }; }
+        getRootNode() { return this.parentElement ? this.parentElement.getRootNode() : this; }
+    }
+    class Media extends Node {
+        constructor() { super('audio'); this.hidden = true; this._muted = false; this.volume = .62;
+            this.paused = false; this.readyState = 4; this.ended = false; this.playCalls = 0; }
+        get muted() { return this._muted; }
+        set muted(value) { this._muted = value; this.dispatchEvent(new Event('volumechange')); }
+        play() { this.playCalls++; throw new Error('the managed slot controller must not start media'); }
+    }
+    const view = new EventTarget(), container = new Node(), doc = new EventTarget(), entries = new Map(), created = [];
+    Object.assign(view, { innerWidth: 1280, innerHeight: 720, setTimeout: clock.setTimeout.bind(clock), clearTimeout: clock.clearTimeout.bind(clock),
+        getComputedStyle() { return { display: 'block', visibility: 'visible', opacity: '1' }; },
+        MutationObserver: class { observe() {} disconnect() {} } });
+    Object.assign(doc, { defaultView: view, documentElement: { clientWidth: 1280, clientHeight: 720 },
+        getElementById(id) { return id === 'multi-stream-container' ? container : null; } });
+    const state = { scanTimer: null, disposed: false, list: {}, doc, entries, sequence: 0, isManagedPlayerSlot,
+        cfg: { isPlayerUrl(url) { return url.startsWith('https://player.kick.com/'); } },
+        factory: { createMediaController(options) { created.push(options); return createMediaController({ ...options, clock }); } },
+        addRow(entry) { entry.name = {}; entry.row = { style: {} }; entry.volume = { setAttribute() {} }; },
+        applyResult(entry, result) { entry.result = result; }, globalMuted: null, audioFocusIntent: null, layoutTicket: null,
+        removeEntry(entry) { entry.unsubscribe?.(); entry.controller?.dispose(); entries.delete(entry.element); },
+        currentEntries() { return [...entries.values()]; }, revealOrder: '', revealedEntry: null,
+        describe(entry) { return entry.element.getAttribute('data-channel-name') || 'unknown'; },
+        renderEntry() {}, refreshSummary() {}, updateHighlights() {}, scheduleHighlights() {}, queueAudioFocusReconcile() {},
+        layoutAudioFlow: null, scheduleProbe() {} };
+    const source = fs.readFileSync(require.resolve('../browser-extension/site-ui.js'), 'utf8');
+    const start = source.indexOf('        function scan() {'), end = source.indexOf('\n        function queueScan()', start);
+    assert.ok(start > 0 && end > start, 'production scan seam must exist');
+    const scan = vm.runInNewContext('(' + source.slice(start, end).trim() + ')', state);
+    const slot = (attributes = {}) => container.append(new Node('div', { 'data-umininn-player-slot': '1', 'data-channel-key': 'm3u8|managed', ...attributes }));
+    return { Node, Media, container, doc, clock, entries, created, scan, slot,
+        dispose() { for (const entry of [...entries.values()]) state.removeEntry(entry); assert.equal(clock.timers.size, 0); } };
+}
+
+test('only explicitly managed channel slots can join the native controller without media', () => {
+    const f = managedSlotScanFixture(), known = f.slot();
+    const unknown = f.container.append(new f.Node('div', { 'data-channel-key': 'm3u8|unknown', 'data-umininn-player-placeholder': 'error' }));
+    unknown.textContent = '⚠️ 無法播放直播，請再試一次';
+    const keyless = f.slot({ 'data-channel-key': '' }), whitespace = f.slot({ 'data-channel-key': '  ' });
+    assert.equal(isManagedPlayerSlot(known), true);
+    for (const element of [null, {}, unknown, keyless, whitespace,
+        ...['0', 'true', '01', '2', 1].map(value => f.slot({ 'data-umininn-player-slot': value }))]) assert.equal(isManagedPlayerSlot(element), false);
+    f.scan();
+    assert.deepEqual([...f.entries.keys()], [known]); assert.equal(f.created.length, 1);
+    assert.equal(f.created[0].scope, known); assert.equal(f.created[0].document, f.doc);
+    f.dispose();
+});
+
+test('managed loading and status slots use a real observed controller without relying on error text or presentation markers', async () => {
+    for (const presentation of [null, 'loading', 'status', 'error']) {
+        const f = managedSlotScanFixture(), known = f.slot(); known.textContent = 'Preparing channel';
+        if (presentation) known.attributes.set('data-umininn-player-placeholder', presentation);
+        f.scan(); const entry = f.entries.get(known);
+        assert.equal(entry.kind, 'native'); assert.equal(entry.result.code, 'NO_MEDIA');
+        assert.equal(entry.result.state.emptyGuardConfirmed, false, 'metadata alone does not prove silence');
+        const result = await entry.controller.execute({ action: 'setMuted', value: true, guard: true });
+        assert.equal(result.code, 'NO_MEDIA'); assert.equal(result.state.emptyGuardConfirmed, true);
+        assert.equal(result.state.muted, null); assert.equal(result.state.volume, null);
+        entry.result = result;
+        for (const action of ['setMuted', 'setVolume', 'recover']) assert.equal(canControl(entry, action), false);
+        f.dispose();
+    }
+});
+
+test('managed slots must really mute hidden or later media rather than receiving static empty proof', async () => {
+    for (const late of [false, true]) {
+        const f = managedSlotScanFixture(), known = f.slot(), audio = new f.Media();
+        if (!late) known.append(audio);
+        f.scan(); const entry = f.entries.get(known);
+        await entry.controller.execute({ action: 'setMuted', value: true, guard: true });
+        if (late) known.append(audio);
+        const result = entry.controller.getState();
+        assert.equal(audio.muted, true); assert.equal(audio.volume, .62); assert.equal(audio.playCalls, 0);
+        assert.equal(result.code, 'NO_MEDIA'); assert.equal(result.state.emptyGuardConfirmed, false);
+        assert.equal(result.state.muted, true); assert.equal(result.state.muteGuardActive, true);
+        f.dispose();
+    }
+});
+
+test('managed slot metadata cannot bypass an unknown iframe or make its parent an empty native controller', () => {
+    const f = managedSlotScanFixture(), known = f.slot(), frame = known.append(new f.Node('iframe'));
+    frame.src = 'https://opaque.invalid/player'; f.scan();
+    const entry = f.entries.get(known);
+    assert.equal(entry.kind, 'unsupported'); assert.equal(entry.frame, frame); assert.equal(f.created.length, 0);
+    assert.equal(canControl(entry, 'setMuted'), false); assert.equal(canControl(entry, 'setVolume'), false);
+    f.dispose();
+});
+
+test('losing managed slot ownership metadata disposes the previous controller instead of retaining its silence proof', async () => {
+    for (const attribute of ['data-channel-key', 'data-umininn-player-slot']) {
+        const f = managedSlotScanFixture(), known = f.slot(); f.scan(); const old = f.entries.get(known).controller;
+        await old.execute({ action: 'setMuted', value: true, guard: true });
+        known.attributes.delete(attribute); f.scan();
+        assert.equal(f.entries.size, 0); assert.equal(old.getState().code, 'DISPOSED');
+        f.dispose();
+    }
+});
+
+test('changing presentation markers does not replace a managed slot controller or invent a new silence policy', async () => {
+    const f = managedSlotScanFixture(), known = f.slot({ 'data-umininn-player-placeholder': 'loading' });
+    f.scan(); const old = f.entries.get(known).controller;
+    await old.execute({ action: 'setMuted', value: true, guard: true });
+    for (const presentation of ['status', 'error', null]) {
+        if (presentation) known.attributes.set('data-umininn-player-placeholder', presentation);
+        else known.attributes.delete('data-umininn-player-placeholder');
+        f.scan(); assert.equal(f.entries.get(known).controller, old);
+        assert.equal(old.getState().state.emptyGuardConfirmed, true);
+    }
+    f.dispose();
+});
 
 function audioControlFixture(state) {
     const control = () => ({ value: '100', textContent: '', disabled: false, attributes: new Map(),

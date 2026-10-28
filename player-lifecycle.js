@@ -2,8 +2,9 @@
 (function (root) {
     'use strict';
 
-    function create({ render, getResource = () => undefined, dispose = () => {}, onError = () => {} } = {}) {
+    function create({ render, getResource = () => undefined, dispose = () => {}, prepareReplace = () => true, onError = () => {} } = {}) {
         if (typeof render !== 'function') throw new TypeError('render is required');
+        if (typeof prepareReplace !== 'function') throw new TypeError('prepareReplace must be a function');
         const entries = new Map();
         const records = new WeakMap(), resources = new WeakMap(), leases = new WeakMap();
         const revisions = new Map();
@@ -11,6 +12,24 @@
         const element = entry => entry?.resource ? entry.resource.element : entry?.element;
         const report = error => { try { onError(error); } catch (_) {} };
         const revision = key => { const value = ++sequence; revisions.set(key, value); return value; };
+        const validKey = key => typeof key === 'string' && Boolean(key.trim());
+
+        function projectSlot(value, target = element(value.entry)) {
+            if (!validKey(value.key) || !target?.dataset) return false;
+            try {
+                target.dataset.channelKey = value.key;
+                target.dataset.channelName = typeof value.entry.channel?.name === 'string' ? value.entry.channel.name : '';
+                // The marker identifies lifecycle ownership, not a particular UI.
+                target.dataset.umininnPlayerSlot = '1';
+                return true;
+            } catch (error) { report(error); return false; }
+        }
+        function syncPresentation(value) {
+            const target = element(value.entry);
+            value.entry.element = target;
+            if (value.entry.resource) value.entry.resource.element = target;
+            return projectSlot(value, target);
+        }
 
         function record(entry, key) {
             if (!entry || typeof entry !== 'object') return null;
@@ -56,11 +75,14 @@
         }
 
         function ensure(key, channel, options = {}) {
-            if (clearing) return { entry: null, created: false, superseded: true };
+            if (clearing || !validKey(key)) return { entry: null, created: false, superseded: true };
             const previous = entries.get(key);
             if (previous && live(record(previous, key)) &&
                 (typeof options.reusable !== 'function' || options.reusable(previous))) {
+                const value = record(previous, key);
                 previous.channel = channel;
+                syncPresentation(value);
+                if (!live(value)) return { entry: entries.get(key) || null, created: false, superseded: true };
                 return { entry: previous, created: false };
             }
             const ticket = revision(key), epoch = clearEpoch;
@@ -75,6 +97,11 @@
             const value = { key, entry, generation: ticket, retired: false };
             records.set(entry, value);
             if (resource && typeof resource === 'object') resources.set(resource, value);
+            if (!syncPresentation(value)) {
+                value.retired = true;
+                teardown(value);
+                return { entry: entries.get(key) || null, created: false, superseded: true };
+            }
             if (revisions.get(key) !== ticket || epoch !== clearEpoch || clearing) {
                 value.retired = true;
                 teardown(value);
@@ -137,18 +164,31 @@
             if (!leases.has(current) || !isCurrent(current) || !next || current.element === next ||
                 !current.element?.isConnected || typeof current.element.replaceWith !== 'function') return false;
             const value = leases.get(current);
-            if (value.entry.resource) value.entry.resource.element = next;
-            else value.entry.element = next;
+            const entry = value.entry, resource = entry.resource;
+            if (!validKey(value.key)) return false;
+            let prepared;
+            try { prepared = prepareReplace(entry, current, next); }
+            catch (error) { report(error); return false; }
+            // Preparation is synchronous. A future promise is not evidence that
+            // the old media is silent at the moment this DOM swap would occur.
+            if (prepared !== true) return false;
+            if (!isCurrent(current) || entry.resource !== resource || !current.element.isConnected) return false;
+            if (!projectSlot(value, next) || !isCurrent(current)) return false;
+            const previousElement = entry.element, previousResourceElement = resource?.element;
+            // The public alias and resource presentation must change together.
+            // A reentrant callback must never retain authority over the old node.
+            entry.element = next;
+            if (resource) resource.element = next;
             try { current.element.replaceWith(next); }
             catch (error) {
-                if (live(value) && element(value.entry) === next) {
-                    if (value.entry.resource) value.entry.resource.element = current.element;
-                    else value.entry.element = current.element;
+                if (live(value) && entry.resource === resource && entry.element === next && element(entry) === next) {
+                    entry.element = previousElement;
+                    if (resource) resource.element = previousResourceElement;
                 }
                 report(error);
                 return false;
             }
-            return live(value) && element(value.entry) === next;
+            return live(value) && entry.resource === resource && entry.element === next && element(entry) === next;
         }
 
         return { entries, ensure, remove, clear, element, lease, leaseForResource, isCurrent, replaceElement };
