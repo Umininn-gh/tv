@@ -665,3 +665,120 @@ test('all-unrecognized SKLive input warns without any GitHub operation and prese
         assert.equal(f.nodes['save-channel'].disabled, !connected);
     }
 });
+
+test('SKLive audit lists every source identity, current local names and missing entries without mistaking membership for online status', async () => {
+    const report = sourceReport([
+        channel('來源美1', 'meidingdang'), channel('來源大波', 'dindinxd19', 'twitch'), channel('來源漏台', 'new-entry', 'kick')
+    ], { checkedAt: '2026-10-29T01:02:03.000Z', hidden: 1 });
+    const f = fixture({ report }); await f.ready();
+    await f.nodes['sync-sklive'].dispatch('click');
+    const rows = f.nodes['sklive-entries'].children;
+    assert.equal(rows.length, 3);
+    assert.match(rows[0].textContent, /已在本站.*來源美1.*Gosh.*meidingdang.*本站名稱：美1/);
+    assert.match(rows[1].textContent, /已在本站.*來源大波.*Twitch.*dindinxd19.*本站名稱：大波/);
+    assert.match(rows[2].textContent, /未加入（漏台）.*來源漏台.*Kick.*new-entry/);
+    assert.match(f.nodes['sklive-summary'].textContent, /本站已有 2 個入口.*另缺 1 台（尚未儲存）/);
+    assert.match(f.nodes['sklive-summary'].textContent, /核對時間：.*9:02:03.*香港時間/);
+    assert.match(f.nodes['sklive-summary'].textContent, /不代表正在直播.*隱藏離線/);
+    assert.equal(f.saves.length, 0);
+    assert.equal(f.batchAdds.length, 0);
+    assert.equal(f.publications.length, 0);
+});
+
+test('SKLive audit marks new rows added only after the shared batch save is confirmed', async () => {
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    const report = sourceReport([...snapshot(initialRaw).channels, channel('新增入口', 'new-entry', 'kick')]);
+    const f = fixture({ report, addMissing: () => pending }); await f.ready(); await f.connect();
+    const scanning = f.nodes['sync-sklive'].dispatch('click'); await tick();
+    assert.equal(f.nodes['sklive-result'].hidden, true);
+    assert.equal(f.nodes['sklive-entries'].children.length, 0);
+    const raw = initialRaw + '新增入口,new-entry,kick\n';
+    release({ ...snapshot(raw, 'confirmed'), added: report.channels.slice(2), unchanged: false, baseRaw: initialRaw });
+    await scanning;
+    const rows = f.nodes['sklive-entries'].children;
+    assert.equal(rows.length, 3);
+    assert.match(rows[0].textContent, /^已在本站/);
+    assert.match(rows[1].textContent, /^已在本站/);
+    assert.match(rows[2].textContent, /^已補回.*新增入口/);
+    assert.match(f.nodes['sklive-summary'].textContent, /已補回 1 台.*3 \/ 3 個入口現已在本站/);
+    assert.equal(f.batchAdds.length, 1);
+    assert.equal(f.publications.length, 1);
+});
+
+test('SKLive audit explains unrecognized source rows as inert public text without exposing raw fields or raw reason bodies', async () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    const report = sourceReport(snapshot(initialRaw).channels, { received: 5, skipped: [
+        { index: 3, name: hostile, platform: 'unsupported', reason: 'unsupported_platform', details: 'not-public-details' },
+        { index: 4, name: '衝突入口', platform: 'twitch', reason: 'conflicting_identity' },
+        { index: 5, reason: 'Bearer raw-private-error' }
+    ] });
+    const f = fixture({ report }); await f.ready();
+    await f.nodes['sync-sklive'].dispatch('click');
+    const rows = f.nodes['sklive-skipped'].children;
+    assert.equal(rows.length, 3);
+    assert.equal(f.nodes['sklive-skipped'].hidden, false);
+    assert.match(rows[0].textContent, /第 3 筆.*<img src=x onerror=alert\(1\)>.*本站尚未支援此平台/);
+    assert.match(rows[1].textContent, /衝突入口.*Twitch.*平台 ID 與網址不一致/);
+    assert.match(rows[2].textContent, /第 5 筆.*未命名.*請人工核對/);
+    assert.equal(f.nodes['sklive-skipped'].querySelectorAll('img').length, 0);
+    assert.equal(JSON.stringify(f.nodes).includes('not-public-details'), false);
+    assert.equal(JSON.stringify(f.nodes).includes('raw-private-error'), false);
+    assert.equal(f.nodes['sklive-entries'].children.length, 2);
+    assert.equal(f.saves.length, 0);
+    assert.equal(f.batchAdds.length, 0);
+});
+
+test('a later complete SKLive audit clears prior skipped and missing rows while displaying every already-included source', async () => {
+    let report = sourceReport([...snapshot(initialRaw).channels, channel('暫時漏台', 'missing-entry', 'kick')], {
+        received: 4, skipped: [{ index: 4, name: '未知入口', platform: 'unsupported', reason: 'unsupported_platform' }]
+    });
+    const f = fixture({ load: async () => report }); await f.ready();
+    await f.nodes['sync-sklive'].dispatch('click');
+    assert.equal(f.nodes['sklive-entries'].children.length, 3);
+    assert.equal(f.nodes['sklive-skipped'].children.length, 1);
+    report = sourceReport(snapshot(initialRaw).channels, { checkedAt: '2026-10-29T02:03:04.000Z' });
+    await f.nodes['sync-sklive'].dispatch('click');
+    assert.equal(f.nodes['sklive-entries'].children.length, 2);
+    assert.ok(f.nodes['sklive-entries'].children.every(row => row.textContent.startsWith('已在本站')));
+    assert.equal(f.nodes['sklive-skipped'].children.length, 0);
+    assert.equal(f.nodes['sklive-skipped'].hidden, true);
+    assert.equal(f.nodes['sklive-additions'].children.length, 0);
+    assert.match(f.nodes['sklive-summary'].textContent, /已核對 2 個入口，均已在本站；沒有新增或刪除/);
+    assert.equal(f.batchAdds.length, 0);
+    assert.equal(f.saves.length, 0);
+});
+
+test('a partial SKLive source warns in both readonly and connected no-op audits instead of claiming the current source is complete', async () => {
+    const sourceWarning = '目前來源暫時未能讀取，只核對舊版資料。';
+    for (const connected of [false, true]) {
+        const report = sourceReport(snapshot(initialRaw).channels, { sourceWarnings: [sourceWarning], sourceApis: ['https://live.sk-knower.com/skgamerversion_api.php?page=ctvhiki49713'] });
+        const f = fixture({ report }); await f.ready();
+        if (connected) await f.connect();
+        await f.nodes['sync-sklive'].dispatch('click');
+        assert.equal(f.nodes['manager-status'].className, 'status warning');
+        assert.match(f.nodes['manager-status'].textContent, /部分來源未完成核對/);
+        assert.match(f.nodes['manager-status'].textContent, /只核對舊版資料/);
+        assert.match(f.nodes['sklive-summary'].textContent, /來源核對未完成/);
+        assert.doesNotMatch(f.nodes['sklive-summary'].textContent, /已核對 2 個入口，均已在本站；沒有新增或刪除/);
+        assert.doesNotMatch(f.nodes['manager-status'].textContent, /本站全部已包括/);
+        assert.equal(f.nodes['sklive-entries'].children.length, 2);
+        assert.ok(f.nodes['sklive-entries'].children.every(row => row.textContent.startsWith('已在本站')));
+        assert.equal(f.publications.length, 0);
+        assert.equal(f.saves.length, 0);
+    }
+});
+
+test('a partial SKLive import reports confirmed additions and source gaps separately without deleting existing entries', async () => {
+    const report = sourceReport([...snapshot(initialRaw).channels, channel('新增公開入口', 'new-entry', 'kick')], { sourceWarnings: ['隱藏項目的舊來源暫時無法讀取，未能核對全部隱藏入口。'] });
+    const f = fixture({ report }); await f.ready(); await f.connect();
+    await f.nodes['sync-sklive'].dispatch('click');
+    assert.equal(f.batchAdds.length, 1);
+    assert.equal(f.nodes['channel-list'].children.length, 3);
+    assert.equal(f.nodes['manager-status'].className, 'status warning');
+    assert.match(f.nodes['manager-status'].textContent, /已補回 1 台.*未能核對全部隱藏入口/);
+    assert.match(f.nodes['sklive-summary'].textContent, /已補回 1 台.*來源核對未完成/);
+    assert.match(f.nodes['sklive-entries'].children[2].textContent, /^已補回.*新增公開入口/);
+    assert.equal(f.saves.length, 0, 'the importer uses the add-only batch capability, never per-row delete/edit');
+    assert.equal(f.publications.length, 1);
+});

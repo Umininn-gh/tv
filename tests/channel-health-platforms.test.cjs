@@ -243,6 +243,32 @@ test('Gosh valid offline profile is not a failed channel', async () => {
     assert.equal(result.accountId, 'stable-profile-123');
 });
 
+test('Gosh HTTP 200 helper payloads with upstream error status cannot turn an existing profile into offline', async () => {
+    for (const fields of [{ status: 401 }, { status: '401' }, { statusCode: 503 }, { status: 'error' }]) {
+        const app = fixture({
+            'https://gosh.com/kingkong_tv': response(profile('KingKong_TV', { identifier: { value: 'stable-profile-123' } })),
+            [GOSH_WORKER + 'kingkong_tv']: response({ isLive: false, channelId: 'kingkong_tv', ...fields, message: 'private-upstream-response' })
+        });
+        const result = await app.check({ platform: 'gosh', id: 'KingKong_TV' });
+        assert.equal(result.status, 'exists');
+        assert.equal(result.accountId, 'stable-profile-123');
+        assert.match(result.evidence[1].summary, /上游錯誤.*不能據此判定離線/);
+        assert.equal(result.evidence[1].httpStatus, 200, 'the outer helper HTTP response remains distinct from its upstream failure');
+        assert.doesNotMatch(JSON.stringify(result), /private-upstream-response/);
+        assert.equal(app.calls.length, 2);
+    }
+});
+
+test('Gosh successful helper status retains genuine live and offline evidence', async () => {
+    for (const isLive of [false, true]) {
+        const app = fixture({
+            'https://gosh.com/kingkong_tv': response(profile('KingKong_TV')),
+            [GOSH_WORKER + 'kingkong_tv']: response({ isLive, channelId: 'kingkong_tv', status: 200 })
+        });
+        assert.equal((await app.check({ platform: 'gosh', id: 'KingKong_TV' })).status, isLive ? 'live' : 'offline');
+    }
+});
+
 test('AngelThump user identity validates an offline account', async () => {
     const app = fixture({ [ANGEL + 'ppkkkp']: response(angelUser()) });
     const result = await app.check({ platform: 'angelthump', id: 'ppkkkp' });
