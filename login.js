@@ -88,6 +88,7 @@
             await loadScript('./player-geometry.js?v=20261027-shrink-docking');
             await loadScript('./player-layout.js?v=20261027-focus-memory');
             await loadScript('./player-lifecycle.js?v=20261028-error-placeholder-control');
+            await loadScript('./player-motion.js?v=20261031-layout-motion').catch(error => console.warn('過渡動畫暫時未能載入。', error));
             await loadScript('./player-audio-bridge.js?v=20261024-layout-layers-phase4');
             await loadScript('./stream-quality.js?v=20261016-twitch-auto-init').catch(error => console.warn('畫質調節暫時未能載入，沿用平台播放器。', error));
             await loadScript('./embed-audio.js').catch(error => console.warn('YouTube 聲音同步暫時未能載入，請使用播放器聲音控制。', error));
@@ -95,7 +96,7 @@
             await loadScript('./topbar-menu.js?v=20261023-responsive-toolbar');
             await loadScript('./layout-bookmarks.js?v=20261024-bookmarks-delete-all');
             await loadScript('./shared-bookmarks.js?v=20261024-bookmarks-delete-all');
-            await loadScript('./tv-app.js?v=20261029-sklive-gosh');
+            await loadScript('./tv-app.js?v=20261031-layout-motion');
             if (!window.tvAppReady || typeof window.tvAppReady.then !== 'function') {
                 throw new Error('TV application did not initialize');
             }

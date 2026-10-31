@@ -546,6 +546,7 @@ let playerPositionEditor = null;
 let playerNameOverlay = null;
 let playerWindowControls = null;
 let playerGrid = null;
+let playerMotion = null;
 let layoutBookmarkMenu = null;
 let layoutBookmarkFeedbackTimer = null;
 let globalMutedPreference = null;
@@ -774,7 +775,7 @@ function replacePlayerWithError(resource, message) {
     resource.failed = true;
     resource.errorShown = true;
     // Overlay refreshes must not interrupt the provider's fatal-error cleanup.
-    for (const refresh of [projectPlayerLayout, () => playerNameOverlay?.refresh(),
+    for (const refresh of [() => playerMotion?.refresh(), projectPlayerLayout, () => playerNameOverlay?.refresh(),
         () => playerWindowControls?.refresh(), () => playerPositionEditor?.refresh()]) {
         try { refresh(); } catch (_) {}
     }
@@ -815,6 +816,7 @@ function disposePlayer(entry) {
 function disposePlayerResource(entry) {
     const resource = entry.resource;
     const element = resource ? resource.element : entry.element;
+    try { playerMotion?.leave({ key: ChannelList.channelKey(entry.channel), element, channel: entry.channel, resource }); } catch (_) {}
     if (resource) {
         resource.disposed = true;
         try { resource.twitch?.dispose(); } catch (error) {}
@@ -841,6 +843,8 @@ function disposePlayerResource(entry) {
 
 function destroyAllHLSInstances() {
     playerPositionEditor?.close(false);
+    playerMotion?.destroy();
+    playerMotion = null;
     playerRegistry.clear();
     playerLayoutState.setOrder([]);
     currentHLSInstances.forEach(instance => { try { instance.destroy(); } catch (error) {} });
@@ -860,6 +864,35 @@ function renderChannelElement(channel, muted, wrapperClass) {
 /* ------------------------ 單台觀看 ------------------------ */
 function getPlayerElement(entry) {
     return playerRegistry.element(entry);
+}
+
+/* Motion projects the committed geometry; it never owns players or sound. */
+function getPlayerMotion() {
+    const pane = document.getElementById('multi-stream-container');
+    if (!playerMotion && pane && typeof PlayerMotion !== 'undefined') {
+        playerMotion = PlayerMotion.create({
+            pane,
+            getItems: () => Array.from(activePlayers, ([key, entry]) => ({
+                key, element: getPlayerElement(entry), channel: entry.channel, resource: entry.resource
+            })),
+            canAnimate: () => !document.getElementById('player-position-editor')?.classList.contains('position-resizing'),
+            onSettled() {
+                playerPositionEditor?.layoutChanged?.();
+                playerNameOverlay?.refresh();
+                playerWindowControls?.refresh();
+            }
+        });
+    }
+    return playerMotion;
+}
+
+function withPlayerVisualMotion(action) {
+    const motion = getPlayerMotion();
+    return motion ? motion.run(action) : action();
+}
+
+function getPlayerLayoutRect(element) {
+    return playerMotion ? playerMotion.layoutRect(element) : element.getBoundingClientRect();
 }
 
 function projectPlayerLayout() {
@@ -981,7 +1014,10 @@ function closePlayer(key) {
     if (!entry && !initial) return false;
     const muted = getGlobalMuted();
     if (entry) disposePlayer(entry);
-    else initial.remove();
+    else {
+        try { playerMotion?.leave({ key: 'initial-player', element: initial, channel: { name: '目前播放器' } }); } catch (_) {}
+        initial.remove();
+    }
     playerLayoutState.setOrder(playerLayoutState.order.filter(value => activePlayers.has(value)));
     // A close must not re-render retained players or apply the 2-to-1 audio rule.
     if (globalMutedPreference === null && activePlayers.size && muted !== getGlobalMuted()) globalMutedPreference = muted;
@@ -1127,7 +1163,12 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     const emptyNode = !selected.length && container.children.length === 1 &&
         container.firstElementChild?.textContent === emptyMessage ? container.firstElementChild : null;
     for (const child of Array.from(container.children)) {
-        if (!retained.has(child) && child !== emptyNode) { child.remove(); presentationChanged = true; }
+        if (!retained.has(child) && child !== emptyNode) {
+            if (child.id === 'MyFrame') {
+                try { playerMotion?.leave({ key: 'initial-player', element: child, channel: { name: '目前播放器' } }); } catch (_) {}
+            }
+            child.remove(); presentationChanged = true;
+        }
     }
     const count = selected.length;
     const muted = getGlobalMuted(count);
@@ -1143,6 +1184,7 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
     const unsyncedAudio = [];
     selected.forEach((channel, index) => {
         const key = ChannelList.channelKey(channel);
+        const previousName = activePlayers.get(key)?.channel.name;
         const hasUrlAudioControl = ['twitch', 'kick', 'ok', 'youtube'].includes(channel.platform);
         const initialMuted = preserveAudio ? true : muted;
         const { entry, created } = playerRegistry.ensure(key, channel, {
@@ -1153,9 +1195,13 @@ function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
             failed: (element, resource) => !resource && ['hls', 'flv'].includes(getPlatform(channel.platform)?.type)
         });
         if (!entry) return;
+        // Lifecycle projects the new label during reuse; retain the old name
+        // comparison so sibling controls still receive metadata-only updates.
+        if (previousName !== channel.name) presentationChanged = true;
         if (created) {
             presentationChanged = true;
             container.appendChild(getPlayerElement(entry));
+            getPlayerMotion()?.enter({ key, element: getPlayerElement(entry), channel, resource: entry.resource });
             if (globalMutedPreference !== null && !entry.resource && !entry.failed && !['twitch', 'kick', 'ok'].includes(channel.platform)) unsyncedAudio.push(channel.name);
         } else {
             // Preserve manual mute, volume and pause changes within the same mode.
@@ -1283,8 +1329,14 @@ function playerBookmarkAudioAvailable() {
     return playerLayoutAudioAvailable() && document.documentElement.hasAttribute('data-umininn-player-bookmark-audio-ready');
 }
 function readPlayerBookmarkAudio(keys) { return playerAudioBridge.captureBookmark(keys); }
-function withPlayerAudioLayout(action, options = {}) { return playerAudioBridge.run(action, options); }
-function guardPlayerAudioLayout(action, requiresLayout) { return playerAudioBridge.guard(action, requiresLayout); }
+function withPlayerAudioLayout(action, options = {}) {
+    return playerAudioBridge.run(() => withPlayerVisualMotion(action), options);
+}
+function guardPlayerAudioLayout(action, requiresLayout) {
+    return playerAudioBridge.guard(function (...args) {
+        return withPlayerVisualMotion(() => action.apply(this, args));
+    }, requiresLayout);
+}
 applyPlayerSize = guardPlayerAudioLayout(applyPlayerSize, (next, { optimize = true } = {}) =>
     optimize || PlayerLayout.compare(getCurrentPlayerGeometry(), next).changed);
 enlargePlayer = guardPlayerAudioLayout(enlargePlayer, key => activePlayers.size > 1 && activePlayers.has(key) &&
@@ -2432,7 +2484,7 @@ function applyPlayerBookmark(value) {
         layer.style.clipPath = `inset(${Math.max(0, (paneBounds.top - bounds.top) / scaleY)}px ${Math.max(0, (bounds.right - paneBounds.right) / scaleX)}px ${Math.max(0, (bounds.bottom - paneBounds.bottom) / scaleY)}px ${Math.max(0, (paneBounds.left - bounds.left) / scaleX)}px round ${getComputedStyle(pane).borderRadius})`;
         const visible = items.filter(item => item.element.isConnected && item.element.getClientRects().length &&
             !['hidden', 'collapse'].includes(getComputedStyle(item.element).visibility))
-            .map(item => ({ ...item, rect: item.element.getBoundingClientRect() }))
+            .map(item => ({ ...item, rect: getPlayerLayoutRect(item.element) }))
             .filter(item => item.rect.width > 0 && item.rect.height > 0);
         const keys = new Set(visible.map(item => item.key));
         for (const [key, cell] of labels) if (!keys.has(key)) { cell.remove(); labels.delete(key); }
@@ -2732,7 +2784,7 @@ function applyPlayerBookmark(value) {
         const geometry = getCurrentPlayerGeometry();
         const geometryItems = new Map(geometry.items.map(item => [item.key, item]));
         const enlarged = geometry.items.find(item => item.span > 1 && activePlayers.has(item.key));
-        const rectangles = new Map(visible.map(item => [item.key, item.element.getBoundingClientRect()]));
+        const rectangles = new Map(visible.map(item => [item.key, getPlayerLayoutRect(item.element)]));
         for (const { key, name, element } of visible) {
             let cell = cells.get(key);
             if (!cell) {
