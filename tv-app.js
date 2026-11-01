@@ -547,6 +547,9 @@ let playerNameOverlay = null;
 let playerWindowControls = null;
 let playerGrid = null;
 let playerMotion = null;
+const PLAYER_MOTION_PREFERENCE_KEY = 'playerMotionPreference';
+let playerMotionPreference = 'auto';
+try { playerMotionPreference = normalizePlayerMotionPreference(localStorage.getItem(PLAYER_MOTION_PREFERENCE_KEY)); } catch (_) {}
 let layoutBookmarkMenu = null;
 let layoutBookmarkFeedbackTimer = null;
 let globalMutedPreference = null;
@@ -866,12 +869,39 @@ function getPlayerElement(entry) {
     return playerRegistry.element(entry);
 }
 
+function normalizePlayerMotionPreference(value) {
+    return ['auto', 'on', 'off'].includes(value) ? value : 'auto';
+}
+
+function refreshPlayerMotionMenu() {
+    const menu = document.getElementById('channel-actions');
+    if (!menu) return;
+    const labels = { auto: '動畫：跟隨系統', on: '動畫：開啟', off: '動畫：關閉' };
+    for (const [value, label] of Object.entries(labels)) {
+        const option = menu.querySelector(`option[value="motion:${value}"]`);
+        if (!option) continue;
+        const text = `${playerMotionPreference === value ? '✓ ' : ''}${label}`;
+        if (option.textContent !== text) option.textContent = text;
+        option.disabled = typeof PlayerMotion === 'undefined';
+    }
+}
+
+function setPlayerMotionPreference(value, { persist = true } = {}) {
+    if (normalizePlayerMotionPreference(value) !== value) return false;
+    playerMotionPreference = value;
+    playerMotion?.setPreference(value);
+    if (persist) { try { localStorage.setItem(PLAYER_MOTION_PREFERENCE_KEY, value); } catch (_) {} }
+    refreshPlayerMotionMenu();
+    return true;
+}
+
 /* Motion projects the committed geometry; it never owns players or sound. */
 function getPlayerMotion() {
     const pane = document.getElementById('multi-stream-container');
     if (!playerMotion && pane && typeof PlayerMotion !== 'undefined') {
         playerMotion = PlayerMotion.create({
             pane,
+            preference: playerMotionPreference,
             getItems: () => Array.from(activePlayers, ([key, entry]) => ({
                 key, element: getPlayerElement(entry), channel: entry.channel, resource: entry.resource
             })),
@@ -3382,12 +3412,19 @@ function updateIdPlaceholder() {
 (function initChannelActions() {
     const menu = document.getElementById('channel-actions');
     if (!menu) return;
+    refreshPlayerMotionMenu();
     menu.addEventListener('change', () => {
         const action = menu.value;
         menu.value = '';
         if (action === 'manage') showPopup();
         else if (['new', 'channels', 'sklive', 'health'].includes(action)) showChannelManager(action);
         else if (action === 'userscript') showUserscript();
+        else if (action.startsWith('motion:')) setPlayerMotionPreference(action.slice(7));
+    });
+    window.addEventListener('storage', event => {
+        if (event.key !== PLAYER_MOTION_PREFERENCE_KEY && event.key !== null) return;
+        try { if (event.storageArea && event.storageArea !== localStorage) return; } catch (_) { return; }
+        setPlayerMotionPreference(normalizePlayerMotionPreference(event.newValue), { persist: false });
     });
 })();
 

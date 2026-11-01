@@ -1597,7 +1597,7 @@
     <link rel="stylesheet" href="./login.css">
     <link rel="stylesheet" href="./layout-bookmarks.css?v=20261024-bookmarks-delete-all">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261031-layout-motion"></script>
+    <script defer src="./login.js?v=20261101-motion-preference"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">
@@ -1641,6 +1641,11 @@
                     <option value="sklive">🔄 SKLive 補台</option>
                     <option value="health">🔎 疑似失效台檢查</option>
                     <option value="userscript">🧩 userscript</option>
+                    <optgroup label="過渡動畫">
+                        <option value="motion:auto">✓ 動畫：跟隨系統</option>
+                        <option value="motion:on">動畫：開啟</option>
+                        <option value="motion:off">動畫：關閉</option>
+                    </optgroup>
                 </select>
                 <button id="logout-btn" type="button">登出</button>
                 <button id="toggle-all-audio" type="button" aria-pressed="false" onclick="toggleAllAudio()" title="同步支援的播放器聲音；部分外站播放器會重新載入">🔇 全部靜音</button>

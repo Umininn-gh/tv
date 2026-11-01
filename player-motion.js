@@ -9,12 +9,14 @@
         '#player-name-overlay .player-name-cell[data-player-key], ' +
         '#player-position-editor .player-position-cell[data-player-key]';
 
-    function create({ pane, getItems, canAnimate = () => true, onSettled = () => {} } = {}) {
+    function create({ pane, getItems, canAnimate = () => true, onSettled = () => {}, preference = 'auto' } = {}) {
         if (!pane || typeof getItems !== 'function') throw new TypeError('pane and getItems are required');
         const document = pane.ownerDocument, view = document?.defaultView || root;
         const wrapper = pane.parentElement;
         const active = new Map(), pending = new Map(), entering = new Map(), ghosts = new Set();
         const entered = new WeakSet(), leaving = new WeakSet(), pointers = new Set();
+        const validPreference = value => value === 'auto' || value === 'on' || value === 'off';
+        let preferenceMode = validPreference(preference) ? preference : 'auto';
         let media;
         try { media = view.matchMedia?.('(prefers-reduced-motion: reduce)'); } catch (_) {}
         let destroyed = false, suspended = false, depth = 0, frame = null, before = null;
@@ -42,8 +44,18 @@
             return result;
         }
         const current = item => items().get(item.key)?.element === item.element;
+        const motionEnabled = () => preferenceMode === 'on' || preferenceMode === 'auto' && !media?.matches;
+        function getPreference() { return preferenceMode; }
+        function setPreference(value) {
+            if (destroyed || !validPreference(value)) return false;
+            preferenceMode = value;
+            // A preference change affects future operations only. Disabling
+            // clears current effects and readiness listeners without replaying.
+            if (!motionEnabled()) cancelAll();
+            return true;
+        }
         function allowed() {
-            if (destroyed || suspended || pointers.size || media?.matches || document?.hidden ||
+            if (destroyed || suspended || pointers.size || !motionEnabled() || document?.hidden ||
                 document?.fullscreenElement || document?.webkitFullscreenElement || document?.mozFullScreenElement ||
                 !pane.isConnected || !rect(pane)) return false;
             try { return canAnimate() !== false; } catch (_) { return false; }
@@ -425,7 +437,7 @@
         const releasePointers = () => pointers.clear();
         const pageHide = () => { suspended = true; pointers.clear(); cancelAll(); };
         const pageShow = () => { suspended = false; refresh(); };
-        const motionChange = () => { if (media?.matches) cancelAll(); };
+        const motionChange = () => { if (!motionEnabled()) cancelAll(); };
         const fullscreenChange = () => cancelAll();
         const blur = () => { pointers.clear(); cancelVisuals(); };
         const viewportChange = () => {
@@ -465,7 +477,7 @@
             if (media?.removeEventListener) media.removeEventListener('change', motionChange);
             else media?.removeListener?.(motionChange);
         }
-        return { run, enter, leave, refresh, layoutRect, cancelAll, destroy };
+        return { run, enter, leave, refresh, layoutRect, getPreference, setPreference, cancelAll, destroy };
     }
 
     const api = { create };
