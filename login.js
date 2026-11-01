@@ -96,7 +96,7 @@
             await loadScript('./topbar-menu.js?v=20261023-responsive-toolbar');
             await loadScript('./layout-bookmarks.js?v=20261024-bookmarks-delete-all');
             await loadScript('./shared-bookmarks.js?v=20261024-bookmarks-delete-all');
-            await loadScript('./tv-app.js?v=20261101-motion-preference');
+            await loadScript('./tv-app.js?v=20261101-motion-default-on');
             if (!window.tvAppReady || typeof window.tvAppReady.then !== 'function') {
                 throw new Error('TV application did not initialize');
             }

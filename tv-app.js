@@ -548,7 +548,7 @@ let playerWindowControls = null;
 let playerGrid = null;
 let playerMotion = null;
 const PLAYER_MOTION_PREFERENCE_KEY = 'playerMotionPreference';
-let playerMotionPreference = 'auto';
+let playerMotionPreference = 'on';
 try { playerMotionPreference = normalizePlayerMotionPreference(localStorage.getItem(PLAYER_MOTION_PREFERENCE_KEY)); } catch (_) {}
 let layoutBookmarkMenu = null;
 let layoutBookmarkFeedbackTimer = null;
@@ -870,6 +870,7 @@ function getPlayerElement(entry) {
 }
 
 function normalizePlayerMotionPreference(value) {
+    if (value === null) return 'on';
     return ['auto', 'on', 'off'].includes(value) ? value : 'auto';
 }
 

@@ -51,20 +51,46 @@ async function checked(page) {
         options.filter(option => option.textContent.startsWith('✓ ')).map(option => option.value));
 }
 async function select(page, mode) { await page.locator('#channel-actions').selectOption('motion:' + mode); }
+async function reloadFixture(f) {
+    // A requested reload creates new media/frame documents. Start continuity
+    // tracking at those documents; subsequent preference/layout commands must
+    // keep them connected without another navigation.
+    f.navigations.clear();
+    await f.page.reload({ waitUntil: 'load' });
+    await f.page.waitForFunction(() => activePlayers.size === 5 && fixtureMedia.every(saved => saved.video.readyState >= 2));
+    f.frames = f.page.frames().filter(frame => frame.parentFrame() === f.page.mainFrame());
+    assert.equal(f.frames.length, 2);
+    for (const frame of f.frames) await frame.waitForFunction(() => fixtureMedia[0]?.video.readyState >= 2);
+    await installMenu(f.page); await appFixture.settled(f);
+}
 
-test('the real desktop animation commands override Windows reduction and save only this browser preference', cases, async t => {
+test('fresh desktop default animates despite Windows reduction while explicit auto and off remain available', cases, async t => {
     const f = await appFixture.setup(t); if (!f) return;
     await installMenu(f.page); await f.page.emulateMedia({ reducedMotion: 'reduce' });
-    assert.deepEqual(await checked(f.page), ['motion:auto']);
+    assert.equal(await f.page.evaluate(() => playerMotionPreference), 'on');
+    assert.equal(await f.page.evaluate(() => getPlayerMotion().getPreference()), 'on');
+    assert.deepEqual(await checked(f.page), ['motion:on']);
+    assert.equal(await f.page.evaluate(() => localStorage.getItem('playerMotionPreference')), null, 'the new default does not overwrite a saved preference');
     const before = await appFixture.snapshot(f);
+    await f.page.evaluate(() => swapPlayerPositions(fixture.keys[0], fixture.keys[2]));
+    await f.page.waitForFunction(() => motionQa.some(call => call.duration === 240));
+    await appFixture.settled(f); await appFixture.assertContinuity(f, before);
+    await select(f.page, 'auto');
+    assert.deepEqual(await checked(f.page), ['motion:auto']);
+    const autoCount = await f.page.evaluate(() => motionQa.length);
+    await f.page.evaluate(() => swapPlayerPositions(fixture.keys[0], fixture.keys[2]));
+    await appFixture.settled(f);
+    assert.equal(await f.page.evaluate(() => motionQa.length), autoCount, 'explicit auto honors Windows reduction');
+    await appFixture.assertContinuity(f, before);
     await select(f.page, 'on');
     assert.equal(await f.page.evaluate(() => playerMotionPreference), 'on');
     assert.equal(await f.page.evaluate(() => getPlayerMotion().getPreference()), 'on');
     assert.equal(await f.page.evaluate(() => localStorage.getItem('playerMotionPreference')), 'on');
     assert.deepEqual(await checked(f.page), ['motion:on']);
     assert.equal(await f.page.locator('#channel-actions').inputValue(), '', 'command dropdown retains its 台務 title');
+    const onCount = await f.page.evaluate(() => motionQa.length);
     await f.page.evaluate(() => swapPlayerPositions(fixture.keys[0], fixture.keys[2]));
-    await f.page.waitForFunction(() => motionQa.some(call => call.duration === 240));
+    await f.page.waitForFunction(count => motionQa.slice(count).some(call => call.duration === 240), onCount);
     await appFixture.settled(f); await appFixture.assertContinuity(f, before);
     await select(f.page, 'off');
     assert.deepEqual(await checked(f.page), ['motion:off']);
@@ -75,19 +101,36 @@ test('the real desktop animation commands override Windows reduction and save on
     await appFixture.assertContinuity(f, before);
 });
 
-test('saved preference survives a reload while a separate browser context retains the default', cases, async t => {
+test('saved on, auto and off survive reloads while a separate browser context starts with on', cases, async t => {
     const f = await appFixture.setup(t); if (!f) return;
+    await f.page.emulateMedia({ reducedMotion: 'reduce' });
     await installMenu(f.page); await select(f.page, 'on');
-    await f.page.reload({ waitUntil: 'load' });
-    await f.page.waitForFunction(() => activePlayers.size === 5);
-    await installMenu(f.page);
+    await reloadFixture(f);
     assert.equal(await f.page.evaluate(() => playerMotionPreference), 'on');
     assert.equal(await f.page.evaluate(() => getPlayerMotion().getPreference()), 'on');
     assert.deepEqual(await checked(f.page), ['motion:on']);
+    for (const mode of ['auto', 'off']) {
+        await select(f.page, mode);
+        await reloadFixture(f);
+        assert.equal(await f.page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches), true);
+        assert.equal(await f.page.evaluate(() => playerMotionPreference), mode);
+        assert.equal(await f.page.evaluate(() => getPlayerMotion().getPreference()), mode);
+        assert.deepEqual(await checked(f.page), ['motion:' + mode]);
+        const before = await appFixture.snapshot(f);
+        await f.page.evaluate(() => {
+            window.preferenceAnimationCalls = 0;
+            const animate = Element.prototype.animate;
+            Element.prototype.animate = function (...args) { preferenceAnimationCalls++; return animate.apply(this, args); };
+            swapPlayerPositions(fixture.keys[0], fixture.keys[2]);
+        });
+        await appFixture.settled(f);
+        assert.equal(await f.page.evaluate(() => preferenceAnimationCalls), 0, 'saved ' + mode + ' still suppresses animation after reload');
+        await appFixture.assertContinuity(f, before);
+    }
     const other = await appFixture.setup(t); if (!other) return;
     await installMenu(other.page);
-    assert.equal(await other.page.evaluate(() => playerMotionPreference), 'auto');
-    assert.deepEqual(await checked(other.page), ['motion:auto']);
+    assert.equal(await other.page.evaluate(() => playerMotionPreference), 'on');
+    assert.deepEqual(await checked(other.page), ['motion:on']);
 });
 
 test('real cross-tab storage events update the current mode and menu without writing it back', cases, async t => {
@@ -107,8 +150,9 @@ test('real cross-tab storage events update the current mode and menu without wri
     assert.deepEqual(await checked(f.page), ['motion:off']);
     assert.equal(await f.page.evaluate(() => preferenceWrites), 0);
     await second.evaluate(() => localStorage.removeItem('playerMotionPreference'));
-    await f.page.waitForFunction(() => playerMotionPreference === 'auto');
-    assert.deepEqual(await checked(f.page), ['motion:auto']);
+    await f.page.waitForFunction(() => playerMotionPreference === 'on');
+    assert.deepEqual(await checked(f.page), ['motion:on']);
+    assert.equal(await f.page.evaluate(() => preferenceWrites), 0, 'removing the saved preference restores the default without a write-back');
     await second.close();
 });
 
@@ -137,7 +181,28 @@ test('invalid stored modes and foreign storage areas cannot force animation; una
     assert.deepEqual(await checked(f.page), ['motion:auto']);
     assert.equal(await f.page.evaluate(() => setPlayerMotionPreference('invalid')), false);
     await f.page.evaluate(() => { setPlayerMotionPreference('on', { persist: false }); dispatchEvent(new StorageEvent('storage', { key: null, newValue: null, storageArea: localStorage })); });
-    assert.equal(await f.page.evaluate(() => playerMotionPreference), 'auto');
+    assert.equal(await f.page.evaluate(() => playerMotionPreference), 'on');
+    assert.deepEqual(await checked(f.page), ['motion:on']);
+});
+
+test('storage denied before application startup retains the on default and usable in-page controls', cases, async t => {
+    const f = await appFixture.setup(t, { denyStorage: true }); if (!f) return;
+    await installMenu(f.page); await f.page.emulateMedia({ reducedMotion: 'reduce' });
+    assert.equal(await f.page.evaluate(() => playerMotionPreference), 'on');
+    assert.equal(await f.page.evaluate(() => getPlayerMotion().getPreference()), 'on');
+    assert.deepEqual(await checked(f.page), ['motion:on']);
+    const before = await appFixture.snapshot(f);
+    await f.page.evaluate(() => swapPlayerPositions(fixture.keys[0], fixture.keys[2]));
+    await f.page.waitForFunction(() => motionQa.some(call => call.duration === 240));
+    await appFixture.settled(f); await appFixture.assertContinuity(f, before);
+    await select(f.page, 'off');
+    assert.equal(await f.page.evaluate(() => playerMotionPreference), 'off');
+    assert.deepEqual(await checked(f.page), ['motion:off']);
+    const count = await f.page.evaluate(() => motionQa.length);
+    await f.page.evaluate(() => swapPlayerPositions(fixture.keys[0], fixture.keys[2]));
+    await appFixture.settled(f);
+    assert.equal(await f.page.evaluate(() => motionQa.length), count);
+    await appFixture.assertContinuity(f, before);
 });
 
 test('preference lookup is cached while layouts animate and the application is idle', cases, async t => {
@@ -159,10 +224,11 @@ test('the compact 台務 submenu exposes all three real preference commands and 
     const helperStart = appSource.indexOf('function normalizePlayerMotionPreference(');
     const helperEnd = appSource.indexOf('/* Motion projects', helperStart);
     assert.ok(helperStart >= 0 && helperEnd > helperStart);
-    await page.addScriptTag({ content: "const PLAYER_MOTION_PREFERENCE_KEY='playerMotionPreference';let playerMotionPreference='auto';let playerMotion=null;\n" +
+    await page.addScriptTag({ content: "const PLAYER_MOTION_PREFERENCE_KEY='playerMotionPreference';let playerMotionPreference='on';let playerMotion=null;\n" +
         appSource.slice(helperStart, helperEnd) + '\n' + initActions });
     await toolbarFixture.open(page);
     await page.locator('#topbar-tasks-btn').click();
+    await page.locator('button[data-topbar-task="motion:on"]').filter({ hasText: '✓' }).waitFor();
     await page.locator('button[data-topbar-task="motion:on"]').click();
     assert.equal(await page.evaluate(() => playerMotionPreference), 'on');
     assert.equal(await page.evaluate(() => localStorage.getItem('playerMotionPreference')), 'on');
