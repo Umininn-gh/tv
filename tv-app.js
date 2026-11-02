@@ -2889,9 +2889,13 @@ function applyPlayerBookmark(value) {
                 promote.hidden = true;
                 node.appendChild(promote);
                 buttons.promote = promote;
+                const nameLabel = document.createElement('span');
+                nameLabel.className = 'player-window-name';
+                nameLabel.setAttribute('aria-hidden', 'true');
+                node.appendChild(nameLabel);
                 node.addEventListener('pointerenter', scheduleHover);
                 node.addEventListener('pointerleave', scheduleHover);
-                cell = { node, bar, buttons, directionButtons: new Map(), element: null };
+                cell = { node, bar, buttons, nameLabel, directionButtons: new Map(), element: null };
                 cells.set(key, cell);
             }
             bind(cell, element);
@@ -2958,6 +2962,13 @@ function applyPlayerBookmark(value) {
             cell.node.style.setProperty('--player-corner-size', `${cornerSize}px`);
             cell.node.style.setProperty('--player-corner-font', `${Math.min(14, cornerSize)}px`);
             cell.node.style.setProperty('--player-corner-padding', cornerSize < 18 ? '1px' : '3px');
+            const nameLeft = 3 + leftCount * (cornerSize + 3);
+            const nameWidth = Math.max(0, rect.width - nameLeft - toolbarCount * cornerSize - 6);
+            const channelName = String(name ?? '');
+            if (cell.nameLabel.textContent !== channelName) cell.nameLabel.textContent = channelName;
+            cell.nameLabel.hidden = !(canSwapFocus || canPromote) || nameWidth < 12;
+            cell.nameLabel.style.left = `${nameLeft}px`;
+            cell.nameLabel.style.maxWidth = `${nameWidth}px`;
             const source = geometryItems.get(key);
             const targets = new Set();
             for (const [direction, label] of Object.entries(directions)) {

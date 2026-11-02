@@ -722,6 +722,29 @@
         .player-direction-right:hover, .player-direction-right:active { transform: translateY(-50%); }
         .player-window-move:focus-visible, .player-window-audio:focus-visible, .player-window-promote:focus-visible, .player-window-swap-focus:focus-visible, .player-direction-button:focus-visible { outline: 1px solid #fff; outline-offset: -1px; }
         .player-window-promote[aria-disabled="true"] { cursor: wait; }
+        .player-window-name {
+            position: absolute;
+            top: 3px;
+            display: block;
+            width: max-content;
+            height: var(--player-corner-size, 18px);
+            box-sizing: border-box;
+            padding: 0 3px;
+            border-radius: 3px;
+            background: rgba(28, 28, 30, .48);
+            color: #fff;
+            font-size: min(12px, var(--player-corner-size, 18px));
+            line-height: var(--player-corner-size, 18px);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            user-select: none;
+            pointer-events: none;
+            opacity: 0;
+        }
+        .player-window-name[hidden] { display: none; }
+        .player-window-cell[data-hovered="true"] > .player-window-name,
+        .player-window-cell:has(button:focus-visible) > .player-window-name { opacity: .85; }
         .player-window-move:disabled { cursor: default; }
         .player-window-cell[data-hovered="true"] > .player-window-move:disabled,
         .player-window-cell:has(button:focus-visible) > .player-window-move:disabled { opacity: .3; }
@@ -1600,7 +1623,7 @@
     <link rel="stylesheet" href="./login.css">
     <link rel="stylesheet" href="./layout-bookmarks.css?v=20261024-bookmarks-delete-all">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261102-heart-promote"></script>
+    <script defer src="./login.js?v=20261102-corner-name"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">
