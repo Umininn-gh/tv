@@ -1038,6 +1038,34 @@ function shrinkPlayer(key) {
     return plan.kind !== 'none' && applyPlayerSize(plan.next, { growthAnchor: plan.growthAnchor });
 }
 
+function canPromotePlayerTopRight(key) {
+    return activePlayers.size > 1 && activePlayers.has(key) &&
+        getCurrentPlayerGeometry().items.length === activePlayers.size &&
+        getCurrentPlayerGeometry().items.every(item => item.span === 1);
+}
+
+function promotePlayerTopRight(key) {
+    if (!canPromotePlayerTopRight(key)) return false;
+    const pane = document.getElementById('multi-stream-container');
+    if (!pane) return false;
+    const style = getComputedStyle(pane), number = value => parseFloat(value) || 0;
+    const width = Math.max(0, pane.clientWidth - number(style.paddingLeft) - number(style.paddingRight));
+    const height = Math.max(0, pane.clientHeight - number(style.paddingTop) - number(style.paddingBottom));
+    const gap = (value, dimension) => String(value).endsWith('%') ? number(value) * dimension / 100 : number(value);
+    const tracks = activePlayers.size + 1;
+    const plan = playerLayoutOperations.promoteTopRight(getCurrentPlayerGeometry(), key, { width, height,
+        columnGap: Math.min(gap(style.columnGap, width), width / (2 * tracks)),
+        rowGap: Math.min(gap(style.rowGap, height), height / (2 * tracks)) });
+    // The swap and fit have already been calculated; never project the swapped
+    // 1×1 grid or animate a separate intermediate enlargement.
+    if (plan.kind === 'none') return false;
+    const applied = applyPlayerSize(plan.next, { optimize: false });
+    // A new main layout starts a fresh round of ⇄ exchanges, even if its
+    // geometry happens to match an older temporary pair exactly.
+    if (applied) { try { localStorage.removeItem(PLAYER_FOCUS_SWAP_STORAGE_KEY); } catch (_) {} }
+    return applied;
+}
+
 function closePlayer(key) {
     const pane = document.getElementById('multi-stream-container');
     const entry = activePlayers.get(key);
@@ -1374,6 +1402,7 @@ enlargePlayer = guardPlayerAudioLayout(enlargePlayer, key => activePlayers.size 
     !(playerLayoutState.focus?.key === key && playerLayoutState.focus.span >= 256));
 shrinkPlayer = guardPlayerAudioLayout(shrinkPlayer, key => activePlayers.size > 1 && activePlayers.has(key) &&
     playerLayoutState.enlargedGeometry?.items.some(item => item.key === key && item.span > 1));
+promotePlayerTopRight = guardPlayerAudioLayout(promotePlayerTopRight, canPromotePlayerTopRight);
 closePlayer = guardPlayerAudioLayout(closePlayer, key => activePlayers.has(key) ||
     key === 'initial-player' && !activePlayers.size && Boolean(document.getElementById('multi-stream-container')?.querySelector('#MyFrame')));
 swapPlayerPositions = guardPlayerAudioLayout(swapPlayerPositions, (source, target) =>
@@ -2756,6 +2785,7 @@ function applyPlayerBookmark(value) {
     let frame = null;
     let hoverFrame = null;
     let suspended = false;
+    let promotionPending = false;
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null;
     const mutations = new MutationObserver(schedule);
     const modeObserver = new MutationObserver(schedule);
@@ -2815,6 +2845,8 @@ function applyPlayerBookmark(value) {
         const geometry = getCurrentPlayerGeometry();
         const geometryItems = new Map(geometry.items.map(item => [item.key, item]));
         const enlarged = geometry.items.find(item => item.span > 1 && activePlayers.has(item.key));
+        const uniform = activePlayers.size > 1 && geometry.items.length === activePlayers.size &&
+            geometry.items.every(item => item.span === 1);
         const rectangles = new Map(visible.map(item => [item.key, getPlayerLayoutRect(item.element)]));
         for (const { key, name, element } of visible) {
             let cell = cells.get(key);
@@ -2849,6 +2881,14 @@ function applyPlayerBookmark(value) {
                 swapFocus.hidden = true;
                 node.appendChild(swapFocus);
                 buttons.swapFocus = swapFocus;
+                const promote = document.createElement('button');
+                promote.type = 'button';
+                promote.className = 'player-window-promote';
+                promote.dataset.playerAction = 'promote-top-right';
+                promote.textContent = '♡';
+                promote.hidden = true;
+                node.appendChild(promote);
+                buttons.promote = promote;
                 node.addEventListener('pointerenter', scheduleHover);
                 node.addEventListener('pointerleave', scheduleHover);
                 cell = { node, bar, buttons, directionButtons: new Map(), element: null };
@@ -2896,10 +2936,22 @@ function applyPlayerBookmark(value) {
             cell.buttons.swapFocus.setAttribute('aria-label', swapLabel);
             cell.buttons.swapFocus.style.left = `calc(var(--player-corner-size, 18px) * ${cell.buttons.audio ? 2 : 1} + ${cell.buttons.audio ? 9 : 6}px)`;
             if (!canSwapFocus && swapHadFocus) (cell.buttons.audio || cell.buttons.move).focus({ preventScroll: true });
+            const canPromote = uniform && activePlayers.has(key);
+            const promoteHadFocus = document.activeElement === cell.buttons.promote;
+            cell.buttons.promote.hidden = !canPromote;
+            // Keep keyboard focus while audio capture is pending. Native
+            // disabled buttons can blur in Firefox; the handler gates input.
+            cell.buttons.promote.setAttribute('aria-disabled', String(promotionPending));
+            const promoteLabel = playerLayoutAudioAvailable() && document.documentElement.hasAttribute('data-umininn-player-unified-audio-ready') ?
+                `移至右上並放大，只開此台聲音（100%）：${name}` : `移至右上並放大：${name}`;
+            cell.buttons.promote.title = promoteLabel;
+            cell.buttons.promote.setAttribute('aria-label', promoteLabel);
+            cell.buttons.promote.style.left = cell.buttons.swapFocus.style.left;
+            if (!canPromote && promoteHadFocus) (cell.buttons.audio || cell.buttons.move).focus({ preventScroll: true });
             // Keep the left shortcuts and the right toolbar distinct even
             // when a small window leaves very little room in a tile.
             const toolbarCount = span > 1 ? 3 : 2;
-            const leftCount = 1 + Number(Boolean(cell.buttons.audio)) + Number(canSwapFocus);
+            const leftCount = 1 + Number(Boolean(cell.buttons.audio)) + Number(canSwapFocus || canPromote);
             const leftWidthGaps = 3 * (leftCount - 1);
             const cornerSize = leftCount > 1 ? Math.max(1, Math.min(18,
                 Math.floor((rect.width - 9 - leftWidthGaps) / (toolbarCount + leftCount)), Math.floor((rect.height - 10) / 2))) : 18;
@@ -2994,6 +3046,26 @@ function applyPlayerBookmark(value) {
             const focus = playerAudioBridge.beginFocus(key, entry, target);
             if (focus) focus.lease = playerRegistry.lease(entry);
             await withPlayerAudioLayout(() => enlargePlayer(key), { focus });
+        }
+        else if (button.dataset.playerAction === 'promote-top-right') {
+            // This is one promotion, rather than two queued exchanges. A second
+            // heart must not replace its sound intent while capture is pending.
+            if (event.detail > 1 || promotionPending || playerAudioBridge.batch || playerAudioBridge.queueLength ||
+                !canPromotePlayerTopRight(key) || !(pane.clientWidth > 0 && pane.clientHeight > 0)) return;
+            const entry = activePlayers.get(key), target = getPlayerElement(entry), lease = playerRegistry.lease(entry);
+            promotionPending = true;
+            try {
+                render();
+                const focus = playerAudioBridge.beginFocus(key, entry, target);
+                if (focus) focus.lease = lease;
+                await withPlayerAudioLayout(() => {
+                    if (!playerRegistry.isCurrent(lease) || getPlayerElement(entry) !== target) return false;
+                    return promotePlayerTopRight(key);
+                }, { focus });
+            } finally {
+                promotionPending = false;
+                render();
+            }
         }
         else if (button.dataset.playerAction === 'swap-focus') {
             // Ignore a second click landing on the old main tile after the

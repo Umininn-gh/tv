@@ -86,7 +86,7 @@
             await loadScript('./channel-list.js');
             await loadScript('./stream-performance.js');
             await loadScript('./player-geometry.js?v=20261027-shrink-docking');
-            await loadScript('./player-layout.js?v=20261027-focus-memory');
+            await loadScript('./player-layout.js?v=20261102-heart-promote');
             await loadScript('./player-lifecycle.js?v=20261028-error-placeholder-control');
             await loadScript('./player-motion.js?v=20261101-motion-preference').catch(error => console.warn('過渡動畫暫時未能載入。', error));
             await loadScript('./player-audio-bridge.js?v=20261024-layout-layers-phase4');
@@ -96,7 +96,7 @@
             await loadScript('./topbar-menu.js?v=20261023-responsive-toolbar');
             await loadScript('./layout-bookmarks.js?v=20261024-bookmarks-delete-all');
             await loadScript('./shared-bookmarks.js?v=20261024-bookmarks-delete-all');
-            await loadScript('./tv-app.js?v=20261101-motion-default-on');
+            await loadScript('./tv-app.js?v=20261102-heart-promote');
             if (!window.tvAppReady || typeof window.tvAppReady.then !== 'function') {
                 throw new Error('TV application did not initialize');
             }

@@ -197,6 +197,25 @@
             }
             return { ...fitted, ...normal, count: keys.length };
         }
+        function promoteTopRight(layout, key, measure = {}) {
+            const items = layout?.items;
+            if (!Array.isArray(items) || items.length < 2 || items.some(item => item.span !== 1) ||
+                !items.some(item => item.key === key)) return none(layout, 'no-normal-target');
+            if (!(Number(measure.width) > 0 && Number(measure.height) > 0) ||
+                !Number.isFinite(Number(measure.width)) || !Number.isFinite(Number(measure.height)))
+                return none(layout, 'unmeasurable-promotion');
+            const row = Math.min(...items.map(item => item.row));
+            const source = items.filter(item => item.row === row).sort((a, b) => b.column - a.column)[0];
+            const exchanged = source.key === key ? layout : exchange(layout, key, source.key).next;
+            const grown = grow(exchanged, key);
+            // Only the final plan leaves this function. In particular a one-column
+            // starting grid must dock right, rather than inherit a left-edge tie.
+            const next = fitSize({ keys: visualKeys(exchanged), focus: grown.next.items.find(item => item.key === key),
+                growthAnchor: { key, span: 2, right: true, top: true, left: false, bottom: false } },
+                { ...measure, previous: layout });
+            return { kind: 'promote-top-right', next, keys: visualKeys(next),
+                sourceKey: source.key, targetKey: key, focus: next.items.find(item => item.key === key) };
+        }
         function previewSize(layout, key, span, corner, measure = {}) {
             const plan = resize(layout, key, span, corner);
             if (plan.kind === 'none') return plan;
@@ -286,7 +305,7 @@
             } else next = geometry.choose({ ...options, keys, focus });
             return { next: { ...next, count: keys.length }, pending: null };
         }
-        return Object.freeze({ exchange, swapFocus, grow, shrink, resize, fitSize, previewSize, step, target, reflow });
+        return Object.freeze({ exchange, swapFocus, promoteTopRight, grow, shrink, resize, fitSize, previewSize, step, target, reflow });
     }
 
     function choose({ count, width, height, columnGap = 0, rowGap = 0, previous, force = false,
