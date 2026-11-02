@@ -57,13 +57,46 @@ test('corner names sit after the current heart or swap shortcut with and without
         assert.equal(state.pointerEvents, 'none'); assert.equal(state.hitName, false);
         if (audioUserscript) await capture(f, keys[4], 'normal');
         await actualMouseWindowAction(f, keys[4], 'promote-top-right'); await settled(f);
-        assert.deepEqual(await visibleNames(f), keys.filter(key => key !== keys[4]).sort());
+        assert.deepEqual(await visibleNames(f), [...keys].sort(), 'the enlarged player keeps its corner name too');
+        const largeAction = audioUserscript ? 'audio-focus' : 'move';
+        await cell(f, keys[4]).locator(`[data-player-action="${largeAction}"]`).focus();
+        state = await nameState(f, keys[4], largeAction);
+        assert.equal(state.text, names[keys[4]]); assert.equal(state.hidden, false);
+        assert.ok(state.name.left >= state.button.right && state.name.right <= state.toolbar.left);
+        assert.ok(state.name.width > 0 && state.name.height > 0 && state.opacity > 0);
+        assert.equal(state.pointerEvents, 'none'); assert.equal(state.hitName, false);
         await cell(f, keys[0]).locator('[data-player-action="swap-focus"]').focus();
         state = await nameState(f, keys[0], 'swap-focus');
         assert.equal(state.text, names[keys[0]]);
         assert.ok(state.name.left >= state.button.right && state.name.right <= state.toolbar.left);
         await assertAudioContinuity(f, before);
     });
+});
+
+test('enlarged corner names remain with the live player through ordinary growth, shrink and main swaps', browserCase, async t => {
+    const f = await setup(t, { audioUserscript: true }); if (!f) return;
+    const { keys } = await fixed(f), before = await snapshot(f);
+    const names = await f.page.evaluate(() => Object.fromEntries([...activePlayers].map(([key, entry]) => [key, entry.channel.name])));
+    async function checkLarge(key, span) {
+        const layout = await geometry(f);
+        assert.equal(layout.items.find(item => item.key === key).span, span);
+        assert.deepEqual(await visibleNames(f), [...keys].sort());
+        await f.page.keyboard.press('Tab'); await cell(f, key).locator('[data-player-action="audio-focus"]').focus();
+        const state = await nameState(f, key, 'audio-focus');
+        assert.equal(state.text, names[key]); assert.equal(state.hidden, false);
+        assert.ok(state.opacity > 0 && state.name.width > 0);
+        assert.ok(state.name.left >= state.button.right && state.name.right <= state.toolbar.left);
+        assert.equal(state.pointerEvents, 'none'); assert.equal(state.hitName, false);
+        for (const peer of keys) assert.equal(await label(f, peer).textContent(), names[peer], 'labels follow channel identity, not its old slot');
+    }
+    await actualMouseWindowAction(f, keys[2], 'enlarge'); await settled(f); await checkLarge(keys[2], 2);
+    await actualMouseWindowAction(f, keys[2], 'enlarge'); await settled(f); await checkLarge(keys[2], 3);
+    await actualMouseWindowAction(f, keys[0], 'swap-focus'); await settled(f); await checkLarge(keys[0], 3);
+    await actualMouseWindowAction(f, keys[0], 'shrink'); await settled(f); await checkLarge(keys[0], 2);
+    await actualMouseWindowAction(f, keys[0], 'shrink'); await settled(f);
+    assert.equal((await geometry(f)).items.every(item => item.span === 1), true);
+    assert.deepEqual(await visibleNames(f), [...keys].sort());
+    await assertAudioContinuity(f, before);
 });
 
 test('long corner names ellipsize inside the free toolbar gap and do not intercept player or control hit targets', browserCase, async t => {

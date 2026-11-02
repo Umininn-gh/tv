@@ -2966,7 +2966,7 @@ function applyPlayerBookmark(value) {
             const nameWidth = Math.max(0, rect.width - nameLeft - toolbarCount * cornerSize - 6);
             const channelName = String(name ?? '');
             if (cell.nameLabel.textContent !== channelName) cell.nameLabel.textContent = channelName;
-            cell.nameLabel.hidden = !(canSwapFocus || canPromote) || nameWidth < 12;
+            cell.nameLabel.hidden = !(canSwapFocus || canPromote || span > 1) || nameWidth < 12;
             cell.nameLabel.style.left = `${nameLeft}px`;
             cell.nameLabel.style.maxWidth = `${nameWidth}px`;
             const source = geometryItems.get(key);
