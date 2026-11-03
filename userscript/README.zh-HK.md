@@ -1,6 +1,12 @@
 # Umininn TV 播放器控制 Userscript
 
-版本：1.0.33。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+版本：1.0.34。Chrome、Edge、Firefox 使用同一份 `umininn-tv-player.user.js`，透過腳本管理器安裝。腳本更新不需要向 Mozilla 送簽；安裝內容由腳本管理器保存，重啟瀏覽器後仍會保留。
+
+## 1.0.34 統一選單閒置時間
+
+網站與 userscript 的選單共用 `menu-dismiss.js` 的 `MENU_IDLE_TIMEOUT_SECONDS`，目前為 30 秒。從播放器角落 L 鍵進入的放大模式，則共用同檔的 `CORNER_ENLARGE_IDLE_TIMEOUT_SECONDS`，目前為 10 秒；一般放大／搬位入口維持選單的閒置時間。修改這兩個值便會一併更新各入口的計時與提示文字。
+
+逾時仍保留已完成的佈局變更，並收起操作提示與模式台名；觀看、音量及尚未確認的選台不受影響。更新到 1.0.34 後請重新整理觀看頁，讓網站及所有播放器使用新版。
 
 ## 1.0.33 多台觀看的連線查找及記錄回收
 

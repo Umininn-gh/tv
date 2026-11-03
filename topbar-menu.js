@@ -7,6 +7,7 @@
     const COMPACT_WIDTH = 768;
     const EXIT_MARGIN = 48;
     const MIN_CHANNEL_WIDTH = 128;
+    const menuTiming = typeof module === 'object' && module.exports && typeof require === 'function' ? require('./menu-dismiss.js') : null;
 
     function create(options = {}) {
         const win = options.window || root.window || root;
@@ -62,7 +63,8 @@
         }
         function armIdle() {
             clearIdle();
-            if (opened) idleTimer = win.setTimeout(() => { idleTimer = null; close(true); }, 30000);
+            const seconds = (options.menuDismiss || root.UmininnMenuDismiss || win.UmininnMenuDismiss || menuTiming)?.MENU_IDLE_TIMEOUT_SECONDS;
+            if (opened && Number.isFinite(seconds) && seconds > 0) idleTimer = win.setTimeout(() => { idleTimer = null; close(true); }, seconds * 1000);
         }
         function inside(owner, node) {
             if (!owner || !node) return false;

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Umininn TV 播放器控制（Userscript）
 // @namespace    https://umininn-gh.github.io/tv/
-// @version      1.0.33
+// @version      1.0.34
 // @description  在 Umininn TV 控制播放器音量、靜音及恢復播放，隱藏 AngelThump 橫幅並自動收起初載控制列。
 // @homepageURL  https://umininn-gh.github.io/tv/
 // @updateURL    https://umininn-gh.github.io/tv/userscript/umininn-tv-player.meta.js
@@ -30,7 +30,7 @@
 (function () {
     'use strict';
     const scope = {
-        userscriptVersion: "1.0.33",
+        userscriptVersion: "1.0.34",
         window, document, location, AbortController: window.AbortController,
         setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
@@ -2149,6 +2149,8 @@
     'use strict';
     const CHANNEL = 'umininn-menu-interaction';
     const VERSION = 1;
+    const MENU_IDLE_TIMEOUT_SECONDS = 30;
+    const CORNER_ENLARGE_IDLE_TIMEOUT_SECONDS = 10;
     const GESTURES = ['pointerdown', 'mousedown', 'touchstart', 'contextmenu', 'wheel', 'keydown'];
     const TOKEN = /^[a-f0-9]{32,128}$/;
 
@@ -2434,7 +2436,7 @@
         return { dispose };
     }
 
-    const api = Object.freeze({ observe, startFrameNotifier });
+    const api = Object.freeze({ MENU_IDLE_TIMEOUT_SECONDS, CORNER_ENLARGE_IDLE_TIMEOUT_SECONDS, observe, startFrameNotifier });
     root.UmininnMenuDismiss = api;
     if (typeof module === 'object' && module.exports) module.exports = api;
 })(globalThis);
@@ -2794,6 +2796,9 @@
         const factory = options.media;
         const recoveryFactory = options.recovery || recovery;
         const menuDismiss = options.menuDismiss || root.UmininnMenuDismiss;
+        // Existing native extension packages predate the shared menu module.
+        // The website and generated userscript always provide its canonical API.
+        const menuIdleTimeoutSeconds = menuDismiss?.MENU_IDLE_TIMEOUT_SECONDS ?? 30;
         const entries = new Map();
         const guardedEntries = new Map(), urgentAudioTasks = new Set();
         let host, shadow, panelHost, panelShadow, toggle, quickDetect, panel, list, summary, observer, lateObserver, masterVolume, masterReadout, detectButton, recoveryStatus, recoveryFlow, audioFocusStatus, audioFocusFlow;
@@ -3988,7 +3993,7 @@
                     const restoreFocus = panel.contains(panelShadow.activeElement);
                     setOpen(false);
                     if (restoreFocus) toggle.focus({ preventScroll: true });
-                }, 30000);
+                }, menuIdleTimeoutSeconds * 1000);
             }
             function onPanelActivity(event) {
                 // Status updates, scripted clicks/focus and restored scrollTop

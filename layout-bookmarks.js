@@ -4,7 +4,7 @@
 
     const STORAGE_KEY = 'umininn.layoutBookmarks.v1';
     const MAX_BOOKMARKS = 50;
-    const IDLE_MS = 30000;
+    const menuTiming = typeof module === 'object' && module.exports && typeof require === 'function' ? require('./menu-dismiss.js') : null;
     const copy = value => JSON.parse(JSON.stringify(value));
     const integer = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
     const hue = value => integer(value, 0, 359) ? value : Math.floor(Math.random() * 360);
@@ -276,7 +276,8 @@
         function failure(error) { status(error?.message || '操作未能完成，請再試一次。', true); }
         function resetIdle() {
             if (idleTimer !== null) view.clearTimeout(idleTimer);
-            idleTimer = opened ? view.setTimeout(() => close(), IDLE_MS) : null;
+            const seconds = (root.UmininnMenuDismiss || view.UmininnMenuDismiss || menuTiming)?.MENU_IDLE_TIMEOUT_SECONDS;
+            idleTimer = opened && Number.isFinite(seconds) && seconds > 0 ? view.setTimeout(() => close(), seconds * 1000) : null;
         }
         function pendingLocalEntries() {
             if (!localStore) return [];

@@ -348,6 +348,9 @@
         const factory = options.media;
         const recoveryFactory = options.recovery || recovery;
         const menuDismiss = options.menuDismiss || root.UmininnMenuDismiss;
+        // Existing native extension packages predate the shared menu module.
+        // The website and generated userscript always provide its canonical API.
+        const menuIdleTimeoutSeconds = menuDismiss?.MENU_IDLE_TIMEOUT_SECONDS ?? 30;
         const entries = new Map();
         const guardedEntries = new Map(), urgentAudioTasks = new Set();
         let host, shadow, panelHost, panelShadow, toggle, quickDetect, panel, list, summary, observer, lateObserver, masterVolume, masterReadout, detectButton, recoveryStatus, recoveryFlow, audioFocusStatus, audioFocusFlow;
@@ -1542,7 +1545,7 @@
                     const restoreFocus = panel.contains(panelShadow.activeElement);
                     setOpen(false);
                     if (restoreFocus) toggle.focus({ preventScroll: true });
-                }, 30000);
+                }, menuIdleTimeoutSeconds * 1000);
             }
             function onPanelActivity(event) {
                 // Status updates, scripted clicks/focus and restored scrollTop

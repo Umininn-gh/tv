@@ -60,11 +60,12 @@ function htmlFixture({ width = 1100, height = 600 } = {}) {
     const activePlayers=playerRegistry.entries;
     const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});
     const playerLayoutOperations=PlayerLayout.createOperations({geometry:PlayerGeometry});let playerGrid=null;
-    let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[],layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null;
+    let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[],layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null,playerMotion=null;
     const playerWindowControls={refresh(){}},playerNameOverlay={refresh(){},setVisible(){}},playerPositionEditor={refresh(){},layoutChanged(){},close(){}},channelSelectionIdleTimer={setVisible(){}};
     window.fixture={renders:0,nextId:0,remembered:new Map(),captures:0,applies:0};
     function getPlatform(type){return {type:type==='m3u8'?'hls':'iframe'}}
     function withPlayerAudioLayout(action){return action()}
+    function getPlayerMotion(){return null}
     function showGlobalAudioFeedback(){} function updateChannelSelectionSummary(){}
     function renderChannelElement(channel,muted,wrapperClass){fixture.renders++;const element=document.createElement(channel.platform==='m3u8'?'video':'iframe');element.id='qa-player-'+fixture.nextId++;element.className=wrapperClass;
       if(element.tagName==='VIDEO'){element.muted=muted;element.loop=true;element.playsInline=true;instrument(element);element.src='/silent.wav?key='+encodeURIComponent(ChannelList.channelKey(channel));playerResources.set(element,{element,video:element,disposed:false,failed:false,hls:null,flv:null});}

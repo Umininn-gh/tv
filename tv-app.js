@@ -539,7 +539,8 @@ const PLAYER_POSITION_STORAGE_KEY = 'playerPositionOrder';
 const PLAYER_ENLARGEMENT_STORAGE_KEY = 'playerEnlargementLayout';
 const PLAYER_FOCUS_SWAP_STORAGE_KEY = 'playerFocusSwapMemory';
 // Shared duration for the viewing page's temporary menus and editing overlays.
-const PLAYER_OVERLAY_TIMEOUT_SECONDS = 30;
+const PLAYER_OVERLAY_TIMEOUT_SECONDS = window.UmininnMenuDismiss.MENU_IDLE_TIMEOUT_SECONDS;
+const PLAYER_CORNER_ENLARGE_TIMEOUT_SECONDS = window.UmininnMenuDismiss.CORNER_ENLARGE_IDLE_TIMEOUT_SECONDS;
 const playerLayoutState = PlayerLayout.createState({ buildGeometry: PlayerGeometry.build });
 const playerLayoutOperations = PlayerLayout.createOperations({ geometry: PlayerGeometry });
 let playerPositionEditor = null;
@@ -1992,6 +1993,7 @@ function applyPlayerBookmark(value) {
     let moveReturnFocus = null;
     let completionTimer = null;
     let completionDeadline = 0;
+    let completionSeconds = PLAYER_OVERLAY_TIMEOUT_SECONDS;
     const completionPointers = new Set();
     const buttons = new Map();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleLayout) : null;
@@ -2000,11 +2002,11 @@ function applyPlayerBookmark(value) {
         if (completionTimer !== null) clearTimeout(completionTimer);
         completionTimer = null;
         if (!opened) { completionDeadline = 0; return; }
-        completionDeadline = Date.now() + PLAYER_OVERLAY_TIMEOUT_SECONDS * 1000;
+        completionDeadline = Date.now() + completionSeconds * 1000;
         // A held pointer is an ongoing operation, including a long drag or
         // toolbar press. Start the full idle interval when it is released.
         if (!completionPointers.size)
-            completionTimer = setTimeout(autoComplete, PLAYER_OVERLAY_TIMEOUT_SECONDS * 1000);
+            completionTimer = setTimeout(autoComplete, completionSeconds * 1000);
     }
     layer.addEventListener('pointerdown', event => {
         if (!opened || !event.isTrusted || !event.isPrimary || event.button !== 0) return;
@@ -2126,7 +2128,8 @@ function applyPlayerBookmark(value) {
             if (returnButton?.isConnected && !returnButton.disabled) {
                 playerWindowControls?.refresh();
                 requestAnimationFrame(() => {
-                    if (!opened && returnButton.isConnected && !returnButton.disabled) returnButton.focus({ preventScroll: true });
+                    if (!opened && returnButton.isConnected && !returnButton.disabled && !returnButton.hidden) returnButton.focus({ preventScroll: true });
+                    else if (!opened) enlargeButton?.focus({ preventScroll: true });
                 });
             } else document.getElementById('more-channels-btn')?.focus();
         }
@@ -2199,15 +2202,17 @@ function applyPlayerBookmark(value) {
             PlayerLayout.compare(getCurrentPlayerGeometry(), playerLayoutOperations.target(getCurrentPlayerGeometry(), source, target, { direction }).next).changed });
     }
 
-    function open(nextMode) {
-        if (activePlayers.size < 2) return;
+    function open(nextMode, { corner = false } = {}) {
+        if (activePlayers.size < 2) return false;
+        if (opened) cancelPointer();
         moveReturnFocus = null;
         completionPointers.clear();
         setChannelSelectionVisible(false);
         mode = nextMode;
+        completionSeconds = mode === 'enlarge' && corner ? PLAYER_CORNER_ENLARGE_TIMEOUT_SECONDS : PLAYER_OVERLAY_TIMEOUT_SECONDS;
         layer.dataset.mode = mode;
         const help = mode === 'enlarge' ? '拖拉四角預覽，放開後自動分格；也可點格放大或按「縮小一格」；Esc 取消拖拉／完成' : '拖曳或點選目標；相鄰一步，跨格到位；方向鍵逐格，Esc 完成';
-        instructions.textContent = `${help}；閒置 ${PLAYER_OVERLAY_TIMEOUT_SECONDS} 秒後自動完成`;
+        instructions.textContent = `${help}；閒置 ${completionSeconds} 秒後自動完成`;
         doneButton.textContent = mode === 'enlarge' ? '✅ 完成放大' : '✅ 完成搬位';
         opened = true;
         layer.hidden = false;
@@ -2219,6 +2224,7 @@ function applyPlayerBookmark(value) {
         window.addEventListener('resize', onViewportResize);
         buttons.values().next().value?.focus({ preventScroll: true });
         resetCompletion();
+        return true;
     }
     function autoComplete() {
         if (completionTimer !== null) clearTimeout(completionTimer);
@@ -2512,7 +2518,17 @@ function applyPlayerBookmark(value) {
         announcement.textContent = `已選取 ${activePlayers.get(key).channel.name}，請拖曳或點選另一格交換位置`;
         return true;
     }
-    playerPositionEditor = { refresh, close, openMove, layoutChanged: scheduleLayout };
+    function openEnlarge(key, returnButton) {
+        if (activePlayers.size < 2 || !activePlayers.has(key)) return false;
+        if (!open('enlarge', { corner: true })) return false;
+        moveReturnFocus = returnButton;
+        pickedKey = key;
+        updateHighlights();
+        buttons.get(key)?.focus({ preventScroll: true });
+        announcement.textContent = `已選取 ${activePlayers.get(key).channel.name}，可拖拉四角調整大小`;
+        return true;
+    }
+    playerPositionEditor = { refresh, close, openMove, openEnlarge, layoutChanged: scheduleLayout };
     refresh();
 })();
 
@@ -2858,6 +2874,16 @@ function applyPlayerBookmark(value) {
         for (const element of elements) if (!observed.has(element)) { observer?.observe(element); observed.add(element); }
         const bounds = wrapper.getBoundingClientRect();
         const geometry = getCurrentPlayerGeometry();
+        const paneBounds = pane.getBoundingClientRect();
+        const paneStyle = getComputedStyle(pane);
+        const scaleX = pane.offsetWidth ? paneBounds.width / pane.offsetWidth : 1;
+        const scaleY = pane.offsetHeight ? paneBounds.height / pane.offsetHeight : 1;
+        const innerBounds = {
+            left: paneBounds.left + (parseFloat(paneStyle.borderLeftWidth) || 0) * scaleX,
+            right: paneBounds.right - (parseFloat(paneStyle.borderRightWidth) || 0) * scaleX,
+            top: paneBounds.top + (parseFloat(paneStyle.borderTopWidth) || 0) * scaleY,
+            bottom: paneBounds.bottom - (parseFloat(paneStyle.borderBottomWidth) || 0) * scaleY
+        };
         const geometryItems = new Map(geometry.items.map(item => [item.key, item]));
         const enlarged = geometry.items.find(item => item.span > 1 && activePlayers.has(item.key));
         const uniform = activePlayers.size > 1 && geometry.items.length === activePlayers.size &&
@@ -2910,7 +2936,17 @@ function applyPlayerBookmark(value) {
                 node.appendChild(nameLabel);
                 node.addEventListener('pointerenter', scheduleHover);
                 node.addEventListener('pointerleave', scheduleHover);
-                cell = { node, bar, buttons, nameLabel, directionButtons: new Map(), element: null };
+                const cornerButtons = new Map();
+                for (const corner of ['nw', 'ne', 'sw', 'se']) {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'player-window-enlarge-corner';
+                    button.dataset.playerAction = 'enlarge-mode';
+                    button.dataset.enlargeCorner = corner;
+                    button.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2 10V2H10"/></svg>';
+                    node.appendChild(button); cornerButtons.set(corner, button);
+                }
+                cell = { node, bar, buttons, nameLabel, cornerButtons, directionButtons: new Map(), element: null };
                 cells.set(key, cell);
             }
             bind(cell, element);
@@ -2977,6 +3013,14 @@ function applyPlayerBookmark(value) {
             cell.node.style.setProperty('--player-corner-size', `${cornerSize}px`);
             cell.node.style.setProperty('--player-corner-font', `${Math.min(14, cornerSize)}px`);
             cell.node.style.setProperty('--player-corner-padding', cornerSize < 18 ? '1px' : '3px');
+            for (const [corner, button] of cell.cornerButtons) {
+                const x = corner.endsWith('w') ? rect.left : rect.right;
+                const y = corner.startsWith('n') ? rect.top : rect.bottom;
+                button.hidden = activePlayers.size < 2 || !activePlayers.has(key) || cornerSize < 12 || rect.width < 24 || rect.height < 24 ||
+                    x <= innerBounds.left + 1 || x >= innerBounds.right - 1 || y <= innerBounds.top + 1 || y >= innerBounds.bottom - 1;
+                const label = `進入放大模式：${name}`;
+                button.title = label; button.setAttribute('aria-label', label);
+            }
             const nameLeft = 3 + leftCount * (cornerSize + 3);
             const nameWidth = Math.max(0, rect.width - nameLeft - toolbarCount * cornerSize - 6);
             const channelName = String(name ?? '');
@@ -3118,6 +3162,7 @@ function applyPlayerBookmark(value) {
         }
         else if (button.dataset.playerAction === 'shrink') await shrinkPlayer(key);
         else if (button.dataset.playerAction === 'move') playerPositionEditor?.openMove(key, button);
+        else if (button.dataset.playerAction === 'enlarge-mode') playerPositionEditor?.openEnlarge(key, button);
         else if (button.dataset.playerAction.startsWith('swap-')) {
             if (event.detail > 1) return;
             const direction = button.dataset.playerAction.slice(5);
@@ -3188,6 +3233,28 @@ function toggleChannelMenu() {
         document.body.style.overflow = "auto";
     }
 }
+
+/* The compact channel list uses the same idle setting as other menus. */
+(function initChannelMenuIdle() {
+    const menu = document.getElementById('channel-menu');
+    if (!menu) return;
+    let timer = null, opened = false;
+    function clear() { if (timer !== null) clearTimeout(timer); timer = null; }
+    function close() {
+        clear(); opened = false; menu.style.display = 'none'; document.body.style.overflow = 'auto';
+    }
+    function reset() { clear(); if (opened) timer = setTimeout(close, PLAYER_OVERLAY_TIMEOUT_SECONDS * 1000); }
+    function sync() {
+        const visible = !menu.hidden && getComputedStyle(menu).display !== 'none';
+        if (visible === opened) return;
+        opened = visible; reset();
+    }
+    for (const type of ['pointerdown', 'pointermove', 'pointerup', 'click', 'keydown', 'keyup', 'input', 'change', 'wheel', 'touchstart', 'touchmove', 'touchend'])
+        menu.addEventListener(type, event => { if (opened && event.isTrusted) reset(); }, { capture: true, passive: true });
+    new MutationObserver(sync).observe(menu, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
+    window.addEventListener('pagehide', close);
+    sync();
+})();
 
 function openDeleteModal() {
     const modal = document.getElementById('deleteChannelModal');
@@ -3284,11 +3351,11 @@ function showPopup() {
 }
 
 function showChannelManager(section = '') {
-    window.open('./channel-manager.html' + (section ? '#' + section : ''), 'umininn-channel-manager', 'width=800,height=800,noopener');
+    window.open((window.SitePaths ? window.SitePaths.url('manage/') : './manage/') + (section ? '#' + section : ''), 'umininn-channel-manager', 'width=800,height=800,noopener');
 }
 
 function showUserscript() {
-    window.open('./userscript/', 'umininn-userscript', 'width=860,height=680,noopener');
+    window.open(window.SitePaths ? window.SitePaths.url('userscript/') : './userscript/', 'umininn-userscript', 'width=860,height=680,noopener');
 }
 
 /* 隱藏離線開關 */
@@ -3345,7 +3412,7 @@ function showUserscript() {
         if (isAltChat) {
             iframe.src = `https://www.twitch.tv/embed/whitewing940920/chat?darkpopout&parent=${encodeURIComponent(parent)}`;
         } else {
-            const custom = new URL(('./test3.html') + '?v=20261021-chat-resources', location.href).href;
+            const custom = new URL((window.SitePaths ? window.SitePaths.url('chat/') : './chat/') + '?v=20261021-chat-resources', location.href).href;
             if (iframe.src !== custom) iframe.src = custom;
             else placeControl();
         }

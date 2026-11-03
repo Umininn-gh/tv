@@ -11,6 +11,7 @@ const PlayerLayout = require('../player-layout.js');
 const PlayerLifecycle = require('../player-lifecycle.js');
 const PlayerAudioBridge = require('../player-audio-bridge.js');
 const PlayerGeometry = require('../player-geometry.js');
+const UmininnMenuDismiss = require('../menu-dismiss.js');
 const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 const app = read('tv-app.js');
 const coreEnd = app.indexOf('/* =============== 頻道儲存 / 載入');
@@ -66,7 +67,7 @@ function fixture({ nativeHls = false } = {}) {
         location: { hostname: 'site.invalid', origin: 'https://site.invalid' },
         sessionStorage: { getItem() { return null; } }, localStorage: { setItem() {}, removeItem() {} },
         TV_LOGIN_CONFIG: { passwordHash: '0'.repeat(64), passwordSalt: 'fixture', storageKey: 'fixture' },
-        ChannelList, StreamPerformance, PlayerLayout, PlayerGeometry, PlayerLifecycle, PlayerAudioBridge, queueMicrotask, URL,
+        ChannelList, StreamPerformance, PlayerLayout, PlayerGeometry, PlayerLifecycle, PlayerAudioBridge, UmininnMenuDismiss, queueMicrotask, URL,
         console: { warn: (...args) => warnings.push(args), error() {} }, addEventListener() {}
     });
     context.window = context;

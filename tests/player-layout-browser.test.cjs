@@ -31,7 +31,7 @@ test.before(async () => {
         ...(engine==='firefox'?{firefoxUserPrefs:{'media.autoplay.default':0}}:{args:['--autoplay-policy=no-user-gesture-required']})}); }
     catch (error) { if(executablePath)throw error; unavailable='Optional browser executable unavailable.'; return; }
     const read = file => fs.readFileSync(path.join(root, siteFile(file)), 'utf8');
-    const source=read('site/assets/js/tv-app.js');
+    const source=read('tv-app.js');
     const coreEnd=source.indexOf('/* =============== 頻道儲存 / 載入');
     const statusClassStart=source.indexOf('function applyStatusClass(');
     const statusClassEnd=source.indexOf('\nfunction updateButtonStatus(',statusClassStart);
@@ -41,10 +41,10 @@ test.before(async () => {
     const editorEnd=source.indexOf('\nfunction toggleChannelMenu()',editorStart);
     assert.ok(coreEnd>0&&statusClassStart>coreEnd&&statusClassEnd>statusClassStart&&summaryStart>statusClassEnd&&selectionStart>summaryStart&&editorStart>selectionStart&&editorEnd>editorStart,'reviewed production core/status/selection/editor seams must exist');
     appScript=source.slice(0,coreEnd)+'\n'+source.slice(statusClassStart,statusClassEnd)+'\n'+source.slice(summaryStart,editorEnd)+'\n'+fixtureApp;
-    layoutScript=read('site/assets/js/player-layout.js');geometryScript=read('site/assets/js/player-geometry.js');channelScript=read('site/assets/js/channel-list.js');performanceScript=read('site/assets/js/stream-performance.js');bookmarkScript=read('site/assets/js/layout-bookmarks.js');menuDismissScript=read('site/assets/js/menu-dismiss.js');
-    lifecycleScript=read('site/assets/js/player-lifecycle.js');audioBridgeScript=read('site/assets/js/player-audio-bridge.js');
-    qualityScript=read('site/assets/js/stream-quality.js');
-    css=[...read('site/index.html').matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match=>match[1]).join('\n');
+    layoutScript=read('player-layout.js');geometryScript=read('player-geometry.js');channelScript=read('channel-list.js');performanceScript=read('stream-performance.js');bookmarkScript=read('layout-bookmarks.js');menuDismissScript=read('menu-dismiss.js');
+    lifecycleScript=read('player-lifecycle.js');audioBridgeScript=read('player-audio-bridge.js');
+    qualityScript=read('stream-quality.js');
+    css=[...read('index.html').matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match=>match[1]).join('\n');
     console.log(`Player layout model: ${engine} ${browser.version()} (headless; production CSS/app sections; all network intercepted; no live platform).`);
 });
 test.after(async()=>{await browser?.close()});
@@ -165,7 +165,7 @@ fixture.grid=function(){const pane=document.getElementById('multi-stream-contain
 };
 fixture.mount();fixture.initialGrid=fixture.grid();fixture.initialGeometry=fixture.geometry();`;
 
-async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,catalogChannels=0,hasTouch=false,framePlatform='at',productionKick=false,productionTwitch=false,clock=false,overlayTimeoutSeconds,audioUserscript=false,lateAudioFrame=null,fixtureBrowser=browser}={}){
+async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300},storageSeed=null,denyStorage=false,players=5,catalogChannels=0,hasTouch=false,framePlatform='at',productionKick=false,productionTwitch=false,clock=false,overlayTimeoutSeconds,cornerTimeoutSeconds,audioUserscript=false,lateAudioFrame=null,fixtureBrowser=browser}={}){
     const context=await fixtureBrowser.newContext({viewport,serviceWorkers:'block',...(hasTouch?{hasTouch:true}:{})});t.after(()=>context.close());
     if(storageSeed||denyStorage)await context.addInitScript(({storageSeed,denyStorage,origin})=>{
         if(location.origin!==origin)return;
@@ -180,10 +180,13 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
     if(productionTwitch)framePlatform='twitch';
     const modelFrameOrigin=audioUserscript?(productionTwitch?'https://player.twitch.tv':'https://player.kick.com'):frameOrigin;
     let fixtureScript=audioUserscript?appScript.replaceAll(frameOrigin,modelFrameOrigin):appScript;
-    if(overlayTimeoutSeconds!==undefined){
-        assert.ok(Number.isInteger(overlayTimeoutSeconds)&&overlayTimeoutSeconds>0);
-        fixtureScript=fixtureScript.replace(/(const\s+PLAYER_OVERLAY_TIMEOUT_SECONDS\s*=\s*)\d+(\s*;)/,(_,prefix,suffix)=>prefix+overlayTimeoutSeconds+suffix);
-        assert.notEqual(fixtureScript,appScript,'the reviewed timeout constant must be configurable in this fixture');
+    let fixtureMenuDismissScript=menuDismissScript;
+    for(const [name,seconds]of [['MENU_IDLE_TIMEOUT_SECONDS',overlayTimeoutSeconds],['CORNER_ENLARGE_IDLE_TIMEOUT_SECONDS',cornerTimeoutSeconds]]){
+        if(seconds===undefined)continue;
+        assert.ok(Number.isInteger(seconds)&&seconds>0);
+        const setting=new RegExp('(const\\s+'+name+'\\s*=\\s*)\\d+(\\s*;)','g');
+        assert.equal([...fixtureMenuDismissScript.matchAll(setting)].length,1,'one canonical menu timeout setting exists: '+name);
+        fixtureMenuDismissScript=fixtureMenuDismissScript.replace(setting,(_,prefix,suffix)=>prefix+seconds+suffix);
     }
     const main=`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body data-fixture-players="${players}" data-fixture-catalog-channels="${catalogChannels}" data-fixture-frame-platform="${framePlatform}" data-fixture-production-kick="${productionKick}" data-fixture-production-twitch="${productionTwitch}" data-fixture-audio-userscript="${audioUserscript}">
     <div ${audioUserscript?'id="input-container"':''} style="height:${audioUserscript?40:30}px;flex:none;${audioUserscript?'margin-left:0;width:100%;padding-left:0':''}"><button id="more-channels-btn" onclick="toggleChannelSelection()">看更台</button><button id="adjust-player-positions">調整位置</button><button id="enlarge-player">放大模式</button><button id="reset-player-positions">重設</button><button id="toggle-all-audio">聲音</button></div>
@@ -197,7 +200,7 @@ async function fixture(t,{width=1800,height=320,viewport={width:2000,height:1300
             if(request.url()===siteUrl)return route.fulfill({contentType:'text/html',body:main});
             if(url.origin===modelFrameOrigin&&['/player','/layout-added'].includes(url.pathname))return route.fulfill({contentType:'text/html',body:child});
         }
-        const scripts={'/instrument.js':instrument,'/channel-list.js':channelScript,'/stream-performance.js':performanceScript,'/player-geometry.js':geometryScript,'/player-layout.js':layoutScript,'/player-lifecycle.js':lifecycleScript,'/player-audio-bridge.js':audioBridgeScript,'/menu-dismiss.js':menuDismissScript,'/layout-bookmarks.js':bookmarkScript,'/stream-quality.js':qualityScript,'/fixture-app.js':fixtureScript};
+        const scripts={'/instrument.js':instrument,'/channel-list.js':channelScript,'/stream-performance.js':performanceScript,'/player-geometry.js':geometryScript,'/player-layout.js':layoutScript,'/player-lifecycle.js':lifecycleScript,'/player-audio-bridge.js':audioBridgeScript,'/menu-dismiss.js':fixtureMenuDismissScript,'/layout-bookmarks.js':bookmarkScript,'/stream-quality.js':qualityScript,'/fixture-app.js':fixtureScript};
         if(url.origin===new URL(siteUrl).origin&&scripts[url.pathname])return route.fulfill({contentType:'application/javascript; charset=utf-8',body:scripts[url.pathname]});
         if(url.pathname==='/silent.wav'&&[new URL(siteUrl).origin,modelFrameOrigin].includes(url.origin)){
             const range=/^bytes=(\d+)-(\d*)$/.exec(request.headers().range||'');const start=range?Number(range[1]):0;

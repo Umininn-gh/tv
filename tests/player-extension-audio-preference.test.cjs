@@ -9,6 +9,7 @@ const PlayerLayout = require('../player-layout.js');
 const PlayerLifecycle = require('../player-lifecycle.js');
 const PlayerAudioBridge = require('../player-audio-bridge.js');
 const PlayerGeometry = require('../player-geometry.js');
+const UmininnMenuDismiss = require('../menu-dismiss.js');
 
 const root = path.join(__dirname, '..');
 const read = name => fs.readFileSync(path.join(root, name), 'utf8');
@@ -50,7 +51,7 @@ class Element {
 function siteFixture(admin = false) {
     const pane = new Element('div'); pane.root = true;
     const selection = new Element('div');
-    const window = { listeners: new Map(), addEventListener(type, listener) { this.listeners.set(type, listener); } };
+    const window = { UmininnMenuDismiss, listeners: new Map(), addEventListener(type, listener) { this.listeners.set(type, listener); } };
     class Hls {
         static Events = { MANIFEST_PARSED: 'manifest', ERROR: 'error' };
         static isSupported() { return true; }
@@ -58,7 +59,8 @@ function siteFixture(admin = false) {
     }
     const context = vm.createContext({ window, location: { hostname: 'umininn-gh.github.io', origin: 'https://umininn-gh.github.io' },
         document: { getElementById: id => id === 'multi-stream-container' ? pane : id === 'channel-selection' ? selection : null,
-            createElement: tag => new Element(tag), addEventListener() {}, documentElement: { hasAttribute() { return false; } } }, Hls, ChannelList, StreamPerformance, PlayerLayout, PlayerGeometry, PlayerLifecycle, PlayerAudioBridge, queueMicrotask, console, URL });
+            createElement: tag => new Element(tag), addEventListener() {},
+            documentElement: { hasAttribute() { return false; } } }, Hls, ChannelList, StreamPerformance, PlayerLayout, PlayerGeometry, PlayerLifecycle, PlayerAudioBridge, queueMicrotask, console, URL });
     let source = read(admin ? 'admin.html' : 'tv-app.js');
     source = admin
         ? source.slice(source.indexOf('        // ======================== 全域變數'), source.indexOf('        // ======================== 載入 Twitch 憑證'))

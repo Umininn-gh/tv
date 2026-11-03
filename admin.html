@@ -10,6 +10,7 @@
     <script src="./flv.min.js"></script>
     <script src="./channel-list.js"></script>
     <script src="./stream-performance.js"></script>
+    <script src="./menu-dismiss.js?v=20261103-corner-menu-idle"></script>
     <script src="./stream-quality.js?v=20261016-twitch-auto-init"></script>
     <script src="./embed-audio.js"></script>
 		<script type="module" src="jquery-3.6.0.min.js"></script>
@@ -1422,6 +1423,27 @@ textarea:focus {
             }
         }
 
+        (function initChannelMenuIdle() {
+            const menu = document.getElementById('channel-menu');
+            if (!menu) return;
+            let timer = null, opened = false;
+            function clear() { if (timer !== null) clearTimeout(timer); timer = null; }
+            function close() {
+                clear(); opened = false; menu.style.display = 'none'; document.body.style.overflow = 'auto';
+            }
+            function reset() { clear(); if (opened) timer = setTimeout(close, window.UmininnMenuDismiss.MENU_IDLE_TIMEOUT_SECONDS * 1000); }
+            function sync() {
+                const visible = !menu.hidden && getComputedStyle(menu).display !== 'none';
+                if (visible === opened) return;
+                opened = visible; reset();
+            }
+            for (const type of ['pointerdown', 'pointermove', 'pointerup', 'click', 'keydown', 'keyup', 'input', 'change', 'wheel', 'touchstart', 'touchmove', 'touchend'])
+                menu.addEventListener(type, event => { if (opened && event.isTrusted) reset(); }, { capture: true, passive: true });
+            new MutationObserver(sync).observe(menu, { attributes: true, attributeFilter: ['style', 'class', 'hidden'] });
+            window.addEventListener('pagehide', close);
+            sync();
+        })();
+
         // ======================== 看更台面板 ========================
         const channelSelectionIdleTimer = (() => {
             const panel = document.getElementById('channel-selection');
@@ -1429,7 +1451,7 @@ textarea:focus {
             let visible = false;
             function reset() {
                 if (timer !== null) clearTimeout(timer);
-                timer = visible ? setTimeout(() => setChannelSelectionVisible(false), 30000) : null;
+                timer = visible ? setTimeout(() => setChannelSelectionVisible(false), window.UmininnMenuDismiss.MENU_IDLE_TIMEOUT_SECONDS * 1000) : null;
             }
             function onActivity(event) {
                 if (!visible || event.isTrusted !== true) return;

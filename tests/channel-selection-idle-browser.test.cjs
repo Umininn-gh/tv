@@ -20,6 +20,7 @@ function readPage(migrated, legacy) {
     const target = path.join(root, migrated);
     return fs.readFileSync(fs.existsSync(target) ? target : path.join(root, legacy), 'utf8');
 }
+const menuDismissSource = readPage('menu-dismiss.js', 'menu-dismiss.js');
 
 function productionFunction(source, name) {
     const expression = new RegExp('^([ \\t]*)function ' + name + '\\([^]*?\\n\\1}', 'm');
@@ -39,20 +40,20 @@ function productionTimer(source) {
     const start = source.indexOf('const channelSelectionIdleTimer =');
     const end = source.indexOf('function setChannelSelectionVisible(', start);
     assert.ok(start >= 0 && end > start, 'reviewed production timer seam exists');
-    const timeoutSetting = source.match(/^const PLAYER_OVERLAY_TIMEOUT_SECONDS = \d+;/m)?.[0] || '';
+    const timeoutSetting = source.match(/^const PLAYER_OVERLAY_TIMEOUT_SECONDS = [^;]+;/m)?.[0] || '';
     return timeoutSetting + '\n' + source.slice(start, end) + '\n' + productionFunction(source, 'setChannelSelectionVisible');
 }
 
 const pages = [
     {
         name: 'main viewing page', main: true,
-        html: readPage('site/index.html', 'index.html'),
-        source: readPage('site/assets/js/tv-app.js', 'tv-app.js')
+        html: readPage('index.html', 'index.html'),
+        source: readPage('tv-app.js', 'tv-app.js')
     },
     {
         name: 'alternate viewing page', main: false,
-        html: readPage('site/player/index.html', 'admin.html'),
-        source: readPage('site/player/index.html', 'admin.html')
+        html: readPage('admin.html', 'admin.html'),
+        source: readPage('admin.html', 'admin.html')
     }
 ];
 
@@ -97,12 +98,12 @@ async function fixture(t, entry) {
     await context.route('**/*', route => {
         if (route.request().url() === siteUrl && route.request().isNavigationRequest()) {
             return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><style>${css}</style></head><body>
-                <button id="open-selection" onclick="toggleChannelSelection()" style="position:fixed;top:10px;left:10px;z-index:3000">看更台</button>
+                <button id="more-channels-btn" onclick="toggleChannelSelection()" style="position:fixed;top:10px;left:10px;z-index:3000">看更台</button>
                 <input id="outside" style="position:fixed;bottom:20px;left:20px;z-index:3000" aria-label="Outside panel">
                 ${productionPanel(entry.html)}
                 <div id="multi-stream-container"><video id="existing-player" muted></video></div>
                 <div id="name-overlay" hidden>Existing player name</div>
-                <script>
+                <script>${menuDismissSource}</script><script>
                 const channels = Array.from({length: 36}, (_, index) => ({id:'fixture-'+index,platform:'m3u8',name:'本地頻道 '+index}));
                 const ChannelList = {channelKey: channel => channel.platform + '_' + channel.id};
                 const activePlayers = new Map([[ChannelList.channelKey(channels[0]), {element:document.getElementById('existing-player')}]]);
@@ -154,7 +155,7 @@ async function fixture(t, entry) {
 }
 
 async function open(page, main) {
-    await page.locator('#open-selection').click({ force: true });
+    await page.locator('#more-channels-btn').click({ force: true });
     assert.equal(await page.locator('#channel-selection').isVisible(), true);
     if (main) assert.equal(await page.locator('#name-overlay').isVisible(), true);
 }
@@ -254,7 +255,7 @@ for (const entry of pages) {
         const page = await fixture(t, entry);
         await open(page, entry.main);
         await page.clock.fastForward(29000);
-        await page.locator('#open-selection').click({force:true});
+        await page.locator('#more-channels-btn').click({force:true});
         await assertClosedAndUnchanged(page, entry.main);
         await page.clock.fastForward(500);
         await open(page, entry.main);

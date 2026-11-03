@@ -2,6 +2,8 @@
     'use strict';
     const CHANNEL = 'umininn-menu-interaction';
     const VERSION = 1;
+    const MENU_IDLE_TIMEOUT_SECONDS = 30;
+    const CORNER_ENLARGE_IDLE_TIMEOUT_SECONDS = 10;
     const GESTURES = ['pointerdown', 'mousedown', 'touchstart', 'contextmenu', 'wheel', 'keydown'];
     const TOKEN = /^[a-f0-9]{32,128}$/;
 
@@ -287,7 +289,7 @@
         return { dispose };
     }
 
-    const api = Object.freeze({ observe, startFrameNotifier });
+    const api = Object.freeze({ MENU_IDLE_TIMEOUT_SECONDS, CORNER_ENLARGE_IDLE_TIMEOUT_SECONDS, observe, startFrameNotifier });
     root.UmininnMenuDismiss = api;
     if (typeof module === 'object' && module.exports) module.exports = api;
 })(globalThis);

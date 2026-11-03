@@ -11,9 +11,11 @@ function readPage(migrated, legacy) {
     const target = path.join(root, migrated);
     return fs.readFileSync(fs.existsSync(target) ? target : path.join(root, legacy), 'utf8');
 }
+const menuDismiss = require(path.join(root, fs.existsSync(path.join(root, 'menu-dismiss.js'))
+    ? 'menu-dismiss.js' : 'menu-dismiss.js'));
 const pages = [
-    ['main viewing page', readPage('site/assets/js/tv-app.js', 'tv-app.js')],
-    ['alternate viewing page', readPage('site/player/index.html', 'admin.html')]
+    ['main viewing page', readPage('tv-app.js', 'tv-app.js')],
+    ['alternate viewing page', readPage('admin.html', 'admin.html')]
 ];
 
 function fixture(source) {
@@ -32,7 +34,7 @@ function fixture(source) {
         document: { getElementById(id) { return id === 'channel-selection' ? panel : null; } },
         window: {
             addEventListener(type, callback) { windowListeners.set(type, callback); },
-            UmininnMenuDismiss: { observe() { return { dispose() {} }; } }
+            UmininnMenuDismiss: { ...menuDismiss, observe() { return { dispose() {} }; } }
         },
         playerNameOverlay: { setVisible(value) { overlayVisible = value; } },
         layoutBookmarkMenu: null,
@@ -41,7 +43,7 @@ function fixture(source) {
         Date: { now() { return now; } },
         watchSelectedChannels() { applied++; }
     });
-    const timeoutSetting = source.match(/^const PLAYER_OVERLAY_TIMEOUT_SECONDS = \d+;/m)?.[0] || '';
+    const timeoutSetting = source.match(/^const PLAYER_OVERLAY_TIMEOUT_SECONDS = [^;]+;/m)?.[0] || '';
     vm.runInContext(timeoutSetting + '\n' + source.slice(start, end), context);
     function advance(milliseconds) {
         const until = now + milliseconds;

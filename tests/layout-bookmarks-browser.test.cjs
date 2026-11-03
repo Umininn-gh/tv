@@ -37,7 +37,7 @@ function loadProduction() {
     bookmarkCss = read('layout-bookmarks.css');
     modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'player-lifecycle', 'menu-dismiss', 'layout-bookmarks']
         .map(name => ['/tv/' + name + '.js', read('' + name + '.js')]));
-    const names = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'disposePlayerResource', 'projectPlayerLayout', 'calculatePlayerLayout', 'updatePlayerLayout',
+    const names = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'getPlayerLayoutRect', 'disposePlayer', 'disposePlayerResource', 'projectPlayerLayout', 'calculatePlayerLayout', 'updatePlayerLayout',
         'playerGridArea', 'getCurrentPlayerGeometry', 'savePlayerEnlargement', 'getPlayerPositionKeys', 'syncActivePlayers',
         'playerBookmarkAudioAvailable', 'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible'];
     appScript = names.map(name => productionFunction(source, name)).join('\n') + '\n' + productionIife(source, 'initLayoutBookmarks')
@@ -97,7 +97,7 @@ function fixtureDocument({ width = 1100, height = 600, framePlatform = 'at' } = 
     const PLAYER_POSITION_STORAGE_KEY='playerPositionOrder',PLAYER_ENLARGEMENT_STORAGE_KEY='playerEnlargementLayout';
     const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});
     const playerLayoutOperations=PlayerLayout.createOperations({geometry:PlayerGeometry});let playerGrid=null;
-    let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[];
+    let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[],playerMotion=null;
     let layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null,playerNameOverlay=null;
     const playerWindowControls={refresh(){}};
     const playerPositionEditor={refresh(){},layoutChanged(){},close(){fixture.editorCloses++}};
@@ -107,6 +107,7 @@ function fixtureDocument({ width = 1100, height = 600, framePlatform = 'at' } = 
     // This fixture has no userscript; its audio transaction branch is inactive.
     function playerLayoutAudioAvailable(){return false}
     function withPlayerAudioLayout(action){return action()}
+    function getPlayerMotion(){return null}
     function showGlobalAudioFeedback(){}
     function updateChannelSelectionSummary(){}
     function renderChannelElement(channel,muted,wrapperClass){

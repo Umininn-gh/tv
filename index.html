@@ -621,6 +621,37 @@
         }
         #player-window-controls[hidden],
         #multi-stream-container-wrapper:has(> #player-position-editor:not([hidden])) > #player-window-controls { display: none; }
+        .player-window-enlarge-corner {
+            position: absolute;
+            z-index: 2;
+            width: min(12px, calc(var(--player-corner-size, 18px) / 2 + 2px));
+            height: min(12px, calc(var(--player-corner-size, 18px) / 2 + 2px));
+            min-width: 0;
+            min-height: 0;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            border-radius: 0;
+            color: #fff;
+            background: transparent;
+            opacity: 0;
+            pointer-events: auto;
+            cursor: zoom-in;
+            transform: none;
+        }
+        .player-window-enlarge-corner[hidden] { display: none; }
+        .player-window-enlarge-corner:hover, .player-window-enlarge-corner:focus-visible { opacity: .65; background: rgba(28, 28, 30, .4); transform: none; }
+        .player-window-enlarge-corner svg { display: block; width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.5; pointer-events: none; }
+        .player-window-enlarge-corner[data-enlarge-corner="nw"] { top: 0; left: 0; }
+        .player-window-enlarge-corner[data-enlarge-corner="ne"] { top: 0; right: 0; }
+        .player-window-enlarge-corner[data-enlarge-corner="sw"] { bottom: 0; left: 0; }
+        .player-window-enlarge-corner[data-enlarge-corner="se"] { bottom: 0; right: 0; }
+        .player-window-enlarge-corner[data-enlarge-corner="ne"] svg { transform: rotate(90deg); }
+        .player-window-enlarge-corner[data-enlarge-corner="se"] svg { transform: rotate(180deg); }
+        .player-window-enlarge-corner[data-enlarge-corner="sw"] svg { transform: rotate(270deg); }
+        .player-window-cell > button:not(.player-window-enlarge-corner),
+        .player-window-buttons { z-index: 3; }
+        @media (any-hover: none) { .player-window-enlarge-corner { display: none; } }
         .player-window-cell {
             position: absolute;
             min-width: 0;
@@ -1638,7 +1669,7 @@
     <link rel="stylesheet" href="./login.css">
     <link rel="stylesheet" href="./layout-bookmarks.css?v=20261024-bookmarks-delete-all">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261103-watch-reset"></script>
+    <script defer src="./login.js?v=20261103-corner-menu-idle"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">
