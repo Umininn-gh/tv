@@ -3351,11 +3351,11 @@ function showPopup() {
 }
 
 function showChannelManager(section = '') {
-    window.open((window.SitePaths ? window.SitePaths.url('manage/') : './manage/') + (section ? '#' + section : ''), 'umininn-channel-manager', 'width=800,height=800,noopener');
+    window.open('./channel-manager.html' + (section ? '#' + section : ''), 'umininn-channel-manager', 'width=800,height=800,noopener');
 }
 
 function showUserscript() {
-    window.open(window.SitePaths ? window.SitePaths.url('userscript/') : './userscript/', 'umininn-userscript', 'width=860,height=680,noopener');
+    window.open('./userscript/', 'umininn-userscript', 'width=860,height=680,noopener');
 }
 
 /* 隱藏離線開關 */
@@ -3412,7 +3412,7 @@ function showUserscript() {
         if (isAltChat) {
             iframe.src = `https://www.twitch.tv/embed/whitewing940920/chat?darkpopout&parent=${encodeURIComponent(parent)}`;
         } else {
-            const custom = new URL((window.SitePaths ? window.SitePaths.url('chat/') : './chat/') + '?v=20261021-chat-resources', location.href).href;
+            const custom = new URL(('./test3.html') + '?v=20261021-chat-resources', location.href).href;
             if (iframe.src !== custom) iframe.src = custom;
             else placeControl();
         }
