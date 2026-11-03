@@ -1199,18 +1199,30 @@ function resetPlayerPositions() {
     if (changed) { playerPositionEditor?.refresh(); playerNameOverlay?.refresh(); }
 }
 
-function syncActivePlayers(requested, emptyMessage = '未選擇頻道') {
+function syncActivePlayers(requested, emptyMessage = '未選擇頻道', { resetPositions = false } = {}) {
     const container = document.getElementById("multi-stream-container");
     if (!container) return;
     const selected = ChannelList.mergeChannels(requested);
-    const preferredRanks = new Map(playerLayoutState.preferredOrder.map((key, index) => [key, index]));
+    const previousGeometry = playerLayoutState.geometry;
+    const previousFocus = playerLayoutState.enlargedGeometry?.items.find(item => item.span > 1);
+    const preferredRanks = new Map((resetPositions ? channels.map(ChannelList.channelKey) : playerLayoutState.preferredOrder)
+        .map((key, index) => [key, index]));
     selected.sort((a, b) => (preferredRanks.get(ChannelList.channelKey(a)) ?? Infinity) -
         (preferredRanks.get(ChannelList.channelKey(b)) ?? Infinity));
     const desired = new Set(selected.map(ChannelList.channelKey));
-    const previousFocus = playerLayoutState.enlargedGeometry?.items.find(item => item.span > 1);
+    if (resetPositions) {
+        playerLayoutState.setPreferredOrder([]);
+        playerLayoutState.setFocus(null);
+        playerLayoutState.setPending(null);
+        for (const storageKey of [PLAYER_POSITION_STORAGE_KEY, PLAYER_ENLARGEMENT_STORAGE_KEY, PLAYER_FOCUS_SWAP_STORAGE_KEY]) {
+            try { localStorage.removeItem(storageKey); } catch (_) {}
+        }
+        // Seed only logical cells. setOrder must not inherit the old square
+        // and reorder the default keys before the final selection is fitted.
+        playerLayoutState.commit(PlayerGeometry.build({ keys: selected.map(ChannelList.channelKey), columns: previousGeometry.columns }));
+    }
     const selectedFocus = selected.length > 1 && desired.has(playerLayoutState.focus?.key) ? playerLayoutState.focus : null;
     const layoutContextChanged = previousFocus?.key !== selectedFocus?.key || previousFocus?.span !== selectedFocus?.span;
-    const previousGeometry = playerLayoutState.geometry;
     let presentationChanged = false;
     for (const [key, entry] of activePlayers) {
         if (!desired.has(key)) { disposePlayer(entry); presentationChanged = true; }
@@ -1320,7 +1332,9 @@ function watchSelectedChannels() {
         .map(sel => channels.find(ch => ch.id === sel.id && ch.platform === sel.platform))
         .filter(Boolean);
 
-    syncActivePlayers(fullSelected, '未選擇任何頻道');
+    return syncActivePlayers(fullSelected, '未選擇任何頻道', {
+        resetPositions: document.getElementById('reset-positions-on-watch')?.checked === true
+    });
 }
 
 const channelSelectionIdleTimer = (() => {
@@ -1418,16 +1432,17 @@ resetPlayerPositions = guardPlayerAudioLayout(resetPlayerPositions, () => {
     const keys = getPlayerPositionKeys().sort((a, b) => (ranks.get(a) ?? Infinity) - (ranks.get(b) ?? Infinity));
     return PlayerLayout.compare(getCurrentPlayerGeometry(), PlayerGeometry.build({ keys, columns: playerLayoutState.geometry.columns })).changed;
 });
-syncActivePlayers = guardPlayerAudioLayout(syncActivePlayers, requested => {
+syncActivePlayers = guardPlayerAudioLayout(syncActivePlayers, (requested, emptyMessage, { resetPositions = false } = {}) => {
     const selected = ChannelList.mergeChannels(requested);
-    const ranks = new Map(playerLayoutState.preferredOrder.map((key, index) => [key, index]));
+    const ranks = new Map((resetPositions ? channels.map(ChannelList.channelKey) : playerLayoutState.preferredOrder)
+        .map((key, index) => [key, index]));
     selected.sort((a, b) => (ranks.get(ChannelList.channelKey(a)) ?? Infinity) - (ranks.get(ChannelList.channelKey(b)) ?? Infinity));
     const keys = selected.map(ChannelList.channelKey);
     if (keys.length !== activePlayers.size || keys.some(key => {
         const entry = activePlayers.get(key);
         return !entry || !getPlayerElement(entry).isConnected || entry.failed || entry.resource?.failed;
     })) return true;
-    const focus = keys.length > 1 ? playerLayoutState.enlargedGeometry?.items.find(item => item.span > 1) : null;
+    const focus = !resetPositions && keys.length > 1 ? playerLayoutState.enlargedGeometry?.items.find(item => item.span > 1) : null;
     return PlayerLayout.compare(getCurrentPlayerGeometry(), PlayerGeometry.build({ keys, columns: playerLayoutState.geometry.columns, focus })).changed;
 });
 

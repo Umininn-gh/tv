@@ -1302,6 +1302,21 @@
             margin-top: 8px;
             justify-content: center;
         }
+        #channel-selection .channel-watch-reset {
+            float: left;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            width: 96px;
+            height: 36px;
+            margin: 8px 8px 0 0;
+            font-size: .78rem;
+            white-space: nowrap;
+            cursor: pointer;
+        }
+        #reset-positions-on-watch { width: 16px; height: 16px; margin: 0; accent-color: var(--blue); }
+        #channel-selection .channel-watch-start { width: calc(100% - 104px); min-width: 0; padding: 0 8px; vertical-align: top; }
+        #channel-selection .channel-watch-start + button { clear: both; }
         .channel-selection-actions {
             display: grid;
             grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1623,7 +1638,7 @@
     <link rel="stylesheet" href="./login.css">
     <link rel="stylesheet" href="./layout-bookmarks.css?v=20261024-bookmarks-delete-all">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261102-enlarged-name"></script>
+    <script defer src="./login.js?v=20261103-watch-reset"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">
@@ -1750,7 +1765,8 @@
         <p id="channel-selection-help" class="channel-selection-help">藍色 ✓ 代表已選；綠色代表直播中。按「開始觀看」才會套用選擇。</p>
         <p id="channel-selection-summary" role="status" aria-live="polite">已選 0 台</p>
         <div id="channel-options" role="group" aria-label="選擇要同時觀看的台" aria-describedby="channel-selection-help"></div>
-        <button onclick="watchSelectedChannels()" style="background: #9147ff; color: #000; font-weight: 600;">▶️ 開始觀看</button>
+        <label class="channel-watch-reset"><input id="reset-positions-on-watch" type="checkbox" checked>重設位置</label>
+        <button id="start-watching" class="channel-watch-start" onclick="watchSelectedChannels()" style="background: #9147ff; color: #000; font-weight: 600;">▶️ 開始觀看</button>
         <button onclick="checkAllLiveChannels()" style="background: var(--green); color: #000; font-weight: 600;">所有在線頻道</button>
         <div class="channel-selection-actions">
             <button id="select-all-channels" type="button" onclick="selectAllChannelSelection()" title="隱藏離線開啟時，全選可見頻道並取消離線頻道" style="background: var(--bg-2); color: var(--label);">全選</button>

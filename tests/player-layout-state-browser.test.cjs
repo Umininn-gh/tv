@@ -97,11 +97,11 @@ test('layout state: playback-error replacement uses model placement even when th
     assert.deepEqual(await assertProjection(f), expected);
     const after = await snapshot(f);
     assert.deepEqual(after.main.slice(1).map(stable), before.main.slice(1).map(stable));
-    // The browser may pause a detached failed media node itself. Every command
-    // counter and sound/source property still stays untouched by replacement.
+    // Retiring failed media explicitly pauses it immediately. No other media
+    // command or sound/source property may change during error replacement.
     const {paused:oldPaused,...oldFailed}=stable(before.main[0]);
     const {paused:newPaused,...newFailed}=stable(after.main[0]);
-    assert.deepEqual(newFailed,{...oldFailed,same:false});
+    assert.deepEqual(newFailed,{...oldFailed,same:false,actions:{...oldFailed.actions,pause:oldFailed.actions.pause+1}});
     assert.deepEqual(after.frames.map(frame => ({id:frame.id,media:frame.media.map(stable)})), before.frames.map(frame => ({id:frame.id,media:frame.media.map(stable)})));
     assert.deepEqual(await f.page.evaluate(() => fixture.identity()), {elements:false,entries:true,windows:true,removals:1,frameSources:0,loads:[1,1]});
     assert.deepEqual(f.errors, []); assert.deepEqual(f.blocked, []);
