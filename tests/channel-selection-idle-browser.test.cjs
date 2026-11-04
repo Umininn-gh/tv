@@ -107,6 +107,7 @@ async function fixture(t, entry) {
                 const channels = Array.from({length: 36}, (_, index) => ({id:'fixture-'+index,platform:'m3u8',name:'本地頻道 '+index}));
                 const ChannelList = {channelKey: channel => channel.platform + '_' + channel.id};
                 const activePlayers = new Map([[ChannelList.channelKey(channels[0]), {element:document.getElementById('existing-player')}]]);
+                function getCurrentPlayerGeometry() { return {items:[...activePlayers.keys()].map(key => ({key,span:1,row:0,column:0}))}; }
                 const adminPlayers = activePlayers;
                 const channelStatuses = Object.fromEntries(channels.map(channel => [ChannelList.channelKey(channel), 'live']));
                 const channelOptionControls = new Map(); let channelOptionSequence = 0;

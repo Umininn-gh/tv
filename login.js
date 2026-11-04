@@ -96,7 +96,7 @@
             await loadScript('./topbar-menu.js?v=20261103-corner-menu-idle');
             await loadScript('./layout-bookmarks.js?v=20261103-corner-menu-idle');
             await loadScript('./shared-bookmarks.js?v=20261024-bookmarks-delete-all');
-            await loadScript('./tv-app.js?v=20261103-chat-path-hotfix');
+            await loadScript('./tv-app.js?v=20261104-auto-watch-reset');
             if (!window.tvAppReady || typeof window.tvAppReady.then !== 'function') {
                 throw new Error('TV application did not initialize');
             }

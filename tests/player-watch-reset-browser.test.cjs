@@ -87,6 +87,56 @@ test('watch reset checkbox is checked by default, stays left of the actual Start
     await assertContinuity(f, before);
 });
 
+test('fresh watch selection derives reset from active committed spans and preserves manual choice until close', browserCase, async t => {
+    const f = await setup(t, { audioUserscript: true }); if (!f) return;
+    const keys = await f.page.evaluate(() => channels.map(ChannelList.channelKey));
+    const reset = f.page.locator('#reset-positions-on-watch');
+    await f.page.evaluate(() => setChannelSelectionVisible(true));
+    assert.equal(await reset.isChecked(), true, 'an all-single-cell layout defaults to reset');
+    await f.page.evaluate(() => setChannelSelectionVisible(false));
+
+    await fixedDirectionGrid(f, { columns: 3, order: [...keys].reverse(), focus: { key: keys[4], span: 2, row: 0, column: 1 } }); await settled(f);
+    await f.page.evaluate(() => playerLayoutState.rememberOrder());
+    await selection(f, keys, true);
+    const enlarged = await state(f), before = await snapshot(f);
+    await f.page.evaluate(() => setChannelSelectionVisible(true));
+    assert.equal(await reset.isChecked(), false, 'an active enlarged cell defaults to preserving the layout');
+    assert.deepEqual(await state(f), enlarged, 'opening the chooser changes no committed layout or storage');
+    await assertContinuity(f, before);
+    await watch(f);
+    assert.deepEqual(await state(f), enlarged, 'Start preserves the enlarged arrangement with the derived unchecked choice');
+    await assertContinuity(f, before);
+
+    await f.page.evaluate(() => setChannelSelectionVisible(true));
+    assert.equal(await reset.isChecked(), false);
+    await reset.check();
+    await f.page.evaluate(() => setChannelSelectionVisible(true));
+    assert.equal(await reset.isChecked(), true, 'repeated visibility updates preserve the manual choice while open');
+    assert.deepEqual(await state(f), enlarged, 'the manual checkbox choice does not apply a layout');
+    await assertContinuity(f, before);
+    await f.page.evaluate(() => { setChannelSelectionVisible(false); setChannelSelectionVisible(true); });
+    assert.equal(await reset.isChecked(), false, 'a fresh opening re-evaluates the current enlarged layout');
+    await f.page.evaluate(() => setChannelSelectionVisible(false));
+
+    await fixedDirectionGrid(f, { columns: 3, focus: null }); await settled(f);
+    const singleCells = await state(f), singleMedia = await snapshot(f);
+    assert.ok(singleCells.geometry.items.every(item => item.span === 1));
+    await f.page.evaluate(() => setChannelSelectionVisible(true));
+    assert.equal(await reset.isChecked(), true, 'shrinking to single cells restores the checked default on reopening');
+    assert.deepEqual(await state(f), singleCells);
+    await assertContinuity(f, singleMedia);
+    await f.page.evaluate(() => setChannelSelectionVisible(false));
+
+    await fixedDirectionGrid(f, { columns: 3, focus: { key: keys[0], span: 2, row: 0, column: 0 } }); await settled(f);
+    await f.page.evaluate(key => syncActivePlayers(channels.filter(channel => ChannelList.channelKey(channel) !== key)), keys[0]); await settled(f);
+    const dormant = await state(f);
+    assert.equal(dormant.focus.key, keys[0], 'the absent channel retains its saved focus preference');
+    assert.ok(dormant.geometry.items.every(item => item.span === 1), 'the visible committed geometry has no enlargement');
+    await f.page.evaluate(() => setChannelSelectionVisible(true));
+    assert.equal(await reset.isChecked(), true, 'a dormant focus outside active geometry does not disable reset');
+    assert.deepEqual(await state(f), dormant);
+});
+
 test('checked Start resets a reordered right-hand enlarged layout to exact channel order in one audio transaction', browserCase, async t => {
     const f = await setup(t, { audioUserscript: true }); if (!f) return;
     const keys = await f.page.evaluate(() => channels.map(ChannelList.channelKey));

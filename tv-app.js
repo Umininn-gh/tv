@@ -1380,6 +1380,10 @@ const channelSelectionIdleTimer = (() => {
 function setChannelSelectionVisible(visible) {
     if (visible) layoutBookmarkMenu?.close(false);
     const panel = document.getElementById('channel-selection');
+    if (visible && panel && panel.style.display !== 'block') {
+        const reset = document.getElementById('reset-positions-on-watch');
+        if (reset) reset.checked = !getCurrentPlayerGeometry().items.some(item => item.span > 1 && activePlayers.has(item.key));
+    }
     if (panel) panel.style.display = visible ? 'block' : 'none';
     playerNameOverlay?.setVisible(visible);
     channelSelectionIdleTimer.setVisible(visible);
