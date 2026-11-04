@@ -367,9 +367,11 @@
             }
             const snapshot = entry.snapshot;
             const layout = geometry.build({ keys: snapshot.channels.map(channel => channel.key), columns: snapshot.columns, focus: snapshot.focus });
+            const offsets = root.PlayerLayout?.presentation?.(layout)?.offsets;
             preview.style.gridTemplateColumns = 'repeat(' + layout.columns + ', minmax(0, 1fr))';
             preview.style.gridTemplateRows = 'repeat(' + layout.rows + ', minmax(0, 1fr))';
             preview.style.setProperty('--bookmark-columns', layout.columns); preview.style.setProperty('--bookmark-rows', layout.rows);
+            preview.style.setProperty('--bookmark-gap-ratio', layout.columns / (layout.columns + 1));
             const positions = new Map(layout.items.map(item => [item.key, item]));
             for (const channel of snapshot.channels) {
                 const item = positions.get(channel.key), cell = el('span', 'layout-bookmark-cell', channel.name);
@@ -377,6 +379,7 @@
                 cell.title = channel.name + (audio ? ' · 音量 ' + Math.round(audio.volume * 100) + '%（需 userscript）' : '');
                 if (audio) cell.append(el('span', 'layout-bookmark-audio', ' 🔊'));
                 cell.style.gridArea = (item.row + 1) + ' / ' + (item.column + 1) + ' / span ' + item.span + ' / span ' + item.span;
+                cell.style.setProperty('--bookmark-offset', offsets?.get(item.key) || 0);
                 cell.style.setProperty('--bookmark-hue', channel.color); preview.append(cell);
             }
             return preview;

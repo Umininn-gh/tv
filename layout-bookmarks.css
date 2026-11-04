@@ -98,6 +98,9 @@
     min-height: 0;
     overflow: hidden;
     padding: 0;
+    /* Gap is min(2px, 50% / columns) of the preview; in a single cell's
+       coordinates that is min(2px, cell-width * columns / (columns + 1)). */
+    transform: translateX(calc(var(--bookmark-offset, 0) * 100% + var(--bookmark-offset, 0) * min(2px, 100% * var(--bookmark-gap-ratio, 1))));
     color: #fff;
     font-size: 10px;
     font-weight: 500;

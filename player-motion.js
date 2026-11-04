@@ -33,7 +33,7 @@
             } catch (_) { return null; }
         };
         const signature = node => [node.offsetLeft, node.offsetTop, node.offsetWidth, node.offsetHeight,
-            node.style?.gridArea || '', node.style?.order || ''].join('|');
+            node.style?.gridArea || '', node.style?.order || '', node.style?.translate || ''].join('|');
         function items() {
             const result = new Map();
             try {

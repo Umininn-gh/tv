@@ -1188,6 +1188,11 @@
             cursor: pointer;
         }
 
+        /* Fullscreen occupies the viewport; exiting restores the inline row shift. */
+        #multi-stream-container > :fullscreen { translate: none !important; }
+        #multi-stream-container > :-webkit-full-screen { translate: none !important; }
+        #multi-stream-container > :-moz-full-screen { translate: none !important; }
+
         /* ---------------- 看更台浮動面板 ---------------- */
         #channel-selection {
             display: none;
@@ -1667,9 +1672,9 @@
 }
     </style>
     <link rel="stylesheet" href="./login.css">
-    <link rel="stylesheet" href="./layout-bookmarks.css?v=20261024-bookmarks-delete-all">
+    <link rel="stylesheet" href="./layout-bookmarks.css?v=20261104-last-row-center">
     <script defer src="./login-config.js"></script>
-    <script defer src="./login.js?v=20261104-enlarged-audio"></script>
+    <script defer src="./login.js?v=20261104-last-row-center"></script>
 </head>
 <body class="login-locked">
     <main id="login-screen" class="login-screen">

@@ -548,6 +548,7 @@ let playerNameOverlay = null;
 let playerWindowControls = null;
 let playerGrid = null;
 let playerMotion = null;
+let playerShiftStyle = null;
 const PLAYER_MOTION_PREFERENCE_KEY = 'playerMotionPreference';
 let playerMotionPreference = 'on';
 try { playerMotionPreference = normalizePlayerMotionPreference(localStorage.getItem(PLAYER_MOTION_PREFERENCE_KEY)); } catch (_) {}
@@ -927,8 +928,34 @@ function getPlayerLayoutRect(element) {
     return playerMotion ? playerMotion.layoutRect(element) : element.getBoundingClientRect();
 }
 
+function getPlayerContentMeasure(pane, style = getComputedStyle(pane)) {
+    const number = value => parseFloat(value) || 0;
+    const left = number(style.paddingLeft), top = number(style.paddingTop);
+    const right = number(style.paddingRight), bottom = number(style.paddingBottom);
+    const width = Math.max(0, pane.clientWidth - left - right), height = Math.max(0, pane.clientHeight - top - bottom);
+    const gap = (value, dimension) => String(value).endsWith('%') ? number(value) * dimension / 100 : number(value);
+    return { width, height, left, top, right, bottom,
+        columnGap: gap(style.columnGap, width), rowGap: gap(style.rowGap, height) };
+}
+
+function projectPlayerShift(element, shift) {
+    // Normalize through a detached style declaration: CSS number serialization
+    // must not turn an unchanged fractional offset into repeated DOM writes.
+    if (!shift && !element.style.translate) return false;
+    if (!playerShiftStyle) playerShiftStyle = document.createElement('div').style;
+    playerShiftStyle.translate = shift ? `${shift}px` : '';
+    const value = playerShiftStyle.translate;
+    if (element.style.translate === value) return false;
+    element.style.translate = value;
+    return true;
+}
+
 function projectPlayerLayout() {
     const geometry = playerLayoutState.geometry;
+    const presentation = PlayerLayout.presentation(geometry);
+    const pane = document.getElementById('multi-stream-container');
+    const measure = pane ? getPlayerContentMeasure(pane) : { width: 0, columnGap: 0 };
+    const pitch = measure.width > 0 ? (measure.width + measure.columnGap) / geometry.columns : 0;
     const positions = new Map(geometry.items.map(item => [item.key, item]));
     let changed = false;
     playerLayoutState.order.forEach((key, index) => {
@@ -939,6 +966,8 @@ function projectPlayerLayout() {
         const order = String(index), area = item ? playerGridArea(item) : '';
         if (element.style.order !== order) { element.style.order = order; changed = true; }
         if (element.style.gridArea !== area) { element.style.gridArea = area; changed = true; }
+        const offset = presentation.offsets.get(key) || 0;
+        if ((!offset || pitch) && projectPlayerShift(element, offset * pitch)) changed = true;
     });
     return changed;
 }
@@ -1178,7 +1207,7 @@ function applyPlayerPlacement(plan) {
 
 function movePlayerDirection(key, direction, targetKey) {
     if (!activePlayers.has(key) || !activePlayers.has(targetKey)) return false;
-    return applyPlayerPlacement(playerLayoutOperations.step(getCurrentPlayerGeometry(), key, direction, targetKey));
+    return applyPlayerPlacement(playerLayoutOperations.visualStep(getCurrentPlayerGeometry(), key, direction, targetKey));
 }
 
 function resetPlayerPositions() {
@@ -1446,7 +1475,7 @@ swapPlayerWithFocus = guardPlayerAudioLayout(swapPlayerWithFocus, key => activeP
     playerLayoutOperations.swapFocus(getCurrentPlayerGeometry(), key).kind !== 'none');
 movePlayerDirection = guardPlayerAudioLayout(movePlayerDirection, (key, direction, target) =>
     activePlayers.has(key) && activePlayers.has(target) &&
-    PlayerLayout.compare(getCurrentPlayerGeometry(), playerLayoutOperations.step(getCurrentPlayerGeometry(), key, direction, target).next).changed);
+    PlayerLayout.compare(getCurrentPlayerGeometry(), playerLayoutOperations.visualStep(getCurrentPlayerGeometry(), key, direction, target).next).changed);
 resetPlayerPositions = guardPlayerAudioLayout(resetPlayerPositions, () => {
     if (playerLayoutState.enlargedGeometry) return true;
     const ranks = new Map(channels.map((channel, index) => [ChannelList.channelKey(channel), index]));
@@ -2091,8 +2120,12 @@ function applyPlayerBookmark(value) {
         const bounds = pane.getBoundingClientRect();
         const parentBounds = wrapper.getBoundingClientRect();
         const style = getComputedStyle(pane);
+        const measure = getPlayerContentMeasure(pane, style);
+        const presentation = PlayerLayout.presentation(playerLayoutState.geometry);
         const signature = [bounds.left, bounds.top, pane.clientWidth, pane.clientHeight,
-            parentBounds.left, parentBounds.top, style.gridTemplateColumns, style.gridTemplateRows, style.gap].join('|');
+            parentBounds.left, parentBounds.top, style.gridTemplateColumns, style.gridTemplateRows, style.gap,
+            measure.left, measure.top, measure.right, measure.bottom,
+            presentation.items.map(item => `${item.key}:${item.row}:${item.column}:${item.span}`).join(';')].join('|');
         if (layoutSignature !== null && signature !== layoutSignature) cancelPointer();
         layoutSignature = signature;
         layer.style.left = `${bounds.left - parentBounds.left + pane.clientLeft}px`;
@@ -2102,10 +2135,12 @@ function applyPlayerBookmark(value) {
         cells.style.gridTemplateColumns = style.gridTemplateColumns;
         cells.style.gridTemplateRows = style.gridTemplateRows;
         cells.style.gap = style.gap;
+        cells.style.left = `${measure.left}px`; cells.style.top = `${measure.top}px`;
+        cells.style.right = `${measure.right}px`; cells.style.bottom = `${measure.bottom}px`;
         const columns = playerLayoutState.geometry.columns;
         const rows = playerLayoutState.geometry.rows;
-        const cellWidth = (pane.clientWidth - (parseFloat(style.columnGap) || 0) * (columns - 1)) / columns;
-        const cellHeight = (pane.clientHeight - (parseFloat(style.rowGap) || 0) * (rows - 1)) / rows;
+        const cellWidth = (measure.width - measure.columnGap * (columns - 1)) / columns;
+        const cellHeight = (measure.height - measure.rowGap * (rows - 1)) / rows;
         const cellSize = Math.max(0, Math.min(cellWidth, cellHeight));
         layer.style.setProperty('--player-position-cell-size', `${cellSize}px`);
         // Browsers round nonzero borders up to a physical pixel in tiny tracks.
@@ -2113,6 +2148,7 @@ function applyPlayerBookmark(value) {
         const positions = new Map(playerLayoutState.geometry.items.map(item => [item.key, item]));
         buttons.forEach((button, key) => {
             button.style.gridArea = positions.has(key) ? playerGridArea(positions.get(key)) : '';
+            projectPlayerShift(button, (presentation.offsets.get(key) || 0) * (cellWidth + measure.columnGap));
         });
     }
 
@@ -2221,7 +2257,7 @@ function applyPlayerBookmark(value) {
             if (!activePlayers.has(source) || !activePlayers.has(target)) return false;
             const sourceName = activePlayers.get(source)?.channel.name;
             const targetName = activePlayers.get(target)?.channel.name;
-            const plan = playerLayoutOperations.target(getCurrentPlayerGeometry(), source, target, { direction });
+            const plan = playerLayoutOperations.visualTarget(getCurrentPlayerGeometry(), source, target, { direction });
             const applied = applyPlayerPlacement(plan);
             if (applied && plan.kind === 'exchange') announcement.textContent = `${sourceName} 與 ${targetName} 已交換位置`;
             else if (applied && plan.kind === 'step') {
@@ -2231,7 +2267,7 @@ function applyPlayerBookmark(value) {
                 announcement.textContent = `${activePlayers.get(plan.focusKey).channel.name} 已搬到指定區域`;
             else if (plan.reason === 'target-blocked') announcement.textContent = '大格已在可容納的目標位置';
         }, { requiresLayout: () => activePlayers.has(source) && activePlayers.has(target) &&
-            PlayerLayout.compare(getCurrentPlayerGeometry(), playerLayoutOperations.target(getCurrentPlayerGeometry(), source, target, { direction }).next).changed });
+            PlayerLayout.compare(getCurrentPlayerGeometry(), playerLayoutOperations.visualTarget(getCurrentPlayerGeometry(), source, target, { direction }).next).changed });
     }
 
     function open(nextMode, { corner = false } = {}) {
@@ -2350,12 +2386,14 @@ function applyPlayerBookmark(value) {
         const button = event.target.closest('.player-position-cell');
         if (!button || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
         event.preventDefault();
-        if (playerLayoutState.enlargedGeometry || mode === 'enlarge') {
-            const geometry = getCurrentPlayerGeometry();
+        const logical = getCurrentPlayerGeometry();
+        const presentation = PlayerLayout.presentation(logical);
+        if (playerLayoutState.enlargedGeometry || mode === 'enlarge' || presentation.offset !== 0) {
+            const geometry = presentation;
             const source = geometry.items.find(item => item.key === button.dataset.playerKey);
             if (!source) return;
             const direction = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' }[event.key];
-            const adjacent = PlayerGeometry.neighbor(geometry, source.key, direction);
+            const adjacent = playerLayoutOperations.visualNeighbor(logical, source.key, direction);
             if (mode === 'move' && source.span > 1) {
                 if (adjacent) exchange(source.key, adjacent.key, direction);
                 return;
@@ -2412,8 +2450,8 @@ function applyPlayerBookmark(value) {
             return;
         }
         const rect = plan.preview;
-        resizePreview.style.left = `${rect.left}px`;
-        resizePreview.style.top = `${rect.top}px`;
+        resizePreview.style.left = `${rect.left + gesture.measure.left}px`;
+        resizePreview.style.top = `${rect.top + gesture.measure.top}px`;
         resizePreview.style.width = `${rect.width}px`;
         resizePreview.style.height = `${rect.height}px`;
         resizePreview.textContent = `${activePlayers.get(gesture.key)?.channel.name || ''} · ${plan.span}×${plan.span}（放開後自動分格）`;
@@ -2434,7 +2472,7 @@ function applyPlayerBookmark(value) {
 
     function resizeBoundsUnchanged() {
         const bounds = pane.getBoundingClientRect();
-        return resizeDrag && pane.clientWidth === resizeDrag.measure.width && pane.clientHeight === resizeDrag.measure.height &&
+        return resizeDrag && pane.clientWidth === resizeDrag.clientWidth && pane.clientHeight === resizeDrag.clientHeight &&
             bounds.left === resizeDrag.bounds.left && bounds.top === resizeDrag.bounds.top;
     }
 
@@ -2450,11 +2488,10 @@ function applyPlayerBookmark(value) {
             const base = getCurrentPlayerGeometry();
             const item = base.items.find(value => value.key === button.dataset.playerKey);
             const style = getComputedStyle(pane);
-            const measure = { width: pane.clientWidth, height: pane.clientHeight,
-                columnGap: parseFloat(style.columnGap) || 0, rowGap: parseFloat(style.rowGap) || 0 };
+            const measure = getPlayerContentMeasure(pane, style);
             if (!item || !(measure.width > 0 && measure.height > 0)) return;
             resizeDrag = { key: item.key, item, base, button, id: event.pointerId,
-                pointerType: event.pointerType, bounds: pane.getBoundingClientRect(),
+                pointerType: event.pointerType, bounds: pane.getBoundingClientRect(), clientWidth: pane.clientWidth, clientHeight: pane.clientHeight,
                 corner: handle.dataset.resizeCorner, x: event.clientX, y: event.clientY,
                 lastX: event.clientX, lastY: event.clientY, moved: false, span: null, next: null, measure,
                 pitchX: (measure.width + measure.columnGap) / base.columns,
@@ -2512,7 +2549,7 @@ function applyPlayerBookmark(value) {
                 void withAudio(() => {
                     const current = getCurrentPlayerGeometry(), bounds = pane.getBoundingClientRect();
                     if (session !== editSession || !activePlayers.has(gesture.key) ||
-                        pane.clientWidth !== gesture.measure.width || pane.clientHeight !== gesture.measure.height ||
+                        pane.clientWidth !== gesture.clientWidth || pane.clientHeight !== gesture.clientHeight ||
                         bounds.left !== gesture.bounds.left || bounds.top !== gesture.bounds.top ||
                         current.columns !== gesture.base.columns || JSON.stringify(current.items) !== JSON.stringify(gesture.base.items)) return;
                     const changed = applyPlayerSize(next, { optimize: false });
@@ -2521,7 +2558,7 @@ function applyPlayerBookmark(value) {
                 }, { requiresLayout() {
                     const current = getCurrentPlayerGeometry(), bounds = pane.getBoundingClientRect();
                     return session === editSession && activePlayers.has(gesture.key) &&
-                        pane.clientWidth === gesture.measure.width && pane.clientHeight === gesture.measure.height &&
+                        pane.clientWidth === gesture.clientWidth && pane.clientHeight === gesture.clientHeight &&
                         bounds.left === gesture.bounds.left && bounds.top === gesture.bounds.top &&
                         !PlayerLayout.compare(current, gesture.base).changed && PlayerLayout.compare(current, next).changed;
                 } });
@@ -3071,10 +3108,14 @@ function applyPlayerBookmark(value) {
             const source = geometryItems.get(key);
             const targets = new Set();
             for (const [direction, label] of Object.entries(directions)) {
-                for (const neighbor of source ? PlayerGeometry.neighbors(geometry, key, direction) : []) {
+                for (const neighbor of source ? playerLayoutOperations.visualNeighbors(geometry, key, direction) : []) {
                     const target = activePlayers.get(neighbor.key);
                     const targetRect = rectangles.get(neighbor.key);
                     if (!target || !targetRect) continue;
+                    const vertical = direction === 'up' || direction === 'down';
+                    const start = vertical ? Math.max(rect.left, targetRect.left) : Math.max(rect.top, targetRect.top);
+                    const end = vertical ? Math.min(rect.right, targetRect.right) : Math.min(rect.bottom, targetRect.bottom);
+                    if (!(end > start)) continue;
                     const identity = `${direction}:${neighbor.key}`;
                     targets.add(identity);
                     let button = cell.directionButtons.get(identity);
@@ -3094,9 +3135,6 @@ function applyPlayerBookmark(value) {
                         `與${label}方「${target.channel.name}」交換位置：${name}`;
                     button.title = description;
                     button.setAttribute('aria-label', description);
-                    const vertical = direction === 'up' || direction === 'down';
-                    const start = vertical ? Math.max(rect.left, targetRect.left) : Math.max(rect.top, targetRect.top);
-                    const end = vertical ? Math.min(rect.right, targetRect.right) : Math.min(rect.bottom, targetRect.bottom);
                     const size = Math.max(1, Math.min(14, end - start - 2, rect.width / 2 - 2, rect.height / 2 - 2));
                     button.style.width = `${size}px`;
                     button.style.height = `${size}px`;
@@ -3206,7 +3244,7 @@ function applyPlayerBookmark(value) {
         else if (button.dataset.playerAction.startsWith('swap-')) {
             if (event.detail > 1) return;
             const direction = button.dataset.playerAction.slice(5);
-            const neighbor = PlayerGeometry.neighbors(getCurrentPlayerGeometry(), key, direction)
+            const neighbor = playerLayoutOperations.visualNeighbors(getCurrentPlayerGeometry(), key, direction)
                 .find(item => item.key === button.dataset.targetKey);
             if (!neighbor || !activePlayers.has(neighbor.key)) { render(); return; }
             await movePlayerDirection(key, direction, neighbor.key);

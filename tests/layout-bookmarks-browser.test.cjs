@@ -37,7 +37,7 @@ function loadProduction() {
     bookmarkCss = read('layout-bookmarks.css');
     modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'player-lifecycle', 'menu-dismiss', 'layout-bookmarks']
         .map(name => ['/tv/' + name + '.js', read('' + name + '.js')]));
-    const names = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'getPlayerLayoutRect', 'disposePlayer', 'disposePlayerResource', 'projectPlayerLayout', 'calculatePlayerLayout', 'updatePlayerLayout',
+    const names = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'getPlayerLayoutRect', 'getPlayerContentMeasure', 'projectPlayerShift', 'disposePlayer', 'disposePlayerResource', 'projectPlayerLayout', 'calculatePlayerLayout', 'updatePlayerLayout',
         'playerGridArea', 'getCurrentPlayerGeometry', 'savePlayerEnlargement', 'getPlayerPositionKeys', 'syncActivePlayers',
         'playerBookmarkAudioAvailable', 'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible'];
     appScript = names.map(name => productionFunction(source, name)).join('\n') + '\n' + productionIife(source, 'initLayoutBookmarks')
@@ -97,7 +97,7 @@ function fixtureDocument({ width = 1100, height = 600, framePlatform = 'at' } = 
     const PLAYER_POSITION_STORAGE_KEY='playerPositionOrder',PLAYER_ENLARGEMENT_STORAGE_KEY='playerEnlargementLayout';
     const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});
     const playerLayoutOperations=PlayerLayout.createOperations({geometry:PlayerGeometry});let playerGrid=null;
-    let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[],playerMotion=null;
+    let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[],playerMotion=null,playerShiftStyle=null;
     let layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null,playerNameOverlay=null;
     const playerWindowControls={refresh(){}};
     const playerPositionEditor={refresh(){},layoutChanged(){},close(){fixture.editorCloses++}};
@@ -740,6 +740,56 @@ test('preview is a faithful miniature of the saved enlarged grid and applying it
     await f.page.waitForFunction(() => document.getElementById('layout-bookmarks').hidden);
     await assertPlayerNamesHidden(f);
     assert.deepEqual(await f.page.evaluate(() => capturePlayerBookmark()), saved);
+    await assertContinuity(f, before);
+});
+
+test('bookmark previews center a partial small-tile tail at every gap size and exclude a bottom-spanning large tile', browserCase, async t => {
+    const f = await fixture(t), before = await remember(f);
+    const saved = await f.page.evaluate(() => {
+        const base = capturePlayerBookmark();
+        const partial = { ...base, columns: 3, focus: null };
+        const enlarged = { ...base, columns: 4, focus: { key: base.channels[0].key, row: 0, column: 0, span: 2 } };
+        const entries = [layoutBookmarkMenu.store.add('置中尾行', partial), layoutBookmarkMenu.store.add('大格底行', enlarged)];
+        layoutBookmarkMenu.open();
+        return entries;
+    });
+    for (const width of [null, '8px']) {
+        const rendered = await f.page.evaluate(({ entries, width }) => entries.map(entry => {
+            const card = [...document.querySelectorAll('.layout-bookmark-card')].find(card => card.dataset.bookmarkId === entry.id);
+            const preview = card.querySelector('.layout-bookmark-preview');
+            if (width) preview.style.width = width;
+            else preview.style.removeProperty('width');
+            const box = preview.getBoundingClientRect(), style = getComputedStyle(preview);
+            const contentLeft = box.left + parseFloat(style.borderLeftWidth),
+                contentWidth = box.width - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth);
+            const layout = PlayerGeometry.build({ keys: entry.snapshot.channels.map(channel => channel.key),
+                columns: entry.snapshot.columns, focus: entry.snapshot.focus });
+            const shown = PlayerLayout.presentation(layout);
+            const gap = Math.min(2, contentWidth / (2 * layout.columns));
+            const pitch = (contentWidth + gap) / layout.columns;
+            return { name: entry.name, offset: shown.offset, contentLeft, contentWidth,
+                cells: [...preview.children].map((cell, index) => {
+                    const key = entry.snapshot.channels[index].key, logical = layout.items.find(item => item.key === key),
+                        projected = shown.items.find(item => item.key === key), rect = cell.getBoundingClientRect();
+                    return { left: rect.left, right: rect.right, expectedLeft: contentLeft + projected.column * pitch,
+                        expectedWidth: projected.span * pitch - gap, area: cell.style.gridArea,
+                        expectedArea: `${logical.row + 1} / ${logical.column + 1} / span ${logical.span} / span ${logical.span}` };
+                }) };
+        }), { entries: saved, width });
+        assert.equal(rendered[0].offset, 1);
+        assert.equal(rendered[1].offset, 0);
+        for (const preview of rendered) for (const cell of preview.cells) {
+            assert.equal(cell.area, cell.expectedArea, 'preview keeps integer saved grid areas');
+            assert.ok(Math.abs(cell.left - cell.expectedLeft) < .1, JSON.stringify({ width, preview: preview.name, cell }));
+            assert.ok(Math.abs(cell.right - cell.left - cell.expectedWidth) < .1, JSON.stringify({ width, preview: preview.name, cell }));
+            assert.ok(cell.left >= preview.contentLeft - .1);
+            assert.ok(cell.right <= preview.contentLeft + preview.contentWidth + .1);
+        }
+    }
+    assert.deepEqual(await f.page.evaluate(() => layoutBookmarkMenu.store.list()), saved.slice().reverse(), 'preview projection never changes saved snapshots');
+    await f.page.evaluate(entry => applyPlayerBookmark(entry.snapshot), saved[0]);
+    assert.deepEqual(await f.page.evaluate(() => capturePlayerBookmark()), { ...saved[0].snapshot,
+        channels: saved[0].snapshot.channels.map(({ key, name }) => ({ key, name })) });
     await assertContinuity(f, before);
 });
 

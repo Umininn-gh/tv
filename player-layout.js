@@ -6,6 +6,89 @@
     const SWITCH_GAIN = 0.06;
     const RESIZE_DELAY = 180;
     const ASPECT_RESIZE_BAND = 0.15;
+    const PRESENTED = Symbol('player presentation');
+    const VALID_PRESENTATION = Symbol('valid player presentation');
+    const visualPlanes = new WeakMap();
+
+    // The saved grid stays on whole cells. Only this final display plane can
+    // shift the last occupied row, including when its logical slots have gaps.
+    function presentation(layout) {
+        if (layout?.[PRESENTED]) return layout;
+        const original = Array.isArray(layout?.items) ? layout.items : [];
+        const offsets = new Map(original.map(item => [item?.key, 0]));
+        const items = original.map(item => ({ ...item }));
+        const result = { ...layout, items, offsets, lastRow: null, offset: 0 };
+        Object.defineProperty(result, PRESENTED, { value: true });
+        if (!Number.isInteger(layout?.columns) || layout.columns < 1 ||
+            !Number.isInteger(layout?.rows) || layout.rows < 1 ||
+            new Set(original.map(item => item?.key)).size !== original.length || original.some(item =>
+                !item || !Number.isInteger(item.row) || item.row < 0 ||
+                !Number.isInteger(item.column) || item.column < 0 ||
+                !Number.isInteger(item.span) || item.span < 1 ||
+                item.row + item.span > layout.rows || item.column + item.span > layout.columns)) return result;
+        // Ordinary cells need only a set lookup; checking enlarged rectangles
+        // separately also keeps the common 256-player projection inexpensive.
+        const cells = new Set(), large = original.filter(item => item.span > 1);
+        for (const item of original) {
+            if (item.span === 1) {
+                const cell = `${item.row}:${item.column}`;
+                if (cells.has(cell)) return result;
+                cells.add(cell);
+            }
+            if (large.some(other => other !== item && item.row < other.row + other.span &&
+                item.row + item.span > other.row && item.column < other.column + other.span &&
+                item.column + item.span > other.column)) return result;
+        }
+        Object.defineProperty(result, VALID_PRESENTATION, { value: true });
+        if (!items.length) return result;
+        const lastRow = Math.max(...items.map(item => item.row + item.span - 1));
+        result.lastRow = lastRow;
+        // Intersections, rather than origins, catch a large tile extending down
+        // from an earlier row. That entire bottom edge remains on its tracks.
+        const bottom = items.filter(item => item.row <= lastRow && item.row + item.span > lastRow);
+        if (bottom.some(item => item.span !== 1) || bottom.length >= layout.columns) return result;
+        const minColumn = Math.min(...bottom.map(item => item.column));
+        const maxEndColumn = Math.max(...bottom.map(item => item.column + item.span));
+        const offset = (layout.columns - minColumn - maxEndColumn) / 2;
+        result.offset = offset;
+        for (const item of bottom) {
+            item.column += offset;
+            offsets.set(item.key, offset);
+        }
+        return result;
+    }
+
+    // Doubling the presentation gives the integer geometry engine exact half
+    // tracks. Its chosen targets are mapped back to the authoritative items.
+    function visualPlane(layout) {
+        const cached = visualPlanes.get(layout);
+        if (cached) return cached;
+        const projected = presentation(layout);
+        if (!projected[VALID_PRESENTATION]) return null;
+        const plane = { columns: projected.columns * 2, rows: projected.rows * 2,
+            items: projected.items.map(item => ({ ...item,
+                row: item.row * 2, column: item.column * 2, span: item.span * 2 })) };
+        // State geometries are deeply frozen. Reuse only their private, frozen
+        // adjacency plane; mutable callers always receive a fresh calculation.
+        if (!layout?.[PRESENTED] && Object.isFrozen(layout) && Object.isFrozen(layout.items) &&
+            layout.items.every(item => Object.isFrozen(item))) {
+            plane.items.forEach(Object.freeze);
+            Object.freeze(plane.items);
+            Object.freeze(plane);
+            visualPlanes.set(layout, plane);
+        }
+        return plane;
+    }
+    function visualNeighbors(layout, key, direction, geometry = root.PlayerGeometry) {
+        if (!geometry || !Array.isArray(layout?.items)) return [];
+        const keys = geometry.neighbors(visualPlane(layout), key, direction).map(item => item.key);
+        return keys.map(key => layout.items.find(item => item.key === key));
+    }
+    function visualNeighbor(layout, key, direction, geometry = root.PlayerGeometry) {
+        if (!geometry || !Array.isArray(layout?.items)) return null;
+        const target = geometry.neighbor(visualPlane(layout), key, direction);
+        return target ? layout.items.find(item => item.key === target.key) || null : null;
+    }
 
     // Compare the rendered cells by identity. Calculation scores, object order
     // and other bookkeeping do not make an otherwise identical grid change.
@@ -223,12 +306,13 @@
             if (!(width > 0 && height > 0) || !Number.isFinite(width) || !Number.isFinite(height) ||
                 !(layout.columns > 0 && layout.rows > 0)) return none(layout, 'unmeasurable-resize', { span: plan.span, corner: plan.corner });
             const current = layout.items.find(item => item.key === key);
+            const shown = presentation(layout).items.find(item => item.key === key);
             const nonnegative = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
             const gapX = nonnegative(measure.columnGap), gapY = nonnegative(measure.rowGap);
             const pitchX = (width + gapX) / layout.columns, pitchY = (height + gapY) / layout.rows;
             const requestedWidth = Math.max(0, plan.span * pitchX - gapX);
             const requestedHeight = Math.max(0, plan.span * pitchY - gapY);
-            const left = plan.corner.endsWith('w') ? (current.column + current.span) * pitchX - gapX - requestedWidth : current.column * pitchX;
+            const left = plan.corner.endsWith('w') ? (shown.column + current.span) * pitchX - gapX - requestedWidth : shown.column * pitchX;
             const top = plan.corner.startsWith('n') ? (current.row + current.span) * pitchY - gapY - requestedHeight : current.row * pitchY;
             // Pointer feedback uses the starting grid and fixed opposite corner.
             // Fitting the final layout cannot move that feedback while dragging;
@@ -305,7 +389,34 @@
             } else next = geometry.choose({ ...options, keys, focus });
             return { next: { ...next, count: keys.length }, pending: null };
         }
-        return Object.freeze({ exchange, swapFocus, promoteTopRight, grow, shrink, resize, fitSize, previewSize, step, target, reflow });
+        function visualStep(layout, sourceKey, direction, targetKey) {
+            const items = pair(layout, sourceKey, targetKey);
+            if (!items || !visualNeighbors(layout, sourceKey, direction, geometry).some(item => item.key === targetKey))
+                return none(layout, 'not-adjacent');
+            if (items.source.span === 1 && items.target.span === 1) return exchange(layout, sourceKey, targetKey);
+            const next = geometry.step(layout, sourceKey, direction, targetKey, visualPlane(layout));
+            if (next === layout) return none(layout, 'step-blocked');
+            const reverse = { up: 'down', down: 'up', left: 'right', right: 'left' };
+            return { kind: 'step', next,
+                focusKey: items.source.span > 1 ? sourceKey : targetKey,
+                focusDirection: items.source.span > 1 ? direction : reverse[direction] };
+        }
+        function visualTarget(layout, sourceKey, targetKey, { direction = null } = {}) {
+            const items = pair(layout, sourceKey, targetKey);
+            if (!items) return none(layout);
+            if (items.source.span === 1 && items.target.span === 1) return exchange(layout, sourceKey, targetKey);
+            const edge = ['up', 'down', 'left', 'right'].find(value =>
+                visualNeighbors(layout, sourceKey, value, geometry).some(item => item.key === targetKey));
+            if (direction && direction !== edge) return none(layout, 'not-adjacent');
+            if (edge) return visualStep(layout, sourceKey, edge, targetKey);
+            const next = geometry.relocate(layout, sourceKey, targetKey);
+            const focusKey = items.source.span > 1 ? sourceKey : targetKey;
+            return next === layout ? none(layout, 'target-blocked', { focusKey }) : { kind: 'relocate', next, focusKey };
+        }
+        return Object.freeze({ exchange, swapFocus, promoteTopRight, grow, shrink, resize, fitSize, previewSize, step, target, reflow,
+            visualStep, visualTarget,
+            visualNeighbors: (layout, key, direction) => visualNeighbors(layout, key, direction, geometry),
+            visualNeighbor: (layout, key, direction) => visualNeighbor(layout, key, direction, geometry) });
     }
 
     function choose({ count, width, height, columnGap = 0, rowGap = 0, previous, force = false,
@@ -497,7 +608,7 @@
         };
     }
 
-    const api = { choose, observe, createState, createOperations, compare };
+    const api = { choose, observe, createState, createOperations, compare, presentation, visualNeighbors, visualNeighbor };
     if (typeof module === 'object' && module.exports) module.exports = api;
     else root.PlayerLayout = api;
 })(typeof globalThis === 'object' ? globalThis : this);

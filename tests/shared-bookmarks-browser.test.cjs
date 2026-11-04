@@ -33,7 +33,7 @@ test.before(async () => {
     css = [...html.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/gi)].map(match => match[1]).join('\n') + '\n' + read('layout-bookmarks.css');
     modules = Object.fromEntries(['channel-list', 'stream-performance', 'player-layout', 'player-geometry', 'player-lifecycle', 'menu-dismiss', 'layout-bookmarks', 'shared-bookmarks']
         .map(name => ['/tv/' + name + '.js', read('' + name + '.js')]));
-    appScript = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'disposePlayer', 'disposePlayerResource', 'projectPlayerLayout', 'calculatePlayerLayout', 'updatePlayerLayout',
+    appScript = ['getGlobalMuted', 'updateGlobalAudioButton', 'getPlayerElement', 'getPlayerContentMeasure', 'projectPlayerShift', 'disposePlayer', 'disposePlayerResource', 'projectPlayerLayout', 'calculatePlayerLayout', 'updatePlayerLayout',
         'playerGridArea', 'getCurrentPlayerGeometry', 'savePlayerEnlargement', 'getPlayerPositionKeys', 'syncActivePlayers',
         'playerLayoutAudioAvailable', 'playerBookmarkAudioAvailable', 'capturePlayerBookmark', 'showLayoutBookmarkFeedback', 'applyPlayerBookmark', 'setChannelSelectionVisible']
         .map(name => productionFunction(source, name)).join('\n');
@@ -59,7 +59,7 @@ function htmlFixture({ width = 1100, height = 600 } = {}) {
     const playerRegistry=PlayerLifecycle.create({render:renderChannelElement,getResource:element=>playerResources.get(element),dispose:disposePlayerResource});
     const activePlayers=playerRegistry.entries;
     const playerLayoutState=PlayerLayout.createState({buildGeometry:PlayerGeometry.build});
-    const playerLayoutOperations=PlayerLayout.createOperations({geometry:PlayerGeometry});let playerGrid=null;
+    const playerLayoutOperations=PlayerLayout.createOperations({geometry:PlayerGeometry});let playerGrid=null,playerShiftStyle=null;
     let globalMutedPreference=null,currentDisplayChannel=null,currentHLSInstances=[],currentFLVInstances=[],layoutBookmarkMenu=null,layoutBookmarkFeedbackTimer=null,playerMotion=null;
     const playerWindowControls={refresh(){}},playerNameOverlay={refresh(){},setVisible(){}},playerPositionEditor={refresh(){},layoutChanged(){},close(){}},channelSelectionIdleTimer={setVisible(){}};
     window.fixture={renders:0,nextId:0,remembered:new Map(),captures:0,applies:0};

@@ -163,14 +163,18 @@
         return selected;
     }
 
-    function step(layout, key, direction, targetKey) {
-        const targets = neighbors(layout, key, direction);
-        const target = targetKey === undefined ? neighbor(layout, key, direction) :
+    function step(layout, key, direction, targetKey, adjacency = layout) {
+        const targets = neighbors(adjacency, key, direction);
+        const selected = targetKey === undefined ? neighbor(adjacency, key, direction) :
             targets.find(item => item.key === targetKey);
+        // A presentation can use half tracks. It selects an adjacent identity;
+        // movement, entering strips and persisted anchors use logical cells.
+        const target = selected && layout?.items?.find(item => item.key === selected.key);
         if (!target || !Number.isInteger(layout.columns) || layout.columns < 1 ||
             !Number.isInteger(layout.rows) || layout.rows < 1 || layout.items.some(item =>
                 !validCell(item) || item.column + item.span > layout.columns || item.row + item.span > layout.rows)) return layout;
         const source = layout.items.find(item => item.key === key);
+        if (!source) return layout;
         const enlarged = layout.items.filter(item => item.span > 1);
         if (enlarged.length > 1 || new Set(layout.items.map(item => item.key)).size !== layout.items.length) return layout;
         const focus = enlarged[0];
