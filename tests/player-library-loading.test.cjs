@@ -25,7 +25,7 @@ function fixture({ nativeHls = false } = {}) {
     const requests = [], hlsPlayers = [], flvPlayers = [], warnings = [];
     class Element {
         constructor(tag) {
-            this.tagName = tag.toUpperCase(); this.style = {}; this.dataset = {}; this.children = [];
+            this.tagName = tag.toUpperCase(); this.style = { setProperty(name, value) { this[name] = String(value); } }; this.dataset = {}; this.children = [];
             this.parentNode = null; this.listeners = new Map(); this.className = '';
             this.classList = {
                 contains: token => this.className.split(/\s+/).includes(token),
@@ -55,6 +55,10 @@ function fixture({ nativeHls = false } = {}) {
         load() { this.loadCalls++; }
     }
     const pane = new Element('div'); pane.root = true;
+    pane.clientWidth = 1280; pane.clientHeight = 720;
+    const getComputedStyle = element => ({ paddingLeft: '0px', paddingRight: '0px', paddingTop: '0px', paddingBottom: '0px',
+        borderLeftWidth: '0px', borderRightWidth: '0px', borderTopWidth: '0px', borderBottomWidth: '0px',
+        columnGap: '10px', rowGap: '10px', ...element.style });
     const head = new Element('head'); head.root = true;
     const append = head.appendChild.bind(head);
     head.appendChild = script => { requests.push(script); return append(script); };
@@ -64,13 +68,15 @@ function fixture({ nativeHls = false } = {}) {
         document: { head, documentElement: { hasAttribute() { return false; } },
             getElementById: id => id === 'multi-stream-container' ? pane : loginNodes.get(id) || null,
             createElement: tag => new Element(tag), addEventListener() {}, querySelectorAll: () => [] },
-        location: { hostname: 'site.invalid', origin: 'https://site.invalid' },
+        location: { hostname: 'site.invalid', origin: 'https://site.invalid' }, getComputedStyle,
         sessionStorage: { getItem() { return null; } }, localStorage: { setItem() {}, removeItem() {} },
         TV_LOGIN_CONFIG: { passwordHash: '0'.repeat(64), passwordSalt: 'fixture', storageKey: 'fixture' },
         ChannelList, StreamPerformance, PlayerLayout, PlayerGeometry, PlayerLifecycle, PlayerAudioBridge, UmininnMenuDismiss, queueMicrotask, URL,
         console: { warn: (...args) => warnings.push(args), error() {} }, addEventListener() {}
     });
     context.window = context;
+    context.document.defaultView = context;
+    pane.ownerDocument = context.document;
     vm.runInContext(read('login.js'), context);
     vm.runInContext(app.slice(0, coreEnd), context);
     function installHls({ throwOnAttach = false, fatalOnSource = false } = {}) {

@@ -254,23 +254,53 @@
                     top: corner.startsWith('s') && current.row === 0,
                     ...(span === 1 ? { row: current.row, column: current.column } : {}) } };
         }
-        function fitSize({ keys = [], focus, growthAnchor, preserveAnchor = false, compact = true } = {}, options = {}) {
+        function fitSize({ keys = [], focus, growthAnchor, visualAnchor, preserveAnchor = false, compact = true } = {}, options = {}) {
             keys = Array.isArray(keys) ? [...new Set(keys)] : [];
             focus = keys.length > 1 && keys.includes(focus?.key) && focus.span > 1 ? focus : null;
-            if (focus) return { ...geometry.choose({ ...options, keys, focus, growthAnchor, preserveAnchor, compact, force: true }),
+            if (focus) return { ...geometry.choose({ ...options, keys, focus, growthAnchor, visualAnchor, preserveAnchor, compact, force: true }),
                 count: keys.length };
             const fitted = choose({ ...options, count: keys.length, force: true });
             let normal = geometry.build({ keys, columns: fitted.columns });
             if (compact && growthAnchor?.span === 1 && keys.includes(growthAnchor.key)) {
-                // Normal tracks remain dense. Keep whichever requested edges
-                // have an occupied slot; never add a hole to retain a corner.
+                // Normal tracks remain dense. Drags choose an occupied display
+                // slot near their visible corner; button shrinks retain the
+                // requested edges. Neither path adds a hole to retain a corner.
                 const anchor = growthAnchor, rank = item => [
                     Number(anchor.left === true && item.column === 0) + Number(anchor.top === true && item.row === 0) +
                     Number(anchor.right === true && item.column + 1 === normal.columns) +
                     Number(anchor.bottom === true && item.row + 1 === normal.rows),
                     Math.abs(item.row - (anchor.row || 0)) + Math.abs(item.column - (anchor.column || 0))
                 ];
+                const width = Number(options.width), height = Number(options.height);
+                const visual = width > 0 && height > 0 && Number.isFinite(width) && Number.isFinite(height) &&
+                    ['nw', 'ne', 'sw', 'se'].includes(visualAnchor?.corner) &&
+                    ['x', 'y', 'centerX', 'centerY'].every(key => Number.isFinite(visualAnchor[key]) &&
+                        visualAnchor[key] >= 0 && visualAnchor[key] <= 1) ? visualAnchor : null;
+                const scores = new Map();
+                if (visual) {
+                    const gap = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
+                    const gapX = gap(options.columnGap), gapY = gap(options.rowGap);
+                    const pitchX = (width + gapX) / normal.columns, pitchY = (height + gapY) / normal.rows;
+                    for (const item of presentation(normal).items) {
+                        const x = (item.column + (visual.corner.endsWith('w') ? 1 : 0)) * pitchX -
+                            (visual.corner.endsWith('w') ? gapX : 0);
+                        const y = (item.row + (visual.corner.startsWith('n') ? 1 : 0)) * pitchY -
+                            (visual.corner.startsWith('n') ? gapY : 0);
+                        const centerX = ((item.column + .5) * pitchX - gapX / 2) / width;
+                        const centerY = ((item.row + .5) * pitchY - gapY / 2) / height;
+                        scores.set(item.key, {
+                            penalty: Number((visual.centerX - .5) * (centerX - .5) < -1e-12) +
+                                Number((visual.centerY - .5) * (centerY - .5) < -1e-12),
+                            distance: (x / width - visual.x) ** 2 + (y / height - visual.y) ** 2
+                        });
+                    }
+                }
                 const slots = [...normal.items].sort((a, b) => {
+                    if (visual) {
+                        const x = scores.get(a.key), y = scores.get(b.key);
+                        if (x.penalty !== y.penalty) return x.penalty - y.penalty;
+                        if (x.distance !== y.distance) return x.distance - y.distance;
+                    }
                     const x = rank(a), y = rank(b);
                     return y[0] - x[0] || x[1] - y[1] || a.row - b.row || a.column - b.column;
                 });
@@ -320,9 +350,19 @@
             const x = Math.max(0, Math.min(width, left)), y = Math.max(0, Math.min(height, top));
             const right = Math.max(x, Math.min(width, left + requestedWidth));
             const bottom = Math.max(y, Math.min(height, top + requestedHeight));
+            // Every corner drag uses the displayed opposite corner, including
+            // centered tails and a large tile shrinking back to a centered 1x1.
+            // Recompute from this gesture rather than carrying an old grid offset.
+            const visualAnchor = {
+                x: Math.max(0, Math.min(width, plan.corner.endsWith('w') ?
+                    (shown.column + current.span) * pitchX - gapX : shown.column * pitchX)) / width,
+                y: Math.max(0, Math.min(height, plan.corner.startsWith('n') ?
+                    (current.row + current.span) * pitchY - gapY : current.row * pitchY)) / height,
+                centerX: (x + right) / (2 * width), centerY: (y + bottom) / (2 * height), corner: plan.corner
+            };
             const next = fitSize({ keys: visualKeys(plan.next), focus: plan.next.items.find(item => item.span > 1),
-                growthAnchor: plan.growthAnchor, preserveAnchor: plan.preserveAnchor }, { ...measure, previous: layout });
-            return { ...plan, next, preview: { left: x, top: y, width: right - x, height: bottom - y } };
+                growthAnchor: plan.growthAnchor, visualAnchor, preserveAnchor: plan.preserveAnchor }, { ...measure, previous: layout });
+            return { ...plan, next, visualAnchor, preview: { left: x, top: y, width: right - x, height: bottom - y } };
         }
         function step(layout, sourceKey, direction, targetKey) {
             const items = pair(layout, sourceKey, targetKey);

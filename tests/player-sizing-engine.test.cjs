@@ -20,7 +20,7 @@ const freeze = value => {
     return value;
 };
 const fit = (plan, dimensions = measure) => operations.fitSize({ keys: visual(plan.next), focus: focus(plan.next),
-    growthAnchor: plan.growthAnchor, preserveAnchor: plan.preserveAnchor }, dimensions);
+    growthAnchor: plan.growthAnchor, visualAnchor: plan.visualAnchor, preserveAnchor: plan.preserveAnchor }, dimensions);
 function rectangle(layout, item, dimensions = measure) {
     const x = (dimensions.width + dimensions.columnGap) / layout.columns;
     const y = (dimensions.height + dimensions.rowGap) / layout.rows;
@@ -139,7 +139,7 @@ test('sizing preview keeps the original fixed opposite pixels when a northwest s
     assert.equal(plan.preview.left + plan.preview.width, before.right);
     assert.equal(plan.preview.top + plan.preview.height, before.bottom);
     assert.notEqual(plan.next.columns, layout.columns, 'the final fit is allowed to choose new tracks');
-    assert.deepEqual(canonical(plan.next), canonical(fit(operations.resize(layout, key, 2, 'nw'))));
+    assert.deepEqual(canonical(plan.next), canonical(fit({ ...operations.resize(layout, key, 2, 'nw'), visualAnchor: plan.visualAnchor })));
     assert.equal(before.right, 1047.5, 'this is the reported rightward-preview jump case');
     valid(plan.next, order);
 });
@@ -205,7 +205,7 @@ test('sizing engine shared fitting and clipped previews preserve inputs across d
         const before = JSON.stringify(layout);
         for (const viewport of dimensions) for (const corner of ['nw', 'ne', 'sw', 'se']) for (const span of [1, 3, 4, 8]) {
             const plan = operations.previewSize(layout, key, span, corner, viewport); assertPreview(plan, viewport);
-            assert.deepEqual(canonical(plan.next), canonical(fit(operations.resize(layout, key, span, corner), viewport)));
+            assert.deepEqual(canonical(plan.next), canonical(fit({ ...operations.resize(layout, key, span, corner), visualAnchor: plan.visualAnchor }, viewport)));
             valid(plan.next, order); cases++;
         }
         assert.equal(JSON.stringify(layout), before);

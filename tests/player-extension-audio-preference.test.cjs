@@ -18,7 +18,7 @@ const channel = name => ({ name, platform: 'm3u8', id: `https://example.com/${na
 
 class Element {
     constructor(tag) {
-        this.tagName = tag.toUpperCase(); this.style = {}; this.dataset = {}; this.children = []; this.parentNode = null;
+        this.tagName = tag.toUpperCase(); this.style = { setProperty(name, value) { this[name] = String(value); } }; this.dataset = {}; this.children = []; this.parentNode = null;
         this.volume = 1; this.muted = false; this.paused = true; this.playCalls = 0; this.pauseCalls = 0; this.loadCalls = 0;
         this.className = '';
         this.classList = {
@@ -50,17 +50,24 @@ class Element {
 
 function siteFixture(admin = false) {
     const pane = new Element('div'); pane.root = true;
+    pane.clientWidth = 1280; pane.clientHeight = 720;
+    const getComputedStyle = element => ({ paddingLeft: '0px', paddingRight: '0px', paddingTop: '0px', paddingBottom: '0px',
+        borderLeftWidth: '0px', borderRightWidth: '0px', borderTopWidth: '0px', borderBottomWidth: '0px',
+        columnGap: '10px', rowGap: '10px', ...element.style });
     const selection = new Element('div');
     const window = { UmininnMenuDismiss, listeners: new Map(), addEventListener(type, listener) { this.listeners.set(type, listener); } };
+    window.getComputedStyle = getComputedStyle;
     class Hls {
         static Events = { MANIFEST_PARSED: 'manifest', ERROR: 'error' };
         static isSupported() { return true; }
         on() {} loadSource() {} attachMedia() {} destroy() {}
     }
-    const context = vm.createContext({ window, location: { hostname: 'umininn-gh.github.io', origin: 'https://umininn-gh.github.io' },
+    const context = vm.createContext({ window, getComputedStyle, location: { hostname: 'umininn-gh.github.io', origin: 'https://umininn-gh.github.io' },
         document: { getElementById: id => id === 'multi-stream-container' ? pane : id === 'channel-selection' ? selection : null,
             createElement: tag => new Element(tag), addEventListener() {},
             documentElement: { hasAttribute() { return false; } } }, Hls, ChannelList, StreamPerformance, PlayerLayout, PlayerGeometry, PlayerLifecycle, PlayerAudioBridge, queueMicrotask, console, URL });
+    context.document.defaultView = window;
+    pane.ownerDocument = context.document;
     let source = read(admin ? 'admin.html' : 'tv-app.js');
     source = admin
         ? source.slice(source.indexOf('        // ======================== 全域變數'), source.indexOf('        // ======================== 載入 Twitch 憑證'))

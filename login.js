@@ -85,8 +85,8 @@
             needsReload = true;
             await loadScript('./channel-list.js');
             await loadScript('./stream-performance.js');
-            await loadScript('./player-geometry.js?v=20261104-last-row-center');
-            await loadScript('./player-layout.js?v=20261104-last-row-center');
+            await loadScript('./player-geometry.js?v=20261104-centered-drag-anchor');
+            await loadScript('./player-layout.js?v=20261104-centered-drag-anchor');
             await loadScript('./player-lifecycle.js?v=20261028-error-placeholder-control');
             await loadScript('./player-motion.js?v=20261104-last-row-center').catch(error => console.warn('過渡動畫暫時未能載入。', error));
             await loadScript('./player-audio-bridge.js?v=20261104-enlarged-audio');

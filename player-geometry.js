@@ -285,7 +285,7 @@
     }
 
     function choose({ keys, width, height, columnGap = 0, rowGap = 0, previous,
-        focus, force = false, preserveAnchor = false, growthAnchor, compact = false } = {}) {
+        focus, force = false, preserveAnchor = false, growthAnchor, visualAnchor, compact = false } = {}) {
         keys = uniqueKeys(keys);
         if (!keys.length) return { ...build(), area: 0 };
         focus = getFocus(keys, focus);
@@ -313,6 +313,10 @@
         const nonnegative = value => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
         width = nonnegative(width); height = nonnegative(height);
         columnGap = nonnegative(columnGap); rowGap = nonnegative(rowGap);
+        const visual = compactFocus && width > 0 && height > 0 &&
+            ['nw', 'ne', 'sw', 'se'].includes(visualAnchor?.corner) &&
+            ['x', 'y', 'centerX', 'centerY'].every(key => Number.isFinite(visualAnchor[key]) &&
+                visualAnchor[key] >= 0 && visualAnchor[key] <= 1) ? visualAnchor : null;
         if (!(width > 0 && height > 0) && !compactFocus) {
             const columns = validPrevious ? oldColumns : Math.max(minimum, Math.ceil(Math.sqrt(occupiedArea)));
             return { ...build({ keys, columns, focus }), area: 0 };
@@ -329,16 +333,44 @@
             // combination without enumerating a potentially large cell matrix.
             const candidateRows = new Set([0, lastRow, Math.max(0, lastRow - 1),
                 clamp(desired.row, lastRow), clamp(desired.row, Math.max(0, lastRow - 1))]);
+            const pitchX = (width + columnGap) / columns, pitchY = (height + rowGap) / rows;
+            const visualColumn = visual && (visual.x * width + (visual.corner.endsWith('w') ? columnGap : 0)) /
+                pitchX - (visual.corner.endsWith('w') ? span : 0);
+            const visualRow = visual && (visual.y * height + (visual.corner.startsWith('n') ? rowGap : 0)) /
+                pitchY - (visual.corner.startsWith('n') ? span : 0);
+            if (visual) for (const row of [Math.floor(visualRow), Math.ceil(visualRow),
+                Math.floor((rows - span) / 2), Math.ceil((rows - span) / 2)])
+                candidateRows.add(clamp(row, lastRow));
             if (rows >= span && rows - span <= lastRow) candidateRows.add(rows - span);
             let best;
             for (const row of candidateRows) {
                 const maximumColumn = Math.min(lastColumn, boundary - row * columns);
                 if (maximumColumn < 0) continue;
-                for (const column of new Set([0, maximumColumn, clamp(desired.column, maximumColumn)])) {
+                const candidateColumns = new Set([0, maximumColumn, clamp(desired.column, maximumColumn)]);
+                if (visual) for (const column of [Math.floor(visualColumn), Math.ceil(visualColumn),
+                    Math.floor((columns - span) / 2), Math.ceil((columns - span) / 2)])
+                    candidateColumns.add(clamp(column, maximumColumn));
+                for (const column of candidateColumns) {
                     const edges = Number(requested.left && column === 0) + Number(requested.right && column + span === columns) +
                         Number(requested.top && row === 0) + Number(requested.bottom && row + span === rows);
                     const distance = Math.abs(row - desired.row) + Math.abs(column - desired.column);
                     const candidate = { key: focus.key, span, row, column, edges, distance };
+                    if (visual) {
+                        const x = (column + (visual.corner.endsWith('w') ? span : 0)) * pitchX -
+                            (visual.corner.endsWith('w') ? columnGap : 0);
+                        const y = (row + (visual.corner.startsWith('n') ? span : 0)) * pitchY -
+                            (visual.corner.startsWith('n') ? rowGap : 0);
+                        const centerX = ((column + span / 2) * pitchX - columnGap / 2) / width;
+                        const centerY = ((row + span / 2) * pitchY - rowGap / 2) / height;
+                        candidate.visualPenalty = Number((visual.centerX - .5) * (centerX - .5) < -1e-12) +
+                            Number((visual.centerY - .5) * (centerY - .5) < -1e-12);
+                        candidate.visualDistance = (x / width - visual.x) ** 2 + (y / height - visual.y) ** 2;
+                        if (!best || candidate.visualPenalty < best.visualPenalty ||
+                            candidate.visualPenalty === best.visualPenalty && (candidate.visualDistance < best.visualDistance ||
+                                candidate.visualDistance === best.visualDistance && (edges > best.edges ||
+                                    edges === best.edges && (row < best.row || row === best.row && column < best.column)))) best = candidate;
+                        continue;
+                    }
                     if (!best || edges > best.edges || edges === best.edges && (distance < best.distance ||
                         distance === best.distance && (row < best.row || row === best.row && column < best.column))) best = candidate;
                 }
@@ -360,12 +392,23 @@
             const cellHeight = Math.max(0, (height - rowGap * (rows - 1)) / rows);
             const videoWidth = Math.min(cellWidth, cellHeight * ASPECT);
             return { columns, rows, area: videoWidth * videoWidth / ASPECT, focus: candidateFocus,
-                ...(compactFocus ? { edges: compactCandidate.edges, distance: compactCandidate.distance } : {}) };
+                ...(compactFocus ? { edges: compactCandidate.edges, distance: compactCandidate.distance } : {}),
+                ...(visual ? { visualPenalty: compactCandidate.visualPenalty, visualDistance: compactCandidate.visualDistance } : {}) };
         }
         let best = measure(minimum);
         for (let columns = minimum + 1; columns <= maximum; columns++) {
             const candidate = measure(columns);
             const difference = candidate.area - best.area;
+            if (visual) {
+                // Keep the visible side first, then maximize video size. Docking
+                // is a tie-breaker here because the former bottom dock may only
+                // have a compact slot on the opposite side of the screen.
+                if (candidate.visualPenalty < best.visualPenalty || candidate.visualPenalty === best.visualPenalty &&
+                    (difference > 0.01 || Math.abs(difference) <= 0.01 &&
+                        (candidate.visualDistance < best.visualDistance || candidate.visualDistance === best.visualDistance &&
+                            candidate.columns * candidate.rows < best.columns * best.rows))) best = candidate;
+                continue;
+            }
             if (compactFocus ? candidate.edges > best.edges || candidate.edges === best.edges &&
                 (difference > 0.01 || Math.abs(difference) <= 0.01 && (candidate.distance < best.distance ||
                     candidate.distance === best.distance && candidate.columns * candidate.rows < best.columns * best.rows)) :
@@ -375,7 +418,8 @@
         if (!force && validPrevious) {
             const current = measure(oldColumns);
             const gain = focus ? FOCUS_SWITCH_GAIN : SWITCH_GAIN;
-            if ((!compactFocus || current.edges === best.edges) && best.area <= current.area * (1 + gain)) best = current;
+            if ((visual ? current.visualPenalty === best.visualPenalty : !compactFocus || current.edges === best.edges) &&
+                best.area <= current.area * (1 + gain)) best = current;
         }
         return { ...build({ keys, columns: best.columns, focus: best.focus }), area: best.area };
     }

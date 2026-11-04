@@ -1,5 +1,5 @@
 'use strict';
-const { assertCompact, dockScore, maximumDockScore } = require('./helpers/player-layout-compaction.cjs');
+const { assertCompact } = require('./helpers/player-layout-compaction.cjs');
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -114,6 +114,31 @@ async function gaps(f) {
 }
 async function leave(f) { await f.page.keyboard.press('Escape'); await waitWindowGeometry(f); }
 
+function minimumVisibleCrossings(layout, span, bounds, gap, feedback, released) {
+    const desired = { x: feedback.x + feedback.width / 2, y: feedback.y + feedback.height / 2 };
+    // Read actual screen feedback and independently enumerate every feasible
+    // packed final slot, including presentation centering for a 1×1 result.
+    const crossing = (point, axis, size) => {
+        const middle = bounds[axis] + bounds[size] / 2, tolerance = Math.max(1, bounds[size] * .001);
+        return Number(desired[axis] < middle - tolerance && point[axis] > middle + tolerance ||
+            desired[axis] > middle + tolerance && point[axis] < middle - tolerance);
+    };
+    const penalty = point => crossing(point, 'x', 'width') + crossing(point, 'y', 'height');
+    const area = layout.items.length + span * span - 1;
+    const pitchX = (bounds.width + gap.x) / layout.columns, pitchY = (bounds.height + gap.y) / layout.rows;
+    let minimum = Infinity;
+    for (let row = 0; row + span <= layout.rows; row++) for (let column = 0; column + span <= layout.columns; column++) {
+        if ((row + span - 1) * layout.columns + column + span > area) continue;
+        const tail = area % layout.columns;
+        const shift = span === 1 && tail && row === layout.rows - 1 ? (layout.columns - tail) / 2 : 0;
+        minimum = Math.min(minimum, penalty({ x: bounds.x + (column + shift + span / 2) * pitchX - gap.x / 2,
+            y: bounds.y + (row + span / 2) * pitchY - gap.y / 2 }));
+    }
+    assert.ok(Number.isFinite(minimum), 'at least one packed release slot exists');
+    assert.equal(penalty({ x: released.x + released.width / 2, y: released.y + released.height / 2 }), minimum,
+        'released media crosses the fewest visible midlines permitted by its selected compact grid');
+}
+
 // Preview feedback keeps a physical corner. The final adaptive layout can refit;
 // its rectangle is deliberately not required to match the feedback pixel-for-pixel.
 test('resize preview: nine, eleven and seventeen player corner gestures retain their physical opposite anchor while final tracks may refit', browserCase, async t => {
@@ -130,18 +155,14 @@ test('resize preview: nine, eleven and seventeen player corner gestures retain t
             const original = await positionCell(f, key).boundingBox(), bounds = await contentBounds(f), gap = await gaps(f);
             const drag = await startCornerDrag(f, key, corner), span = Math.max(1, Math.round(config.span + delta));
             await moveWithinPage(f, drag, delta);
-            await assertGhost(f, original, corner, span, drag, bounds, gap);
+            const feedback = await assertGhost(f, original, corner, span, drag, bounds, gap);
             assert.deepEqual(await layout(f), before, 'dragging cannot reflow the actual players');
             assert.deepEqual(await saved(f), storage, 'tentative size is never persisted');
             await f.page.mouse.up(); await waitSpan(f, key, span);
             assert.equal(await f.page.locator('.player-resize-preview').isVisible(), false);
-            const next = await layout(f), cell = next.items.find(item => item.key === key), old = before.items.find(item => item.key === key);
-            const docks = { right: corner.endsWith('w') && old.column + old.span === before.columns,
-                bottom: corner.startsWith('n') && old.row + old.span === before.rows,
-                left: corner.endsWith('e') && old.column === 0, top: corner.startsWith('s') && old.row === 0 };
+            const next = await layout(f), released = await positionCell(f, key).boundingBox();
             assertCompact(next);
-            assert.equal(dockScore(next, key, docks), maximumDockScore({ count: next.items.length, span, docks,
-                ...(span === 1 ? { columns: next.columns } : {}) }), 'release only the corner edges that conflict with compact packing');
+            minimumVisibleCrossings(next, span, bounds, gap, feedback.rect, released);
             await leave(f);
         }
         await assertContinuity(f, continuity);
