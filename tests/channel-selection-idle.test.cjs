@@ -21,7 +21,11 @@ const pages = [
 function fixture(source) {
     const start = source.indexOf('const channelSelectionIdleTimer =');
     const visibleStart = source.indexOf('function setChannelSelectionVisible(', start);
-    const visibleFunction = source.slice(visibleStart).match(/^function setChannelSelectionVisible\(visible\) \{[\s\S]*?\n[ \t]*\}/);
+    // Match the function's own indentation, rather than stopping at a nested
+    // condition's closing brace (the reset-position default has one).
+    const functionIndent = source.slice(0, visibleStart).match(/(?:^|\n)([ \t]*)$/)?.[1] || '';
+    const visibleFunction = source.slice(visibleStart).match(new RegExp(
+        '^function setChannelSelectionVisible\\(visible\\) \\{[\\s\\S]*?\\n' + functionIndent + '\\}'));
     assert.ok(start >= 0 && visibleStart > start && visibleFunction, 'production idle timer seam exists');
     const end = visibleStart + visibleFunction[0].length;
     const panelListeners = new Map(), windowListeners = new Map(), timers = new Map();
@@ -30,14 +34,18 @@ function fixture(source) {
         style: { display: 'none' },
         addEventListener(type, callback) { panelListeners.set(type, callback); }
     };
+    const resetPositions = { checked: true };
     const context = vm.createContext({
-        document: { getElementById(id) { return id === 'channel-selection' ? panel : null; } },
+        document: { getElementById(id) { return id === 'channel-selection' ? panel :
+            id === 'reset-positions-on-watch' ? resetPositions : null; } },
         window: {
             addEventListener(type, callback) { windowListeners.set(type, callback); },
             UmininnMenuDismiss: { ...menuDismiss, observe() { return { dispose() {} }; } }
         },
         playerNameOverlay: { setVisible(value) { overlayVisible = value; } },
         layoutBookmarkMenu: null,
+        getCurrentPlayerGeometry() { return { items: [] }; },
+        activePlayers: new Map(),
         setTimeout(callback, delay) { const id = ++nextId; timers.set(id, { at: now + delay, callback }); return id; },
         clearTimeout(id) { timers.delete(id); },
         Date: { now() { return now; } },

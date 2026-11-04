@@ -197,6 +197,106 @@ test('audio bridge chooses the last applied audio policy while stale bookmark in
     f.intent('manual'); f.ack(); assert.equal(f.events.at(-1).bookmark, null); f.ack('restored'); await stale;
 });
 
+test('audio bridge resolves post-action focus from committed state and the final queued request wins', async () => {
+    const f = fixture(), firstTarget = f.target(), finalTarget = f.target(), calls = [];
+    let selected = null;
+    const makeFocus = () => {
+        calls.push(selected);
+        assert.equal(f.bridge.depth, 1, 'focus resolves within the same captured layout transaction');
+        return f.bridge.beginFocus(selected === firstTarget ? 'first' : 'final', {}, selected);
+    };
+    const first = f.bridge.run(() => { selected = firstTarget; return true; }, { focusAfter: makeFocus, requiresLayout: () => false });
+    const final = f.bridge.run(() => { selected = finalTarget; return true; }, { focusAfter: makeFocus });
+    assert.equal(selected, null); assert.deepEqual(calls, []);
+    assert.deepEqual(f.events.map(value => value.type), ['before']);
+    f.ack();
+    assert.deepEqual(calls, [firstTarget, finalTarget]);
+    assert.equal(f.events.at(-1).focus, finalTarget.getAttribute('data-umininn-player-layout-focus-request'));
+    assert.equal(f.pane.getAttribute('data-umininn-layout-audio-focus-requests').split(',').length, 2);
+    f.ack('restored'); assert.deepEqual(await Promise.all([first, final]), [true, true]);
+    assert.equal(f.timers.size, 0);
+});
+
+test('audio bridge post-action focus skips unsuccessful actions and does not hide action or hook errors', async () => {
+    const f = fixture(), actionError = new Error('action failed'), hookError = new Error('focus failed');
+    let calls = 0;
+    const hook = () => { calls++; };
+    const unchanged = f.bridge.run(() => false, { focusAfter: hook });
+    const nonBoolean = f.bridge.run(() => 1, { focusAfter: hook });
+    const failed = f.bridge.run(() => { throw actionError; }, { focusAfter: hook });
+    const brokenHook = f.bridge.run(() => true, { focusAfter: () => { calls++; throw hookError; } });
+    const later = f.bridge.run(() => 42);
+    const failures = [assert.rejects(failed, value => value === actionError), assert.rejects(brokenHook, value => value === hookError)];
+    f.ack(); assert.equal(calls, 1); assert.equal(f.events.at(-1).focus, null);
+    f.ack('restored'); await Promise.all(failures);
+    assert.deepEqual(await Promise.all([unchanged, nonBoolean, later]), [false, 1, 42]);
+    assert.equal(f.timers.size, 0);
+});
+
+test('audio bridge post-action focus respects a newer manual intent before or during the queued action', async () => {
+    for (const duringAction of [false, true]) {
+        const f = fixture(), target = f.target(); let calls = 0;
+        const task = f.bridge.run(() => {
+            if (duringAction) f.intent('manual-newer');
+            return true;
+        }, { focusAfter: () => { calls++; return f.bridge.beginFocus('a', {}, target); } });
+        if (!duringAction) f.intent('manual-newer');
+        f.ack(); assert.equal(calls, 0); assert.equal(f.events.at(-1).focus, null);
+        f.ack('restored'); assert.equal(await task, true); assert.equal(f.timers.size, 0);
+    }
+});
+
+test('audio bridge post-action focus is inert without a successful capable capture', async () => {
+    for (const condition of ['unsupported', 'timeout', 'removed-before-ready', 'removed-during-action']) {
+        const f = fixture(), target = f.target(); let calls = 0;
+        if (condition === 'unsupported') f.setSupported(false);
+        const task = f.bridge.run(() => {
+            if (condition === 'removed-during-action') f.setSupported(false);
+            return true;
+        }, { focusAfter: () => { calls++; return f.bridge.beginFocus('a', {}, target); } });
+        if (condition === 'timeout') await f.advance(6500);
+        else if (condition !== 'unsupported') {
+            if (condition === 'removed-before-ready') f.setSupported(false);
+            f.ack();
+        }
+        assert.equal(await task, true); assert.equal(calls, 0, condition);
+        assert.equal(target.getAttribute('data-umininn-player-layout-focus-request'), null);
+        assert.equal(f.events.some(value => value.type === 'after'), false); assert.equal(f.timers.size, 0);
+    }
+});
+
+test('audio bridge validates a post-action focus lease and target again before restoration', async () => {
+    for (const detached of [false, true]) {
+        const f = fixture(), target = f.target(), focus = f.bridge.beginFocus('a', {}, target);
+        const task = f.bridge.run(() => true, { focusAfter: () => {
+            if (detached) target.remove(); else f.setFocusValid(false);
+            return focus;
+        } });
+        f.ack(); assert.equal(f.events.at(-1).focus, null);
+        f.ack('restored'); assert.equal(await task, true); assert.equal(f.timers.size, 0);
+    }
+});
+
+test('audio bridge post-action focus cannot outlive cancellation or replace a newer pane controller', async () => {
+    for (const condition of ['before-action', 'hook-pagehide', 'hook-new-pane', 'hook-new-ticket']) {
+        const f = fixture(), target = f.target(); let calls = 0, laterCalls = 0;
+        const first = f.bridge.run(() => true, { focusAfter: () => {
+            calls++;
+            if (condition === 'hook-pagehide') f.hide();
+            if (condition === 'hook-new-pane') f.replacePane();
+            if (condition === 'hook-new-ticket') f.pane.setAttribute('data-umininn-layout-audio-ticket', '90000009');
+            return f.bridge.beginFocus('a', {}, target);
+        } });
+        const later = f.bridge.run(() => { laterCalls++; return true; });
+        if (condition === 'before-action') f.hide(); else f.ack();
+        assert.deepEqual(await Promise.all([first, later]), [false, false], condition);
+        assert.equal(calls, condition === 'before-action' ? 0 : 1); assert.equal(laterCalls, 0);
+        assert.equal(f.events.some(value => value.type === 'after'), false);
+        if (condition === 'hook-new-ticket') assert.equal(f.pane.getAttribute('data-umininn-layout-audio-ticket'), '90000009');
+        assert.equal(f.bridge.batch, null); assert.equal(f.bridge.depth, 0); assert.equal(f.timers.size, 0);
+    }
+});
+
 test('audio bridge cancels pending capture on pagehide, ignores late acknowledgements and resumes only on pageshow', async () => {
     const f = fixture(); let applied = 0;
     const first = f.bridge.run(() => ++applied), ticket = f.bridge.batch.ticket;

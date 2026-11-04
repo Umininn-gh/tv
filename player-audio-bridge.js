@@ -54,7 +54,14 @@
                 for (const request of value.requests) {
                     if (!live(value)) break;
                     let result, error;
-                    try { result = request.action(); } catch (caught) { error = caught; }
+                    try {
+                        result = request.action();
+                        // Resolve policies after queued geometry commits, while the
+                        // sound owner still holds the original capture snapshot.
+                        if (live(value) && currentScope(value) && result === true && restore && available() &&
+                            typeof request.focusAfter === 'function' && intentFor() === request.focusIntent)
+                            request.focus = request.focusAfter();
+                    } catch (caught) { error = caught; }
                     if (live(value) && !currentScope(value)) { cancel(); break; }
                     if (live(value)) value.results.push({ request, value: result, error });
                 }
@@ -106,10 +113,11 @@
             if (disposed || suspended || cancelling) return false;
             if (depth || !batch && !queue.length && !available()) return action();
             // A no-op can become meaningful behind a queued move: only skip an idle queue.
-            if (!batch && !queue.length && !config.focus && !config.bookmarkAudio &&
+            if (!batch && !queue.length && !config.focus && !config.focusAfter && !config.bookmarkAudio &&
                 typeof config.requiresLayout === 'function' && !config.requiresLayout()) return action();
             return new Promise((resolve, reject) => {
                 queue.push({ action, resolve, reject, settled: false, focus: config.focus,
+                    focusAfter: config.focusAfter, focusIntent: intentFor(),
                     bookmarkAudio: config.bookmarkAudio, audioIntent: config.audioIntent, requiresLayout: config.requiresLayout });
                 start();
             });

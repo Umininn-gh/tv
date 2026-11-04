@@ -2201,13 +2201,14 @@ async function readSoundWriteTrace(f){
     return main.concat(...children);
 }
 
-test('editor and direct layout changes preserve sound while an explicit audio button focuses its current direct player',{skip:!enabled,timeout:30000},async t=>{
+test('direct layout changes preserve sound while editor growth and explicit sound controls focus their current player',{skip:!enabled,timeout:30000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys),before=await snapshot(f);
     await f.page.evaluate(()=>{window.fixtureFocusEvents=[];document.addEventListener('umininn-player-audio-focus',event=>fixtureFocusEvents.push({id:event.target.id,direct:event.target.parentElement.id==='multi-stream-container',bubbles:event.bubbles}))});
     await f.page.evaluate(key=>enlargePlayer(key),keys[0]);await waitSpan(f,keys[0],2);
     await f.page.evaluate(key=>enlargePlayer(key),keys[2]);await waitSpan(f,keys[2],2);
-    assert.deepEqual(await f.page.evaluate(()=>fixtureFocusEvents),[],'direct layout changes must not select sound without the top-right user command');
+    assert.deepEqual(await f.page.evaluate(()=>fixtureFocusEvents),[],'direct layout APIs do not emit an independent sound command');
     await clickWindowAction(f,keys[2],'shrink');await waitSingleCells(f);
+    await assertContinuity(f,before);
     await f.page.locator('#enlarge-player').click();await positionCell(f,keys[1]).click();await waitSpan(f,keys[1],2);
     await layoutAction(f,async()=>{
         const drag=await startCornerDrag(f,keys[1],'se');await moveCornerDrag(f,drag,1.05);await f.page.mouse.up();
@@ -2216,8 +2217,8 @@ test('editor and direct layout changes preserve sound while an explicit audio bu
     await f.page.waitForFunction(()=>document.getElementById('player-position-editor').hidden);
     await waitWindowGeometry(f);
     await f.page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-    assert.equal(await f.page.evaluate(()=>fixtureFocusEvents.length),0,'editor click, corner resize and shrink do not request audio focus');
-    await assertContinuity(f,before);
+    assert.equal(await f.page.evaluate(()=>fixtureFocusEvents.length),0,'editor growth uses the captured layout sound policy without an independent sound command');
+    await waitOnlyAudible(f,1);await assertAudioContinuity(f,before);
     await actualMouseWindowAction(f,keys[0],'audio-focus');await waitOnlyAudible(f,0);
     await actualMouseWindowAction(f,keys[2],'audio-focus');await waitOnlyAudible(f,3);
     assert.deepEqual(await f.page.evaluate(()=>fixtureFocusEvents),[{id:'native-0',direct:true,bubbles:true},{id:'frame-2',direct:true,bubbles:true}]);
@@ -2980,9 +2981,9 @@ async function resetSoundAfterNextLayout(f,{native=true,frames=true}={}){
     },{eventName:layoutAudioEvents.after,native,frames});
 }
 
-test('layout audio preserves each current channel through trusted enlarge, shrink, move, reset and automatic pane relayout',{skip:!enabled,timeout:60000},async t=>{
+test('layout audio focuses trusted editor growth and preserves the resulting sound through shrink, move, reset and automatic pane relayout',{skip:!enabled,timeout:60000},async t=>{
     if(!optional(t))return;const f=await fixture(t,{width:1200,height:800,audioUserscript:true}),keys=await f.page.evaluate(()=>fixture.keys);
-    const before=await seedLayoutSound(f),sound=exactSound(before);
+    const before=await seedLayoutSound(f),sound=exactSound(before);let expected=sound;
     const operations=[
         ['direct enlarge',true,async()=>{await f.page.evaluate(key=>enlargePlayer(key),keys[0]);await waitSpan(f,keys[0],2)}],
         ['direct shrink',true,async()=>{await actualMouseWindowAction(f,keys[0],'shrink');await waitSingleCells(f)}],
@@ -2996,6 +2997,7 @@ test('layout audio preserves each current channel through trusted enlarge, shrin
     for(const [name,changesLayout,operation]of operations){
         const previousCount=await f.page.evaluate(()=>fixtureLayoutEvents.length),prior=(await readLayout(f)).logical;
         await operation();
+        if(name==='editor enlarge')expected=expected.map((value,index)=>({muted:index!==1,volume:index===1?1:value.volume}));
         if(changesLayout){
             await waitLayoutAudio(f,previousCount);
             assert.notDeepEqual((await readLayout(f)).logical,prior,name+' must perform its expected real layout change');
@@ -3009,7 +3011,7 @@ test('layout audio preserves each current channel through trusted enlarge, shrin
             assert.deepEqual((await readLayout(f)).logical,prior,name+' preserves all cells');
             assert.deepEqual(await f.page.evaluate(previousCount=>fixtureLayoutEvents.slice(previousCount),previousCount),[],name+' must not capture or restore sound');
         }
-        await waitExactSound(f,sound);await assertAudioContinuity(f,before);
+        await waitExactSound(f,expected);await assertAudioContinuity(f,before);
     }
     assert.equal(sound[0].muted,false);assert.equal(sound[0].volume,0,'unmuted zero volume is distinct from mute');
 });

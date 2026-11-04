@@ -1397,7 +1397,8 @@ const playerAudioBridge = PlayerAudioBridge.create({
     available: playerLayoutAudioAvailable,
     getIntent: () => document.documentElement.getAttribute('data-umininn-player-audio-intent'),
     isFocusCurrent: focus => playerRegistry.isCurrent(focus.lease || focus.entry) &&
-        getPlayerElement(focus.entry) === focus.target && playerLayoutState.focus?.key === focus.key
+        getPlayerElement(focus.entry) === focus.target &&
+        getEnlargedPlayerAudioTarget()?.key === focus.key
 });
 function playerLayoutAudioAvailable() {
     return document.documentElement.hasAttribute('data-umininn-player-userscript') &&
@@ -1409,6 +1410,21 @@ function playerBookmarkAudioAvailable() {
 function readPlayerBookmarkAudio(keys) { return playerAudioBridge.captureBookmark(keys); }
 function withPlayerAudioLayout(action, options = {}) {
     return playerAudioBridge.run(() => withPlayerVisualMotion(action), options);
+}
+function getEnlargedPlayerAudioTarget() {
+    const pane = document.getElementById('multi-stream-container'), geometry = getCurrentPlayerGeometry();
+    if (!pane || !(pane.clientWidth > 0 && pane.clientHeight > 0) || geometry.deferredFocus) return null;
+    const enlarged = geometry.items.filter(item => item.span > 1 && activePlayers.has(item.key));
+    return enlarged.length === 1 ? enlarged[0] : null;
+}
+function withEnlargedPlayerAudio(action, options = {}) {
+    return withPlayerAudioLayout(action, { ...options, focusAfter() {
+        const item = getEnlargedPlayerAudioTarget(), entry = item && activePlayers.get(item.key);
+        if (!entry) return undefined;
+        const focus = playerAudioBridge.beginFocus(item.key, entry, getPlayerElement(entry));
+        if (focus) focus.lease = playerRegistry.lease(entry);
+        return focus;
+    } });
 }
 function guardPlayerAudioLayout(action, requiresLayout) {
     return playerAudioBridge.guard(function (...args) {
@@ -1998,6 +2014,9 @@ function applyPlayerBookmark(value) {
     let completionTimer = null;
     let completionDeadline = 0;
     let completionSeconds = PLAYER_OVERLAY_TIMEOUT_SECONDS;
+    // Explicit completion retains accepted edits; internal closes or a new
+    // editor session invalidate work still waiting for the sound capture.
+    let session = 0;
     const completionPointers = new Set();
     const buttons = new Map();
     const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(scheduleLayout) : null;
@@ -2110,7 +2129,8 @@ function applyPlayerBookmark(value) {
         scheduleLayout();
     }
 
-    function close(restoreFocus = true) {
+    function close(restoreFocus = true, completed = false) {
+        if (!completed) session++;
         if (completionTimer !== null) clearTimeout(completionTimer);
         completionTimer = null;
         completionDeadline = 0;
@@ -2137,6 +2157,14 @@ function applyPlayerBookmark(value) {
                 });
             } else document.getElementById('more-channels-btn')?.focus();
         }
+    }
+
+    function complete(restoreFocus = true) {
+        if (!opened) return;
+        const completedSession = session, enlargedMode = mode === 'enlarge';
+        close(restoreFocus, true);
+        if (enlargedMode && (getEnlargedPlayerAudioTarget() || playerAudioBridge.batch || playerAudioBridge.queueLength))
+            void withEnlargedPlayerAudio(() => session === completedSession && Boolean(getEnlargedPlayerAudioTarget()));
     }
 
     function refresh() {
@@ -2207,6 +2235,7 @@ function applyPlayerBookmark(value) {
     }
 
     function open(nextMode, { corner = false } = {}) {
+        session++;
         if (activePlayers.size < 2) return false;
         if (opened) cancelPointer();
         moveReturnFocus = null;
@@ -2239,7 +2268,7 @@ function applyPlayerBookmark(value) {
             completionTimer = setTimeout(autoComplete, remaining);
             return;
         }
-        close(!document.hidden && layer.contains(document.activeElement));
+        complete(!document.hidden && layer.contains(document.activeElement));
     }
     document.addEventListener('visibilitychange', () => {
         if (document.hidden && completionPointers.size) finishHeldActivity();
@@ -2261,15 +2290,16 @@ function applyPlayerBookmark(value) {
     resetButton?.addEventListener('click', resetPositions);
     editorResetButton.addEventListener('click', resetPositions);
     shrinkButton.addEventListener('click', () => {
+        const editSession = session;
         void withPlayerAudioLayout(() => {
-            if (!opened || mode !== 'enlarge') return;
+            if (session !== editSession || mode !== 'enlarge') return;
             const focus = playerLayoutState.enlargedGeometry?.items.find(item => item.span > 1);
             if (!focus) return;
             const name = activePlayers.get(focus.key).channel.name;
             if (shrinkPlayer(focus.key)) announcement.textContent = `${name} 已縮小至 ${focus.span - 1}×${focus.span - 1}${focus.span === 2 ? '，已達最小單位，保留目前排列' : ''}`;
-        }, { requiresLayout: () => opened && mode === 'enlarge' && Boolean(playerLayoutState.enlargedGeometry) });
+        }, { requiresLayout: () => session === editSession && mode === 'enlarge' && Boolean(playerLayoutState.enlargedGeometry) });
     });
-    doneButton.addEventListener('click', () => close());
+    doneButton.addEventListener('click', () => complete());
     toolbarToggle.addEventListener('click', () => {
         cancelPointer();
         const bottom = layer.dataset.toolbarPosition !== 'bottom';
@@ -2282,7 +2312,7 @@ function applyPlayerBookmark(value) {
         if (opened && event.key === 'Escape') {
             event.preventDefault();
             if (resizeDrag) { cancelPointer(); announcement.textContent = '已取消這次大小調整'; }
-            else close();
+            else complete();
         }
     });
     cells.addEventListener('click', event => {
@@ -2295,11 +2325,14 @@ function applyPlayerBookmark(value) {
         }
         const key = button.dataset.playerKey;
         if (mode === 'enlarge') {
-            void withPlayerAudioLayout(() => {
-                if (!opened || mode !== 'enlarge' || !activePlayers.has(key)) return;
-                if (enlargePlayer(key)) announcement.textContent = `${activePlayers.get(key).channel.name} 已放大至 ${playerLayoutState.focus.span}×${playerLayoutState.focus.span}`;
+            const editSession = session;
+            void withEnlargedPlayerAudio(() => {
+                if (session !== editSession || !activePlayers.has(key)) return false;
+                const changed = enlargePlayer(key);
+                if (changed) announcement.textContent = `${activePlayers.get(key).channel.name} 已放大至 ${playerLayoutState.focus.span}×${playerLayoutState.focus.span}`;
                 else announcement.textContent = '已達放大上限';
-            }, { requiresLayout: () => opened && mode === 'enlarge' && (enlargePlayer.requiresLayout?.(key) ?? true) });
+                return changed;
+            }, { requiresLayout: () => session === editSession && (enlargePlayer.requiresLayout?.(key) ?? true) });
             return;
         }
         if (pickedKey && pickedKey !== key) exchange(pickedKey, key);
@@ -2474,17 +2507,20 @@ function applyPlayerBookmark(value) {
             const next = gesture.moved && gesture.span !== gesture.item.span ? gesture.next : null;
             cancelPointer();
             if (next && activePlayers.size > 1 && activePlayers.has(gesture.key)) {
-                void withPlayerAudioLayout(() => {
+                const editSession = session;
+                const withAudio = gesture.span > gesture.item.span ? withEnlargedPlayerAudio : withPlayerAudioLayout;
+                void withAudio(() => {
                     const current = getCurrentPlayerGeometry(), bounds = pane.getBoundingClientRect();
-                    if (!opened || mode !== 'enlarge' || !activePlayers.has(gesture.key) ||
+                    if (session !== editSession || !activePlayers.has(gesture.key) ||
                         pane.clientWidth !== gesture.measure.width || pane.clientHeight !== gesture.measure.height ||
                         bounds.left !== gesture.bounds.left || bounds.top !== gesture.bounds.top ||
                         current.columns !== gesture.base.columns || JSON.stringify(current.items) !== JSON.stringify(gesture.base.items)) return;
-                    applyPlayerSize(next, { optimize: false });
+                    const changed = applyPlayerSize(next, { optimize: false });
                     announcement.textContent = `${activePlayers.get(gesture.key).channel.name} 已調整至 ${gesture.span}×${gesture.span}`;
+                    return changed;
                 }, { requiresLayout() {
                     const current = getCurrentPlayerGeometry(), bounds = pane.getBoundingClientRect();
-                    return opened && mode === 'enlarge' && activePlayers.has(gesture.key) &&
+                    return session === editSession && activePlayers.has(gesture.key) &&
                         pane.clientWidth === gesture.measure.width && pane.clientHeight === gesture.measure.height &&
                         bounds.left === gesture.bounds.left && bounds.top === gesture.bounds.top &&
                         !PlayerLayout.compare(current, gesture.base).changed && PlayerLayout.compare(current, next).changed;
