@@ -81,6 +81,60 @@ async function cornerEvidence(f) {
         return { actual, expected };
     });
 }
+async function visibleCornerIds(f) {
+    return f.page.locator('.player-window-enlarge-corner:not([hidden])').evaluateAll(buttons => buttons
+        .filter(button => button.getClientRects().length && getComputedStyle(button).display !== 'none' && Number(getComputedStyle(button).opacity) > 0)
+        .map(button => button.closest('.player-window-cell').dataset.playerKey + ':' + button.dataset.enlargeCorner).sort());
+}
+async function hoverTileCenter(f, key) {
+    const box = await cell(f, key).boundingBox();assert.ok(box);
+    const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    await f.page.mouse.move(point.x, point.y, { steps: 8 });await f.page.waitForTimeout(40);
+    await f.page.waitForFunction(key => [...document.querySelectorAll('.player-window-enlarge-corner:not([hidden])')].every(button =>
+        Number(getComputedStyle(button).opacity) === (button.closest('.player-window-cell').dataset.playerKey === key ? .65 : 0)), key);
+    assert.equal(await cell(f, key).getAttribute('data-hovered'), 'true', 'a real pointer over the media center reveals its own controls');
+    return point;
+}
+async function leaveGrid(f) {
+    await f.page.mouse.move(1590, 1290);
+    await f.page.waitForFunction(() => [...document.querySelectorAll('.player-window-enlarge-corner:not([hidden])')].every(button => Number(getComputedStyle(button).opacity) === 0));
+}
+
+test('hovering anywhere in a tile reveals every eligible corner and hides them when moving to another tile or outside', browserCase, async t => {
+    const setupResult = await setup(t, { clock: false });if (!setupResult) return;const { f, keys, key } = setupResult, before = await snapshot(f);
+    await leaveGrid(f);assert.deepEqual(await visibleCornerIds(f), []);
+    const center = await hoverTileCenter(f, key);
+    assert.deepEqual(await visibleCornerIds(f), corners.map(corner => key + ':' + corner).sort(), 'all four interior corners appear together from a center hover');
+    const cornersAtCenter = await cell(f, key).locator('.player-window-enlarge-corner').evaluateAll(buttons => buttons.map(button => ({
+        opacity: Number(getComputedStyle(button).opacity), hovered: button.matches(':hover')
+    })));
+    assert.ok(cornersAtCenter.every(button => button.opacity === .65 && !button.hovered), JSON.stringify(cornersAtCenter));
+    await cell(f, key).screenshot({ path: path.join(__dirname, '..', '..', 'corner-tile-hover-' + process.env.UMININN_BROWSER_ENGINE + '-middle.png') });
+    assert.equal(await f.page.evaluate(point => document.elementFromPoint(point.x, point.y)?.id, center), 'native-4', 'revealed corner UI never intercepts the media center');
+    await hoverTileCenter(f, keys[0]);
+    assert.deepEqual(await visibleCornerIds(f), [keys[0] + ':se'], 'an outer corner tile reveals only its sole eligible inward corner');
+    await leaveGrid(f);
+    assert.deepEqual(await visibleCornerIds(f), [], 'leaving the whole grid clears every hover-only shortcut');
+    await assertContinuity(f, before);
+
+    // Playwright Chromium OOPIF input cannot update the parent :hover chain.
+    // Firefox exercises the actual foreign frame hover path without synthetic
+    // events or attributes; Chromium still exercises native and overlay input.
+    if (process.env.UMININN_BROWSER_ENGINE === 'firefox') for (const [name, options] of [
+        ['direct foreign frame', {}], ['scaled Kick frame', { productionKick: true }], ['nested Twitch frame', { productionTwitch: true }]
+    ]) await t.test(name, async st => {
+        const result = await setup(st, { ...options, clock: false });if (!result) return;const { f, keys } = result;
+        const target = keys[2], order = [...keys];[order[2], order[4]] = [order[4], order[2]];
+        await fixedDirectionGrid(f, { columns: 3, order });const before = await snapshot(f);
+        await hoverTileCenter(f, target);
+        assert.deepEqual(await visibleCornerIds(f), corners.map(corner => target + ':' + corner).sort(), name + ' reveals all eligible corners from its content center');
+        await hoverCorner(f, target, 'nw');await f.page.waitForTimeout(40);
+        assert.deepEqual(await visibleCornerIds(f), corners.map(corner => target + ':' + corner).sort(), 'handoff from a foreign player to its corner retains all four shortcuts');
+        await leaveGrid(f);
+        assert.deepEqual(await visibleCornerIds(f), []);await assertContinuity(f, before);
+    });
+});
+
 test('corner shortcuts exclude player-pane edges while preserving small hitboxes and existing controls and media centers', browserCase, async t => {
     const setupResult = await setup(t);if (!setupResult) return;const { f, key } = setupResult, before = await snapshot(f);
     await f.page.mouse.move(1590, 1290);await f.page.clock.runFor(32);
@@ -90,7 +144,7 @@ test('corner shortcuts exclude player-pane edges while preserving small hitboxes
     for (const corner of corners) {
         await hoverCorner(f, key, corner);await f.page.clock.runFor(32);await f.page.waitForTimeout(40);
         const visual = await shortcut(f, key, corner).evaluate(node => {const style=getComputedStyle(node),transform=getComputedStyle(node.querySelector('svg')).transform,matrix=transform==='none'?new DOMMatrix():new DOMMatrix(transform),r=node.getBoundingClientRect();return {opacity:Number(style.opacity),hovered:node.matches(':hover'),matrix:[matrix.a,matrix.b,matrix.c,matrix.d],hit:document.elementFromPoint(r.left+(node.dataset.enlargeCorner.endsWith('w')?1.5:r.width-1.5),r.top+(node.dataset.enlargeCorner.startsWith('n')?1.5:r.height-1.5))?.closest('button')?.dataset.playerAction}});
-        assert.ok(visual.opacity > 0 && visual.opacity < 1, 'only the hovered L becomes translucent: '+corner+' '+JSON.stringify(visual));
+        assert.ok(visual.opacity > 0 && visual.opacity < 1, 'the hovered tile keeps this corner translucent: '+corner+' '+JSON.stringify(visual));
         const expected={nw:[1,0,0,1],ne:[0,1,-1,0],sw:[0,-1,1,0],se:[-1,0,0,-1]}[corner];
         visual.matrix.forEach((value,index)=>assert.ok(Math.abs(value-expected[index])<1e-6,'the '+corner+' glyph rotates into its own corner orientation'));
         if(process.env.UMININN_CORNER_TIMEOUT_SCREENSHOTS){const folder=path.resolve(process.env.UMININN_CORNER_TIMEOUT_SCREENSHOTS);fs.mkdirSync(folder,{recursive:true});await cell(f,key).screenshot({path:path.join(folder,process.env.UMININN_BROWSER_ENGINE+'-'+corner+'.png')})}
