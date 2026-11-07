@@ -16,6 +16,8 @@
     };
     const ids = ['connection-form', 'github-token', 'connect-button', 'disconnect-button', 'connection-state', 'connection-badge', 'repository-owner', 'repository-name', 'manager-status', 'new', 'channel-form', 'channel-fields', 'editor-heading', 'cancel-edit', 'channel-name', 'channel-platform', 'channel-id', 'channel-id-label', 'channel-id-help', 'goodgame-fields', 'channel-gg-username', 'save-channel', 'save-hint', 'refresh-channels', 'channel-count', 'channel-search', 'channel-list', 'empty-list', 'legacy-channels', 'legacy-summary', 'legacy-list', 'sync-sklive', 'sklive-hint', 'sklive-result', 'sklive-summary', 'sklive-additions'];
     const ui = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
+    ui['duplicate-name-warning'] = document.getElementById('duplicate-name-warning');
+    ui['duplicate-name-summary'] = document.getElementById('duplicate-name-summary');
     ui['sklive-entries'] = document.getElementById('sklive-entries');
     ui['sklive-skipped'] = document.getElementById('sklive-skipped');
     const views = {
@@ -107,6 +109,44 @@
         ui['channel-id-help'].textContent = platform.hint;
         ui['channel-id'].placeholder = platform.placeholder;
         ui['goodgame-fields'].hidden = key !== 'goodgame';
+    }
+
+    function nameComparisonKey(name) {
+        return name.trim().normalize('NFC').toLowerCase();
+    }
+
+    function describeNamedChannel(channel) {
+        const platform = PLATFORMS[channel.platform]?.label || channel.platform;
+        return '「' + channel.name + '」(' + platform + ' · ' + channel.id + ')';
+    }
+
+    function updateDuplicateNameWarning() {
+        let text = '';
+        const name = nameComparisonKey(ui['channel-name'].value);
+        if (currentView === 'edit' && state.previous && state.snapshot && name) {
+            const previousKey = ChannelList.channelKey(state.previous);
+            const matches = state.snapshot.channels.filter(channel => nameComparisonKey(channel.name) === name && ChannelList.channelKey(channel) !== previousKey);
+            if (matches.length) {
+                text = '台名重複。' + matches.map(describeNamedChannel).join('、') + ' 已使用相同名稱。';
+            }
+        }
+        const warning = ui['duplicate-name-warning'];
+        if (warning.textContent !== text) warning.textContent = text;
+    }
+
+    function updateDuplicateNameSummary(channels) {
+        const groups = new Map();
+        if (currentView === 'manage') {
+            for (const channel of channels) {
+                const key = nameComparisonKey(channel.name);
+                if (!groups.has(key)) groups.set(key, []);
+                groups.get(key).push(channel);
+            }
+        }
+        const duplicates = [...groups.values()].filter(group => group.length > 1);
+        const text = duplicates.length ? '發現 ' + duplicates.length + ' 組重複台名。' + duplicates.map(group => group.map(describeNamedChannel).join('、')).join('。') + '。' : '';
+        const summary = ui['duplicate-name-summary'];
+        if (summary.textContent !== text) summary.textContent = text;
     }
 
     function resetEditor() {
@@ -236,7 +276,9 @@
     }
 
     function render() {
+        updateDuplicateNameWarning();
         const channels = state.snapshot ? state.snapshot.channels : [];
+        updateDuplicateNameSummary(channels);
         const query = ui['channel-search'].value.trim().toLocaleLowerCase();
         const visible = channels.filter(channel => [channel.name, channel.id, channel.platform, PLATFORMS[channel.platform]?.label || '', channel.ggUsername || ''].join(' ').toLocaleLowerCase().includes(query));
         ui['channel-list'].replaceChildren(...visible.map(channel => row(channel)));
@@ -564,6 +606,7 @@
             }
         });
     }
+    ui['channel-name'].addEventListener('input', updateDuplicateNameWarning);
     ui['channel-platform'].addEventListener('change', platformFields);
     ui['cancel-edit'].addEventListener('click', cancelEditing);
     ui['channel-search'].addEventListener('input', render);

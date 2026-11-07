@@ -6,7 +6,7 @@
     <meta name="referrer" content="no-referrer">
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self' https://api.github.com https://api.twitch.tv https://gosh.chicktv02.workers.dev https://tencentplaybusiness.gztv.com https://young-cloud-e59f.chicktv001.workers.dev https://wispy-sound-ef1a.for-api.workers.dev; img-src 'self' data:; form-action 'none'; base-uri 'self'; object-src 'none'">
     <title>掛台管理</title>
-    <link rel="stylesheet" href="./channel-manager.css?v=20261029-sklive-gosh">
+    <link rel="stylesheet" href="./channel-manager.css?v=20261107-duplicate-name">
     <script src="./channel-list.js" defer></script>
     <script src="./channel-sync-config.js" defer></script>
     <script src="./channel-sync.js?v=20261016-sklive-add-only" defer></script>
@@ -14,7 +14,7 @@
     <script src="./channel-health-platforms.js?v=20261016-health-review" defer></script>
     <script src="./channel-health.js?v=20261016-health-review" defer></script>
     <script src="./channel-health-ui.js?v=20261016-health-review" defer></script>
-    <script src="./channel-manager.js?v=20261029-sklive-gosh" defer></script>
+    <script src="./channel-manager.js?v=20261107-duplicate-name" defer></script>
 </head>
 <body>
     <header class="page-header">
@@ -93,7 +93,11 @@
             <form id="channel-form">
                 <fieldset id="channel-fields">
                     <div class="form-grid">
-                        <div><label for="channel-name">顯示名稱</label><input id="channel-name" type="text" maxlength="120" required placeholder="例如：雞舍台"></div>
+                        <div>
+                            <label for="channel-name">顯示名稱</label>
+                            <input id="channel-name" type="text" maxlength="120" required placeholder="例如：雞舍台" aria-describedby="duplicate-name-warning">
+                            <p id="duplicate-name-warning" class="duplicate-name-warning" role="status"></p>
+                        </div>
                         <div><label for="channel-platform">平台</label><select id="channel-platform" required></select></div>
                         <div class="wide"><label id="channel-id-label" for="channel-id">頻道 ID</label><input id="channel-id" type="text" maxlength="2048" autocapitalize="none" spellcheck="false" required><p id="channel-id-help" class="hint"></p></div>
                         <div id="goodgame-fields" class="wide" hidden><label for="channel-gg-username">GoodGame 公開頻道名稱</label><input id="channel-gg-username" type="text" maxlength="80" autocapitalize="none" spellcheck="false" placeholder="例如：Pomi"><p class="hint">數字 ID 之外可保留公開名稱，供播放器取得串流。</p></div>
@@ -106,6 +110,7 @@
         <section id="channels" class="card list-card" aria-labelledby="list-heading">
             <div class="list-toolbar"><div><h2 id="list-heading">已掛台</h2><p id="channel-count" class="secondary">載入中</p></div><button id="refresh-channels" class="subtle" type="button">重新整理</button></div>
             <p id="list-purpose" class="secondary list-purpose">選擇頻道以修改名稱、平台或播放入口。</p>
+            <p id="duplicate-name-summary" class="duplicate-name-warning" role="status"></p>
             <label class="sr-only" for="channel-search">搜尋名稱、ID 或平台</label>
             <input id="channel-search" type="search" placeholder="搜尋名稱、ID 或平台" autocomplete="off">
             <ul id="channel-list" class="channel-list" aria-label="共用頻道清單"></ul>

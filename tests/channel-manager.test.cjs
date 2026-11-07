@@ -140,6 +140,66 @@ test('management and deletion screens expose distinct actions while readonly nav
     assert.equal(f.publications.length, 0);
 });
 
+test('editing an existing duplicate warns even when the other channel is filtered out', async () => {
+    const f = fixture({ raw: 'wc,kick-wc,kick\nWC,gosh-wc,gosh\nWC,third-wc,twitch\n' }); await f.ready(); await f.connect();
+    const summary = f.nodes['duplicate-name-summary'];
+    assert.match(summary.textContent, /發現 1 組重複台名/);
+    assert.match(summary.textContent, /Kick · kick-wc.*Gosh · gosh-wc.*Twitch · third-wc/);
+    f.nodes['channel-search'].value = 'kick-wc';
+    await f.nodes['channel-search'].dispatch('input');
+    assert.equal(f.nodes['channel-list'].children.length, 1);
+    assert.match(summary.textContent, /Twitch · third-wc/);
+    await button(f.nodes['channel-list'].children[0], '編輯').dispatch('click');
+    const warning = f.nodes['duplicate-name-warning'];
+    assert.match(warning.textContent, /台名重複/);
+    assert.match(warning.textContent, /Gosh · gosh-wc/);
+    assert.match(warning.textContent, /Twitch · third-wc/);
+    assert.doesNotMatch(warning.textContent, /kick-wc/);
+    assert.equal(f.nodes['save-channel'].disabled, false);
+    await f.submit({});
+    assert.equal(f.saves.length, 1, 'duplicate names are advisory');
+    await f.route('#channels');
+    assert.equal(summary.textContent, '', 'deletion has no duplicate-name banner');
+});
+
+test('renaming updates the warning immediately and ignores the original channel even when its ID is edited', async () => {
+    const f = fixture({ raw: '獨有,unique,gosh\nCafé,other,kick\n' }); await f.ready(); await f.connect();
+    await button(f.nodes['channel-list'].children[0], '編輯').dispatch('click');
+    const name = f.nodes['channel-name'];
+    const warning = f.nodes['duplicate-name-warning'];
+    assert.equal(warning.textContent, '');
+    f.nodes['channel-id'].value = 'replacement';
+    await name.dispatch('input');
+    assert.equal(warning.textContent, '');
+    name.value = '  CAFE\u0301  ';
+    await name.dispatch('input');
+    assert.match(warning.textContent, /Kick · other/);
+    await f.route('#new');
+    assert.equal(warning.textContent, '');
+    await f.route('#edit');
+    assert.match(warning.textContent, /Kick · other/);
+    name.value = 'Café 新台';
+    await name.dispatch('input');
+    assert.equal(warning.textContent, '');
+});
+
+test('an updated shared list rechecks duplicate names without changing the edit draft', async () => {
+    const f = fixture(); await f.ready(); await f.connect();
+    await button(f.nodes['channel-list'].children[0], '編輯').dispatch('click');
+    const name = f.nodes['channel-name'];
+    const warning = f.nodes['duplicate-name-warning'];
+    name.value = '草稿';
+    await name.dispatch('input');
+    assert.equal(warning.textContent, '');
+    f.current.local = snapshot(initialRaw + '草稿,new-match,kick\n');
+    await f.windowEvent('focus');
+    assert.equal(name.value, '草稿');
+    assert.match(warning.textContent, /Kick · new-match/);
+    f.current.local = snapshot(initialRaw);
+    await f.windowEvent('focus');
+    assert.equal(warning.textContent, '');
+});
+
 test('new and edit drafts survive navigation independently without losing the authenticated session', async () => {
     const f = fixture({ hash: '#new' }); await f.ready(); await f.connect();
     f.nodes['channel-name'].value = '新增草稿';
