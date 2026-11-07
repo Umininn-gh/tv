@@ -31,7 +31,7 @@ WC1-G,no25no2501,gosh
 KA,kinganime,gosh
 k,krichure,at
 動,mrrock,at
-wc2,no25no2502,kick
+wc2-K,no25no2502,kick
 QT,qt369,kick
 廣州電視,https://tencentplaybusiness.gztv.com/live/zonghes.m3u8,m3u8
 12345,12345,twitch
