@@ -36,7 +36,7 @@ function compareChannels(existing, candidates) {
 }
 
 function fixture(options = {}) {
-    const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]);
+    const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map(match => match[1]).filter(id => !options.missingIds?.includes(id));
     const nodes = Object.fromEntries(ids.map(id => [id, new Element()]));
     const body = new Element('body');
     const document = { body, hidden: false, getElementById: id => nodes[id], createElement: tag => new Element(tag), listeners: {}, addEventListener(name, listener) { (this.listeners[name] ||= []).push(listener); } };
@@ -198,6 +198,13 @@ test('an updated shared list rechecks duplicate names without changing the edit 
     f.current.local = snapshot(initialRaw);
     await f.windowEvent('focus');
     assert.equal(warning.textContent, '');
+});
+
+test('cached management markup without warning regions can still edit channels', async () => {
+    const f = fixture({ missingIds: ['duplicate-name-warning', 'duplicate-name-summary'] }); await f.ready(); await f.connect();
+    await button(f.nodes['channel-list'].children[0], '編輯').dispatch('click');
+    await f.submit({ 'channel-name': '更新名稱' });
+    assert.equal(f.saves.length, 1);
 });
 
 test('new and edit drafts survive navigation independently without losing the authenticated session', async () => {

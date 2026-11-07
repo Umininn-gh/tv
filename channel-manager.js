@@ -121,6 +121,8 @@
     }
 
     function updateDuplicateNameWarning() {
+        const warning = ui['duplicate-name-warning'];
+        if (!warning) return;
         let text = '';
         const name = nameComparisonKey(ui['channel-name'].value);
         if (currentView === 'edit' && state.previous && state.snapshot && name) {
@@ -130,11 +132,12 @@
                 text = '台名重複。' + matches.map(describeNamedChannel).join('、') + ' 已使用相同名稱。';
             }
         }
-        const warning = ui['duplicate-name-warning'];
         if (warning.textContent !== text) warning.textContent = text;
     }
 
     function updateDuplicateNameSummary(channels) {
+        const summary = ui['duplicate-name-summary'];
+        if (!summary) return;
         const groups = new Map();
         if (currentView === 'manage') {
             for (const channel of channels) {
@@ -145,7 +148,6 @@
         }
         const duplicates = [...groups.values()].filter(group => group.length > 1);
         const text = duplicates.length ? '發現 ' + duplicates.length + ' 組重複台名。' + duplicates.map(group => group.map(describeNamedChannel).join('、')).join('。') + '。' : '';
-        const summary = ui['duplicate-name-summary'];
         if (summary.textContent !== text) summary.textContent = text;
     }
 
