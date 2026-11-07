@@ -51,5 +51,5 @@ G,ourchickenlife,twitch
 TristaLiveTV,tristalivetv,twitch
 WC2-G,no25no2502,gosh
 WING,wingzyi,twitch
-西野,nanase_maru525,gosh
+西野-G,nanase_maru525,gosh
 ALG,narutono1,gosh
