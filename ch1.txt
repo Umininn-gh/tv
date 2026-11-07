@@ -53,3 +53,6 @@ WC2-G,no25no2502,gosh
 WING,wingzyi,twitch
 西野-G,nanase_maru525,gosh
 ALG,narutono1,gosh
+WC,no25no2501,at
+絕動1,nightofthewitch,at
+絕動2,diamond,at

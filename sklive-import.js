@@ -115,6 +115,10 @@
             else return { reason: 'ambiguous_platform' };
         } else if (rawPlatform === 'okru') platform = 'ok';
         else if (rawPlatform === 'angelthump') platform = 'at';
+        else if (rawPlatform === 'smashcast') {
+            if (officialUrlId('at', sourceUrl) || officialUrlId('at', details)) platform = 'at';
+            else return { reason: 'unsupported_platform' };
+        }
         if (platform === 'm3u8') {
             const goshId = plainId('gosh', details) || officialUrlId('gosh', details) || officialUrlId('gosh', sourceUrl);
             if (goshId) return { channel: validated({ name, id: goshId, platform: 'gosh' }) };
@@ -150,7 +154,8 @@
             throw failure('invalid_data', 'SKLive 未回傳有效的頻道清單，原有頻道沒有更動。');
         }
         const current = Array.isArray(payload.sources);
-        if (current && payload.id !== 'ctvhiki49713') throw failure('invalid_data', 'SKLive 回傳的來源並非指定頻道，原有頻道沒有更動。');
+        // The fixed ctvhiki49713 route now returns its canonical yaubotai configuration.
+        if (current && !['ctvhiki49713', 'yaubotai'].includes(payload.id)) throw failure('invalid_data', 'SKLive 回傳的來源並非指定頻道，原有頻道沒有更動。');
         const rows = current ? payload.sources.map(currentRow) : payload.channels;
         if (!Array.isArray(rows) || !rows.length) throw failure('invalid_data', 'SKLive 未回傳有效的頻道清單，原有頻道沒有更動。');
         const channels = [], duplicates = [], skipped = [];

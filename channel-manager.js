@@ -6,7 +6,7 @@
         twitch: { label: 'Twitch', hint: '頻道名稱，或完整 Twitch 頻道網址。', placeholder: '例如：ourchickenlife' },
         kick: { label: 'Kick', hint: '填寫 Kick 的頻道名稱。', placeholder: '例如：no25no2502' },
         ok: { label: 'OK.ru', hint: '填寫 OK.ru 影片的數字 ID。', placeholder: '例如：10268974521971' },
-        at: { label: 'AngelThump', hint: '填寫 AngelThump 頻道名稱。', placeholder: '例如：ppkkkp' },
+        at: { label: 'AngelThump / SKLive Smashcast', hint: '填寫 AngelThump 頻道名稱，或 SKLive Smashcast 的頻道 ID。', placeholder: '例如：ppkkkp' },
         m3u8: { label: 'M3U8 (HLS)', hint: '填寫完整的公開 HLS 串流網址。', placeholder: 'https://example.com/live.m3u8', url: true },
         youtube: { label: 'YouTube Live', hint: '影片 ID、UC 開頭的頻道 ID，或完整 YouTube 影片網址。', placeholder: '影片 ID 或 https://www.youtube.com/watch?v=…' },
         bs: { label: 'BeamStream (BS)', hint: '填寫完整的播放器 embed 網址。', placeholder: 'https://…', url: true },

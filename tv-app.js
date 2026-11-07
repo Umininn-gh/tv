@@ -129,7 +129,7 @@ const PLATFORMS = {
     },
 
     at: {
-        label: 'AngelThump',
+        label: 'AngelThump / SKLive Smashcast',
         icon: 'Ⓐ',
         type: 'iframe',
         buildUrl: (ch, muted) =>
@@ -140,7 +140,7 @@ const PLATFORMS = {
             const data = await resp.json();
             return data.type === 'live' ? 'live' : 'not-live';
         },
-        idPlaceholder: 'AngelThump 頻道名稱'
+        idPlaceholder: 'AngelThump／SKLive Smashcast 頻道 ID'
     },
 
     m3u8: {

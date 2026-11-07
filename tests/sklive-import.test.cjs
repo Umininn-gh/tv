@@ -77,6 +77,37 @@ test('known platforms map exact official URLs and reject conflicting case-sensit
     assert.equal(report.skipped[0].reason, 'conflicting_identity');
 });
 
+test('SKLive Smashcast entries with official AngelThump embeds reuse canonical AngelThump channels', () => {
+    const entries = [
+        ['WC', 'no25no2501'], ['絕恐', 'ppkkkp'], ['絕電', 'underwear'], ['絕動1', 'nightofthewitch'], ['絕動2', 'diamond']
+    ];
+    const sources = entries.map(([name, details]) => ({ name, details, platform: 'smashcast', embed: 'https://player.angelthump.com/?channel=' + details + '&autoplay=true' }));
+    const report = SKLiveImport.parse({ id: 'ctvhiki49713', sources });
+    const legacy = SKLiveImport.parse({ channels: sources.map(source => row(source.name, source.details, source.platform, source.embed)) });
+    assert.deepEqual(report.channels, entries.map(([name, id]) => channel(name, id, 'at')));
+    assert.deepEqual(legacy.channels, report.channels);
+    assert.deepEqual(report.skipped, []);
+    const existing = [channel('絕', 'ppkkkp', 'at'), channel('絕2', 'underwear', 'at'), channel('WC', 'no25no2501')];
+    const compared = SKLiveImport.compare(existing, report);
+    assert.deepEqual(compared.added.map(value => value.id), ['no25no2501', 'nightofthewitch', 'diamond']);
+    assert.equal(compared.alreadyPresent, 2);
+    assert.deepEqual(compared.channels.slice(0, 3), existing);
+});
+
+test('Smashcast requires verified AngelThump source URLs and matching channel identities', () => {
+    const report = SKLiveImport.parse({ channels: [
+        row('Unverified', 'streamer', 'smashcast'),
+        row('Different service', 'streamer', 'smashcast', 'https://smashcast.tv/streamer'),
+        row('Spoof host', 'streamer', 'smashcast', 'https://player.angelthump.com.evil.example/?channel=streamer'),
+        row('Conflict', 'streamer', 'smashcast', 'https://player.angelthump.com/?channel=other'),
+        row('Official channel page', 'https://angelthump.com/Streamer', 'smashcast'),
+        row('Already canonical', 'streamer', 'at')
+    ] });
+    assert.deepEqual(report.channels, [channel('Official channel page', 'streamer', 'at')]);
+    assert.deepEqual(report.skipped.map(entry => entry.reason), ['unsupported_platform', 'unsupported_platform', 'unsupported_platform', 'conflicting_identity']);
+    assert.equal(report.duplicates.length, 1);
+});
+
 test('unknown or unsafe input is reported without copying private fields or guessing identities', () => {
     const report = SKLiveImport.parse({ channels: [
         { ...row('Unknown', 'private-fixture', 'unknown'), secret: 'never-copy-secret' },
@@ -179,6 +210,15 @@ test('legacy failure retains current coverage with an explicit hidden-source war
     assert.equal(report.channels.length, 16); assert.equal(report.hidden, 0); assert.equal(report.sourceWarnings.length, 1);
     assert.match(report.sourceWarnings[0], /隱藏入口.*失敗.*可見入口/);
     assert.deepEqual(report.sourceApis, [SKLiveImport.currentApiUrl]);
+});
+
+test('the fixed current page accepts its verified canonical yaubotai configuration', async () => {
+    const alias = { ...currentFixture, id: 'yaubotai' };
+    assert.deepEqual(SKLiveImport.parse(alias).channels, SKLiveImport.parse(currentFixture).channels);
+    const report = await SKLiveImport.load(url => response(requestedApi(url) === SKLiveImport.currentApiUrl ? alias : fixture));
+    assert.equal(report.channels.length, 19);
+    assert.deepEqual(report.sourceWarnings, []);
+    assert.deepEqual(report.sourceApis, [SKLiveImport.currentApiUrl, SKLiveImport.legacyApiUrl]);
 });
 
 test('empty, malformed or wrong-user current data cannot masquerade as a complete current crosscheck', async () => {
