@@ -19,7 +19,7 @@ ATV,collartv,kick
 金剛,kingkong_tv,gosh
 美3,meidingdang1,gosh
 N,eastsnake25,kick
-西野,nanase-maru525,kick
+西野-K,nanase-maru525,kick
 木,muse_tw2,twitch
 友,yaubotai,kick
 w,10268974521971,ok
